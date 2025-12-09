@@ -40,7 +40,17 @@ export default async function handler(req) {
 
     const data = await response.json();
 
-    return new Response(JSON.stringify(data), {
+    // Filtere nur die gewünschten Felder
+    const filteredAlerts = data.features?.map(feature => ({
+      sent: feature.properties.sent,
+      onset: feature.properties.onset,
+      ends: feature.properties.ends,
+      event: feature.properties.event,
+      description: feature.properties.description,
+      updated: feature.properties.updated,
+    })) || [];
+
+    return new Response(JSON.stringify({ alerts: filteredAlerts }), {
       status: 200,
       headers: {
         "Content-Type": "application/json",
