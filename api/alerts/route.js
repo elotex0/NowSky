@@ -1,9 +1,7 @@
-export const runtime = "edge";
+// pages/api/alerts.js
 
-export async function GET(request) {
-  const { searchParams } = new URL(request.url);
-  const lat = searchParams.get("lat");
-  const lon = searchParams.get("lon");
+export default async function handler(req, res) {
+  const { lat, lon } = req.query;
 
   let url = "https://api.weather.gov/alerts";
   if (lat && lon) {
@@ -11,44 +9,30 @@ export async function GET(request) {
   }
 
   try {
-    const res = await fetch(url, {
+    const response = await fetch(url, {
       headers: {
-        "User-Agent": "vercel-edge-weather-api",
-        "Accept": "application/geo+json"
-      }
+        "User-Agent": "vercel-serverless-weather-api",
+        "Accept": "application/geo+json",
+      },
     });
 
-    if (!res.ok) {
-      return new Response(
-        JSON.stringify({ error: "Weather API Error", status: res.status }),
-        {
-          status: 500,
-          headers: {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*"
-          }
-        }
-      );
+    if (!response.ok) {
+      return res.status(500).json({
+        error: "Weather API Error",
+        status: response.status,
+      });
     }
 
-    const data = await res.json();
+    const data = await response.json();
 
-    return new Response(JSON.stringify(data), {
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*"
-      }
-    });
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Content-Type", "application/json");
+    return res.status(200).json(data);
   } catch (err) {
-    return new Response(
-      JSON.stringify({ error: "Request failed", detail: err.toString() }),
-      {
-        status: 500,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
-        }
-      }
-    );
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    return res.status(500).json({
+      error: "Request failed",
+      detail: err.toString(),
+    });
   }
 }
