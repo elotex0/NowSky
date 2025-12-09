@@ -1,0 +1,12 @@
+{
+  "type": "module",
+  "name": "nowsky-api",
+  "version": "1.0.0",
+  "dependencies": {
+    "adm-zip": "^0.5.10",
+    "fast-xml-parser": "^4.3.2",
+    "node-fetch": "^3.3.2",
+    "proj4": "^2.19.10",
+    "cheerio": "^1.0.0-rc.12"
+  }
+}
