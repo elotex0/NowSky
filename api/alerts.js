@@ -1,7 +1,13 @@
 // api/alerts.js
 
-export default async function handler(req, res) {
-  const { lat, lon } = req.query;
+export const config = {
+  runtime: 'edge',
+};
+
+export default async function handler(req) {
+  const { searchParams } = new URL(req.url);
+  const lat = searchParams.get('lat');
+  const lon = searchParams.get('lon');
 
   let url = "https://api.weather.gov/alerts";
   if (lat && lon) {
@@ -17,22 +23,43 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
-      return res.status(500).json({
-        error: "Weather API Error",
-        status: response.status,
-      });
+      return new Response(
+        JSON.stringify({
+          error: "Weather API Error",
+          status: response.status,
+        }),
+        {
+          status: 500,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          },
+        }
+      );
     }
 
     const data = await response.json();
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Content-Type", "application/json");
-    return res.status(200).json(data);
-  } catch (err) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    return res.status(500).json({
-      error: "Request failed",
-      detail: err.toString(),
+    return new Response(JSON.stringify(data), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
     });
+  } catch (err) {
+    return new Response(
+      JSON.stringify({
+        error: "Request failed",
+        detail: err.toString(),
+      }),
+      {
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      }
+    );
   }
 }
