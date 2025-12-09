@@ -1,4 +1,4 @@
-// pages/api/alerts.js
+// api/alerts.js
 
 export default async function handler(req, res) {
   const { lat, lon } = req.query;
