@@ -1,8 +1,7 @@
 import fetch from "node-fetch";
 import tar from "tar-stream";
+import { Buffer } from "buffer";
 import proj4 from "proj4";
-import h5wasm from "h5wasm";
-import { pipeline } from "stream/promises";
 
 // -------------------------
 // PROJEKTIONEN
@@ -31,58 +30,75 @@ export default async function handler(req, res) {
 }
 
 // -------------------------
-// FORECAST aus TAR erstellen (0,5,10 min)
+// FORECAST aus TAR erstellen
 // -------------------------
 async function buildForecast(lat, lng) {
-  await h5wasm.ready; // h5wasm initialisieren
-
   const tarUrl = "https://opendata.dwd.de/weather/radar/composite/rv/composite_rv_LATEST.tar";
-  const response = await fetch(tarUrl);
-  if (!response.ok) throw new Error("Failed to fetch TAR");
 
+  const response = await fetch(tarUrl);
+  if (!response.ok) throw new Error("Failed to fetch TAR file");
+
+  const buffer = Buffer.from(await response.arrayBuffer());
   const extract = tar.extract();
-  const tasks = [];
   const values5min = [];
   const steps = [];
 
+  // proj4-Koordinaten einmal berechnen
   const [xCoord, yCoord] = proj4(WGS84, RADOLAN_PROJ, [lng, lat]);
 
   extract.on("entry", (header, stream, next) => {
+    if (!header.name.endsWith("-hd5")) {
+      stream.resume();
+      return next();
+    }
+
+    // Nur erste 3 Vorhersagen für Test: 0,5,10
     const step = parseInt(header.name.split("_").pop().split("-")[0]);
-    if (!header.name.endsWith("-hd5") || ![0, 5, 10].includes(step)) {
+    if (![0,5,10].includes(step)) {
       stream.resume();
       return next();
     }
 
     const chunks = [];
-    stream.on("data", c => chunks.push(c));
+    stream.on("data", chunk => chunks.push(chunk));
     stream.on("end", () => {
       const fileBuffer = Buffer.concat(chunks);
-      // Aufgabe parallel verarbeiten
-      const task = h5wasm.File.from(fileBuffer).then(data => {
-        const ds = data.get("/dataset");
-        const nx = ds.shape[1], ny = ds.shape[0];
-        const px = Math.floor((xCoord - ds.attrs.originX)/ds.attrs.resX);
-        const py = Math.floor((yCoord - ds.attrs.originY)/ds.attrs.resY);
-        return (px>=0 && py>=0 && px<nx && py<ny) ? ds.value[py*nx + px] : 0;
-      }).then(val => {
-        values5min[step/5] = val;
-        steps[step/5] = step;
-      });
-      tasks.push(task);
+
+      // --- Einfaches Parsen: 2D Float32 Raster, Header ignoriert ---
+      // Hier müsstest du ggf. die Offset/Shape der HD5-Datei anpassen
+      const nx = 900; // Beispielwert
+      const ny = 900; // Beispielwert
+      const headerSize = 512; // HD5 Header Offset (falls nötig)
+      const dataBuffer = fileBuffer.slice(headerSize);
+
+      const arr = new Float32Array(dataBuffer.buffer, dataBuffer.byteOffset, nx*ny);
+
+      const px = Math.floor((xCoord - 0)/1); // Dummy resX, originX
+      const py = Math.floor((yCoord - 0)/1); // Dummy resY, originY
+
+      let val = 0;
+      if (px>=0 && py>=0 && px<nx && py<ny) {
+        val = arr[py*nx + px];
+      }
+
+      values5min[step/5] = val;
+      steps[step/5] = step;
       next();
     });
   });
 
-  await pipeline(response.body, extract);
-  await Promise.all(tasks); // alle parallelen Tasks abwarten
+  await new Promise((resolve, reject) => {
+    extract.on("finish", resolve);
+    extract.on("error", reject);
+    extract.end(buffer);
+  });
 
   // --- 1-Minuten-Interpolation ---
   const perMinute = [];
   const perMinuteTimes = [];
   const now = new Date();
-  for (let idx = 0; idx < values5min.length - 1; idx++) {
-    const a = values5min[idx], b = values5min[idx + 1];
+  for (let idx = 0; idx < values5min.length-1; idx++) {
+    const a = values5min[idx], b = values5min[idx+1];
     const t0 = new Date(now.getTime() + idx*5*60*1000);
     for (let m=0; m<5; m++) {
       perMinute.push(a + (b-a)*(m/5));
