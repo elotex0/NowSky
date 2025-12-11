@@ -1,6 +1,19 @@
 import GeoTIFF from "geotiff";
 import proj4 from "proj4";
-import { fromHalf } from "@petamoriken/float16";
+
+function fromHalfBits(h) {
+    const s = (h & 0x8000) >> 15;
+    let e = (h & 0x7C00) >> 10;
+    let f = h & 0x03FF;
+
+    if (e === 0) {
+        return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+    } else if (e === 0x1F) {
+        return f ? NaN : ((s ? -1 : 1) * Infinity);
+    }
+
+    return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+}
 
 const RADOLAN_PROJ = "+proj=stere +lat_0=90 +lon_0=10 +lat_ts=60 +a=6370000 +b=6370000 +units=m +no_defs";
 const WGS84 = "+proj=longlat +datum=WGS84 +no_defs";
@@ -57,7 +70,7 @@ async function getRadvorPixel(url, lat, lng) {
 
     // float16 -> echte Zahl
     if (img.getSampleFormat()[0] === 3 && img.getBitsPerSample()[0] === 16) {
-        raw = fromHalf(raw);
+        raw = fromHalfBits(raw);
     }
 
     return raw;
