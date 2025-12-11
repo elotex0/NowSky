@@ -1,7 +1,7 @@
 import GeoTIFF from "geotiff";
 import proj4 from "proj4";
 import zlib from "zlib";
-import fetch from "node-fetch"; // Für Node.js (Next.js)
+import fetch from "node-fetch";
 
 // -------------------------
 // FLOAT16 → JS Number
@@ -44,42 +44,52 @@ export default async function handler(req, res) {
 }
 
 // -------------------------
-// RADVOR PIXEL AUS GZ GEO-TIFF LESEN
+// ALLE 5-MINUTEN FILES VERARBEITEN
 // -------------------------
-async function getRadvorPixel(url, lat, lng) {
-  const response = await fetch(url);
-  if (!response.ok) return null;
+async function getRadvorPixel(urlPattern, lat, lng, steps = [0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,105,110,115,120]) {
+  for (let step of steps) {
+    const stepStr = step.toString().padStart(3,'0');
+    const url = urlPattern.replace("XXX", stepStr);
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const decompressed = zlib.gunzipSync(buffer); // .gz entpacken
+    try {
+      const response = await fetch(url);
+      if (!response.ok) continue;
 
-  const tiff = await GeoTIFF.fromArrayBuffer(decompressed.buffer);
-  const img = await tiff.getImage();
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const decompressed = zlib.gunzipSync(buffer);
 
-  const width = img.getWidth();
-  const height = img.getHeight();
-  const tie = img.getTiePoints()[0];
-  const scale = img.getFileDirectory().ModelPixelScale;
+      const tiff = await GeoTIFF.fromArrayBuffer(decompressed.buffer);
+      const img = await tiff.getImage();
 
-  const originX = tie.x;
-  const originY = tie.y;
-  const resX = scale[0];
-  const resY = -scale[1];
+      const width = img.getWidth();
+      const height = img.getHeight();
+      const tie = img.getTiePoints()[0];
+      const scale = img.getFileDirectory().ModelPixelScale;
 
-  const [x, y] = proj4(WGS84, RADOLAN_PROJ, [lng, lat]);
-  const px = Math.floor((x - originX) / resX);
-  const py = Math.floor((y - originY) / resY);
+      const originX = tie.x;
+      const originY = tie.y;
+      const resX = scale[0];
+      const resY = -scale[1];
 
-  if (px < 0 || py < 0 || px >= width || py >= height) return null;
+      const [x, y] = proj4(WGS84, RADOLAN_PROJ, [lng, lat]);
+      const px = Math.floor((x - originX) / resX);
+      const py = Math.floor((y - originY) / resY);
 
-  const raster = await img.readRasters({ window: [px, py, px + 1, py + 1] });
-  let raw = raster[0][0];
+      if (px < 0 || py < 0 || px >= width || py >= height) continue;
 
-  if (img.getSampleFormat()[0] === 3 && img.getBitsPerSample()[0] === 16) {
-    raw = fromHalfBits(raw);
+      const raster = await img.readRasters({ window: [px, py, px + 1, py + 1] });
+      let raw = raster[0][0];
+
+      if (img.getSampleFormat()[0] === 3 && img.getBitsPerSample()[0] === 16) {
+        raw = fromHalfBits(raw);
+      }
+
+      return raw; // erstes gültiges Step verwenden
+    } catch(e) {
+      continue;
+    }
   }
-
-  return raw;
+  return 0; // wenn kein Step existiert
 }
 
 // -------------------------
@@ -94,11 +104,9 @@ async function buildNowcast(lat, lng) {
   for (let i = -12; i <= 0; i++) {
     const t = new Date(now.getTime() + i * 5 * 60 * 1000);
     const fileTime = formatRadvorTime(t);
-    const url = `https://opendata.dwd.de/weather/radar/radvor/re/RE${fileTime}_000.gz`;
+    const urlPattern = `https://opendata.dwd.de/weather/radar/radvor/re/RE${fileTime}_XXX.gz`;
 
-    let val = await getRadvorPixel(url, lat, lng);
-    if (val == null) val = 0;
-
+    const val = await getRadvorPixel(urlPattern, lat, lng);
     mmh.push(val * 12); // mm/5min → mm/h
     steps.push(t);
   }
@@ -107,72 +115,53 @@ async function buildNowcast(lat, lng) {
   for (let i = 1; i <= 24; i++) {
     const t = new Date(now.getTime() + i * 5 * 60 * 1000);
     const fileTime = formatRadvorTime(t);
-    const url = `https://opendata.dwd.de/weather/radar/radvor/rq/RQ${fileTime}_000.gz`;
+    const urlPattern = `https://opendata.dwd.de/weather/radar/radvor/rq/RQ${fileTime}_XXX.gz`;
 
-    let val = await getRadvorPixel(url, lat, lng);
-    if (val == null) val = 0;
-
-    const mmhVal = dbzToRain(val);
-    mmh.push(mmhVal);
+    const val = await getRadvorPixel(urlPattern, lat, lng);
+    mmh.push(dbzToRain(val));
     steps.push(t);
   }
 
   // --- PER-MINUTE INTERPOLATION ---
   const perMinute = [];
   const perMinuteTimes = [];
-
   for (let idx = 0; idx < mmh.length - 1; idx++) {
-    const a = mmh[idx];
-    const b = mmh[idx + 1];
+    const a = mmh[idx], b = mmh[idx + 1];
     for (let m = 0; m < 5; m++) {
-      const frac = m / 5;
-      perMinute.push(a + (b - a) * frac);
-      perMinuteTimes.push(new Date(steps[idx].getTime() + m * 60000));
+      perMinute.push(a + (b - a) * (m / 5));
+      perMinuteTimes.push(new Date(steps[idx].getTime() + m*60000));
     }
   }
 
-  // --- REGEN START / ENDE BESTIMMEN ---
-  let startRain = null;
-  let endRain = null;
-
-  const rainIdx = perMinute.findIndex((v) => v > 0.1);
+  // --- REGEN START / ENDE ---
+  let startRain = null, endRain = null;
+  const rainIdx = perMinute.findIndex(v => v > 0.1);
   if (rainIdx !== -1) {
     startRain = perMinuteTimes[rainIdx];
     let endIdx = rainIdx;
-    while (endIdx < perMinute.length && perMinute[endIdx] > 0.1) endIdx++;
+    while(endIdx < perMinute.length && perMinute[endIdx] > 0.1) endIdx++;
     endRain = perMinuteTimes[endIdx - 1];
   }
 
-  return {
-    lat,
-    lng,
-    analysisForecastSteps: steps.length,
-    per5min: mmh,
-    per5minTimes: steps,
-    perMinute,
-    perMinuteTimes,
-    startRain,
-    endRain,
-    durationMinutes: startRain ? Math.round((endRain - startRain) / 60000) : 0
-  };
+  return { lat, lng, analysisForecastSteps: steps.length, per5min: mmh, per5minTimes: steps,
+           perMinute, perMinuteTimes, startRain, endRain,
+           durationMinutes: startRain ? Math.round((endRain-startRain)/60000) : 0 };
 }
 
 // -------------------------
 // Hilfsfunktionen
 // -------------------------
 function formatRadvorTime(date) {
-  const pad = (n) => (n < 10 ? "0" + n : n);
-  return (
-    date.getUTCFullYear().toString().slice(2) +
-    pad(date.getUTCMonth() + 1) +
-    pad(date.getUTCDate()) +
-    pad(date.getUTCHours()) +
-    pad(date.getUTCMinutes())
-  );
+  const pad = (n) => (n < 10 ? "0"+n : n);
+  return date.getUTCFullYear().toString().slice(2)+
+         pad(date.getUTCMonth()+1)+
+         pad(date.getUTCDate())+
+         pad(date.getUTCHours())+
+         pad(date.getUTCMinutes());
 }
 
 function dbzToRain(dbz) {
-  if (dbz <= 0) return 0;
+  if(dbz <= 0) return 0;
   const z = Math.pow(10, dbz / 10);
-  return Math.pow(z / 200, 1 / 1.6);
+  return Math.pow(z/200, 1/1.6);
 }
