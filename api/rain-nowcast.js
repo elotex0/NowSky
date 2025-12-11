@@ -97,49 +97,63 @@ async function getRadvorPixel(urlPattern, lat, lng, steps = [0,5,10,15,20,25,30,
 // -------------------------
 async function buildNowcast(lat, lng) {
   const now = new Date();
-  const steps = [];
   const mmh = [];
+  const steps = [];
 
   // --- 1) Analyse der letzten 60 Minuten (RW: mm/5min) ---
+  const rwTimes = [];
   for (let i = -12; i <= 0; i++) {
     const t = new Date(now.getTime() + i * 5 * 60 * 1000);
-    const fileTime = formatRadvorTime(t);
-    const urlPattern = `https://opendata.dwd.de/weather/radar/radvor/re/RE${fileTime}_XXX.gz`;
-
-    const val = await getRadvorPixel(urlPattern, lat, lng);
-    mmh.push(val * 12); // mm/5min → mm/h
     steps.push(t);
+    rwTimes.push(formatRadvorTime(t));
   }
 
-  // --- 2) RADVOR Prognose +120 min (RQ: dBZ) ---
-  // --- 2) RADVOR Prognose +120 min (RQ: dBZ) ---
-for (let i = 1; i <= 24; i++) {
+  // Parallel Fetch RW
+  const rwPromises = rwTimes.map(ft => {
+    const urlPattern = `https://opendata.dwd.de/weather/radar/radvor/re/RE${ft}_XXX.gz`;
+    return getRadvorPixel(urlPattern, lat, lng);
+  });
+
+  const rwValues = await Promise.all(rwPromises);
+  rwValues.forEach(val => mmh.push(val * 12)); // mm/5min → mm/h
+
+  // --- 2) Prognose +120 min (RQ) nur 060 & 120 ---
+  const rqTimes = [];
+  for (let i = 1; i <= 24; i++) {
     const t = new Date(now.getTime() + i * 5 * 60 * 1000);
-    const fileTime = formatRadvorTime(t);
+    steps.push(t);
+    rqTimes.push({ date: t, step: i <= 12 ? "060" : "120" });
+  }
 
-    // Nur 060 und 120 abrufen
-    let step = (i <= 12) ? "060" : "120"; 
-    const url = `https://opendata.dwd.de/weather/radar/radvor/rq/RQ${fileTime}_${step}.gz`;
+  // Lade nur 060 & 120 einmal pro Block
+  const rqBlocks = {};
+  for (const { date, step } of rqTimes) {
+    const ft = formatRadvorTime(date);
+    if (!rqBlocks[step]) rqBlocks[step] = `https://opendata.dwd.de/weather/radar/radvor/rq/RQ${ft}_${step}.gz`;
+  }
 
-    let val = await getRadvorPixel(url, lat, lng);
-    if(val == null) val = 0;
+  const rqValuesCache = {};
+  await Promise.all(Object.entries(rqBlocks).map(async ([step, url]) => {
+    rqValuesCache[step] = await getRadvorPixel(url, lat, lng);
+  }));
 
-    // Interpolation: linear zwischen 060 und 120
-    if(i % 12 !== 0) {
-        const prevStep = mmh[mmh.length-1]; // vorheriger Wert
-        const nextStep = val; // aktueller Step (060 oder 120)
-        const frac = (i % 12)/12;
-        val = prevStep + (nextStep - prevStep)*frac;
-    } else {
-        val = dbzToRain(val);
+  // Interpolation für die 5-min Schritte
+  for (let i = 1; i <= 24; i++) {
+    const step = i <= 12 ? "060" : "120";
+    const val = rqValuesCache[step] ?? 0;
+
+    // linear zwischen 060 & 120
+    let interpolated = val;
+    if (i % 12 !== 0) {
+      const prev = mmh[mmh.length - 1];
+      const next = val;
+      interpolated = prev + (next - prev) * ((i % 12) / 12);
     }
 
-    mmh.push(dbzToRain(val));
-    steps.push(t);
-}
+    mmh.push(dbzToRain(interpolated));
+  }
 
-
-  // --- PER-MINUTE INTERPOLATION ---
+  // --- 3) Per-Minute Interpolation ---
   const perMinute = [];
   const perMinuteTimes = [];
   for (let idx = 0; idx < mmh.length - 1; idx++) {
@@ -150,7 +164,7 @@ for (let i = 1; i <= 24; i++) {
     }
   }
 
-  // --- REGEN START / ENDE ---
+  // --- 4) Regen Start/Ende ---
   let startRain = null, endRain = null;
   const rainIdx = perMinute.findIndex(v => v > 0.1);
   if (rainIdx !== -1) {
