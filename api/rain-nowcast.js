@@ -44,7 +44,11 @@ export default async function handler(req, res) {
 // PIXEL AUS RADVOR GEOTIFF LESEN
 // --------------------------------------------------------------
 async function getRadvorPixel(url, lat, lng) {
-    const tiff = await GeoTIFF.fromUrl(url);
+    // GeoTIFF via fetch laden
+    const response = await fetch(url);
+    const arrayBuffer = await response.arrayBuffer();
+    const tiff = await GeoTIFF.fromArrayBuffer(arrayBuffer); // <- Node.js Variante
+
     const img = await tiff.getImage();
 
     const width = img.getWidth();
@@ -75,6 +79,7 @@ async function getRadvorPixel(url, lat, lng) {
 
     return raw;
 }
+
 
 
 // --------------------------------------------------------------
