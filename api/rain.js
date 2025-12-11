@@ -1,6 +1,17 @@
 // /api/rain.js
 
 export default async function handler(req, res) {
+    // CORS-Header setzen
+    res.setHeader('Access-Control-Allow-Origin', '*'); // erlaubt alle Domains
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    // Preflight Request abfangen
+    if (req.method === 'OPTIONS') {
+        res.status(200).end();
+        return;
+    }
+
     const { lat, lng } = req.query;
 
     if (!lat || !lng) {
@@ -17,7 +28,7 @@ export default async function handler(req, res) {
     }
 }
 
-// --- Funktion bleibt fast unverändert ---
+// --- Funktion bleibt unverändert ---
 let rainForecastData = {};
 
 async function getRainForecast(lat, lng) {
