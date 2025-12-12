@@ -8,7 +8,6 @@ async function getMetNowcastRain(lat, lng) {
 
     const res = await fetch(url, {
         headers: {
-            // PFLICHT bei api.met.no
             "User-Agent": "wetter-crx/1.0 kettnerjustin8@gmail.com"
         }
     });
@@ -20,28 +19,95 @@ async function getMetNowcastRain(lat, lng) {
     const data = await res.json();
     const timeseries = data.properties?.timeseries || [];
 
-    const perMinute = [];
-    const perMinuteTimes = [];
+    // --- IDENTISCH ZU DWD ---
+    const rainForecastData = {
+        results: [],
+        times: [],
+        startRain: null,
+        endRain: null,
+        duration: 0,
+        perMinute: [],
+        perMinuteTimes: []
+    };
 
+    // MET liefert 5-Minuten Schritte → wie DWD
     timeseries.forEach(ts => {
-        const time = new Date(ts.time);
+        const rate = ts.data?.instant?.details?.precipitation_rate ?? 0;
 
-        const details =
-            ts.data?.next_10_minutes?.details ||
-            ts.data?.next_1_hours?.details;
-
-        if (details && typeof details.precipitation_rate === "number") {
-            perMinute.push(details.precipitation_rate); // mm/h
-            perMinuteTimes.push(time);
-        }
+        rainForecastData.results.push(rate); // mm/h
+        rainForecastData.times.push(new Date(ts.time));
     });
 
-    return {
-        source: "MET Nowcast",
-        perMinute,
-        perMinuteTimes
-    };
+    // -----------------------------------------------------------
+    // 1-MINUTEN INTERPOLATION (IDENTISCH ZU DWD)
+    // -----------------------------------------------------------
+
+    const realNow = new Date();
+    const offsetSeconds =
+        (realNow.getMinutes() % 5) * 60 + realNow.getSeconds();
+    const offsetMinutes = offsetSeconds / 60;
+
+    function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
+        const minuteValues = [];
+        const minuteTimes = [];
+        let pos = startOffsetMinutes;
+
+        for (let m = 0; m <= 60; m++) {
+            const segIndex = Math.floor(pos / 5);
+            let value = 0;
+
+            if (segIndex >= results.length - 1) {
+                value = results[results.length - 1] || 0;
+            } else {
+                const left = results[segIndex] || 0;
+                const right = results[segIndex + 1] || 0;
+                const frac = (pos - segIndex * 5) / 5;
+                value = left + (right - left) * frac;
+            }
+
+            minuteValues.push(value);
+            minuteTimes.push(new Date(startTime.getTime() + pos * 60000));
+            pos += 1;
+        }
+
+        return { values: minuteValues, times: minuteTimes };
+    }
+
+    if (rainForecastData.results.length >= 2) {
+        const interp = buildPerMinuteForecast(
+            rainForecastData.results,
+            offsetMinutes,
+            new Date()
+        );
+        rainForecastData.perMinute = interp.values;
+        rainForecastData.perMinuteTimes = interp.times;
+    }
+
+    // -----------------------------------------------------------
+    // START / ENDE / DAUER (IDENTISCH ZU DWD)
+    // -----------------------------------------------------------
+
+    if (rainForecastData.perMinute.length > 0) {
+        const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
+
+        if (startIdx !== -1) {
+            let endIdx = startIdx;
+            for (let i = startIdx; i < rainForecastData.perMinute.length; i++) {
+                if (rainForecastData.perMinute[i] > 0) endIdx = i;
+                else break;
+            }
+
+            rainForecastData.startRain =
+                rainForecastData.perMinuteTimes[startIdx];
+            rainForecastData.endRain =
+                rainForecastData.perMinuteTimes[endIdx];
+            rainForecastData.duration = endIdx - startIdx + 1;
+        }
+    }
+
+    return rainForecastData;
 }
+
 
 
 export default async function handler(req, res) {
