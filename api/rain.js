@@ -1,5 +1,49 @@
 // /api/rain.js
 
+// -----------------------------------------------------------
+// MET Norway Nowcast
+// -----------------------------------------------------------
+async function getMetNowcastRain(lat, lng) {
+    const url = `https://api.met.no/weatherapi/nowcast/2.0/complete?lat=${lat}&lon=${lng}`;
+
+    const res = await fetch(url, {
+        headers: {
+            // PFLICHT bei api.met.no
+            "User-Agent": "wetter-crx/1.0 kettnerjustin8@gmail.com"
+        }
+    });
+
+    if (!res.ok) {
+        throw new Error("MET Nowcast request failed");
+    }
+
+    const data = await res.json();
+    const timeseries = data.properties?.timeseries || [];
+
+    const perMinute = [];
+    const perMinuteTimes = [];
+
+    timeseries.forEach(ts => {
+        const time = new Date(ts.time);
+
+        const details =
+            ts.data?.next_10_minutes?.details ||
+            ts.data?.next_1_hours?.details;
+
+        if (details && typeof details.precipitation_rate === "number") {
+            perMinute.push(details.precipitation_rate); // mm/h
+            perMinuteTimes.push(time);
+        }
+    });
+
+    return {
+        source: "MET Nowcast",
+        perMinute,
+        perMinuteTimes
+    };
+}
+
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -18,9 +62,24 @@ export default async function handler(req, res) {
     }
 
     try {
-        const forecast = await getRainForecast(parseFloat(lat), parseFloat(lng));
-        res.status(200).json(forecast);
-    } catch (err) {
+    const latNum = parseFloat(lat);
+    const lngNum = parseFloat(lng);
+
+    // DWD (wie bisher)
+    const dwdForecast = await getRainForecast(latNum, lngNum);
+
+    // MET Norway – nur sinnvoll in Norwegen
+    let metForecast = null;
+    if (latNum >= 57 && latNum <= 72 && lngNum >= 4 && lngNum <= 32) {
+        metForecast = await getMetNowcastRain(latNum, lngNum);
+    }
+
+    res.status(200).json({
+        dwd: dwdForecast,
+        met: metForecast
+    });
+
+} catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Failed to fetch rain forecast' });
     }
@@ -159,3 +218,5 @@ async function getRainForecast(lat, lng) {
 
     return rainForecastData;
 }
+
+
