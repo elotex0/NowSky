@@ -131,14 +131,28 @@ export default async function handler(req, res) {
     const latNum = parseFloat(lat);
     const lngNum = parseFloat(lng);
 
-    // DWD (wie bisher)
-    const dwdForecast = await getRainForecast(latNum, lngNum);
+    const isGermany =
+    latNum >= 47 && latNum <= 55 &&
+    lngNum >= 5 && lngNum <= 16;
 
-    // MET Norway – nur sinnvoll in Norwegen
+    const isNorway =
+    latNum >= 57 && latNum <= 72 &&
+    lngNum >= 4 && lngNum <= 32;
+
+
+    let dwdForecast = null;
     let metForecast = null;
-    if (latNum >= 57 && latNum <= 72 && lngNum >= 4 && lngNum <= 32) {
+    
+    // 🇩🇪 Deutschland → DWD
+    if (isGermany) {
+        dwdForecast = await getRainForecast(latNum, lngNum);
+    }
+    
+    // 🇳🇴 Norwegen → MET
+    if (isNorway) {
         metForecast = await getMetNowcastRain(latNum, lngNum);
     }
+
 
     res.status(200).json({
         dwd: dwdForecast,
