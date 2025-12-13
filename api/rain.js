@@ -77,7 +77,7 @@ async function getMetNowcastRain(lat, lng) {
         const interp = buildPerMinuteForecast(
             rainForecastData.results,
             offsetMinutes,
-            new Date()
+             rainForecastData.times[0] // <--- hier den echten MET-Start verwenden
         );
         rainForecastData.perMinute = interp.values;
         rainForecastData.perMinuteTimes = interp.times;
