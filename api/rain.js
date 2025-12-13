@@ -154,10 +154,18 @@ export default async function handler(req, res) {
     }
 
 
-    res.status(200).json({
-        dwd: dwdForecast,
-        met: metForecast
-    });
+    const response = {};
+
+    if (isGermany) {
+        response.dwd = dwdForecast;
+    }
+    
+    if (isNorway) {
+        response.met = metForecast;
+    }
+    
+    res.status(200).json(response);
+
 
 } catch (err) {
         console.error(err);
