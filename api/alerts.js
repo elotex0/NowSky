@@ -63,17 +63,10 @@ export default async function handler(req) {
 
         if (turf.booleanPointInPolygon(point, polygon)) {
           alerts.push({
-            source: "MeteoAlarm-France",
             event: entry['cap:event'],
-            area: entry['cap:areaDesc'],
             sent: entry['cap:sent'],
             onset: entry['cap:onset'],
-            expires: entry['cap:expires'],
-            severity: entry['cap:severity'],
-            urgency: entry['cap:urgency'],
-            certainty: entry['cap:certainty'],
-            title: entry.title,
-            link: entry.link?.href,
+            ends: entry['cap:expires'],
           });
         }
       }
