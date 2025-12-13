@@ -1,8 +1,4 @@
 // api/alerts.js
-import fetch from 'node-fetch';
-import * as turf from '@turf/turf';
-import xml2js from 'xml2js';
-
 export const config = {
   runtime: 'edge',
 };
@@ -12,8 +8,9 @@ export default async function handler(req) {
   const lat = parseFloat(searchParams.get('lat'));
   const lon = parseFloat(searchParams.get('lon'));
 
-  // NWS Alerts (USA) – optional
   let alerts = [];
+
+  // --- NWS Alerts (USA) ---
   if (lat && lon) {
     try {
       const nwsUrl = `https://api.weather.gov/alerts/active?point=${lat},${lon}`;
@@ -38,41 +35,48 @@ export default async function handler(req) {
     }
   }
 
-  // MeteoAlarm France Feed
-  try {
-    const frUrl = 'https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-france';
-    const frResponse = await fetch(frUrl);
-    const frXml = await frResponse.text();
+  // --- MeteoAlarm France ---
+  if (lat && lon) {
+    try {
+      const frUrl = 'https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-france';
+      const frResponse = await fetch(frUrl);
+      const frXml = await frResponse.text();
 
-    const parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true });
-    const frData = await parser.parseStringPromise(frXml);
+      // Edge-kompatibler XML-Parser
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(frXml, "text/xml");
+      const entries = Array.from(xmlDoc.getElementsByTagName("entry"));
 
-    const entries = frData.feed.entry;
-    if (entries && lat && lon) {
-      for (const entry of Array.isArray(entries) ? entries : [entries]) {
-        const polygonStr = entry['cap:polygon'];
+      for (const entry of entries) {
+        const polygonStr = entry.getElementsByTagName("cap:polygon")[0]?.textContent;
         if (!polygonStr) continue;
 
         // Polygon umwandeln: "lat,lon lat,lon ..." → [[lon,lat],...]
         const coords = polygonStr.split(' ').map(pair => {
           const [latStr, lonStr] = pair.split(',');
-          return [parseFloat(lonStr), parseFloat(latStr)]; // GeoJSON expects [lon,lat]
+          return [parseFloat(lonStr), parseFloat(latStr)];
         });
-        const polygon = turf.polygon([[...coords, coords[0]]]); // Polygon muss geschlossen sein
-        const point = turf.point([lon, lat]);
 
-        if (turf.booleanPointInPolygon(point, polygon)) {
+        const point = [lon, lat];
+        if (pointInPolygon(point, coords)) {
           alerts.push({
-            event: entry['cap:event'],
-            sent: entry['cap:sent'],
-            onset: entry['cap:onset'],
-            ends: entry['cap:expires'],
+            source: "MeteoAlarm-France",
+            event: entry.getElementsByTagName("cap:event")[0]?.textContent,
+            area: entry.getElementsByTagName("cap:areaDesc")[0]?.textContent,
+            sent: entry.getElementsByTagName("cap:sent")[0]?.textContent,
+            onset: entry.getElementsByTagName("cap:onset")[0]?.textContent,
+            expires: entry.getElementsByTagName("cap:expires")[0]?.textContent,
+            severity: entry.getElementsByTagName("cap:severity")[0]?.textContent,
+            urgency: entry.getElementsByTagName("cap:urgency")[0]?.textContent,
+            certainty: entry.getElementsByTagName("cap:certainty")[0]?.textContent,
+            title: entry.getElementsByTagName("title")[0]?.textContent,
+            link: entry.getElementsByTagName("link")[0]?.getAttribute("href"),
           });
         }
       }
+    } catch (err) {
+      console.error("MeteoAlarm fetch failed", err);
     }
-  } catch (err) {
-    console.error("MeteoAlarm fetch failed", err);
   }
 
   return new Response(JSON.stringify({ alerts }), {
@@ -82,4 +86,19 @@ export default async function handler(req) {
       "Access-Control-Allow-Origin": "*",
     },
   });
+}
+
+// --- Point-in-Polygon Funktion (Ray Casting) ---
+function pointInPolygon(point, vs) {
+  const x = point[0], y = point[1];
+  let inside = false;
+  for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+    const xi = vs[i][0], yi = vs[i][1];
+    const xj = vs[j][0], yj = vs[j][1];
+
+    const intersect = ((yi > y) !== (yj > y)) &&
+                      (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-10) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }
