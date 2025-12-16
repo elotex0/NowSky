@@ -2,8 +2,6 @@
 
 // Globale Variable, um letzten bekannten Wert pro Location zu speichern
 // Wenn du mehrere Locations hast, am besten als Map: lastKnownRate[lat+","+lng]
-let lastKnownRate = null;
-
 async function getMetNowcastRain(lat, lng) {
     const url = `https://api.met.no/weatherapi/nowcast/2.0/complete?lat=${lat}&lon=${lng}`;
 
@@ -28,45 +26,61 @@ async function getMetNowcastRain(lat, lng) {
         perMinuteTimes: []
     };
 
-    // MET liefert 5-Minuten Schritte → wie DWD
+    // MET liefert nur aktuelle 5-Minuten-Punkte
+    const times = [];
+    const results = [];
+
     timeseries.forEach(ts => {
         const rate = ts.data?.instant?.details?.precipitation_rate ?? 0;
-
-        // ⚡ Letzten bekannten Wert merken
-        if (rate !== null) lastKnownRate = rate;
-
-        rainForecastData.results.push(rate); // mm/h
-        rainForecastData.times.push(new Date(ts.time));
+        results.push(rate);
+        times.push(new Date(ts.time));
     });
 
-    // -------------------------------
-    // Virtuelle Stütze für aktuelle Zeit
-    // -------------------------------
+    // ---------------------------------------------------------
+    // 1️⃣ 5-Minuten-Lücken füllen / interpolieren
+    // ---------------------------------------------------------
+    function fillAndInterpolateMET(times, values) {
+        const filledTimes = [];
+        const filledValues = [];
+
+        for (let i = 0; i < times.length - 1; i++) {
+            const t1 = times[i];
+            const t2 = times[i + 1];
+            const v1 = values[i];
+            const v2 = values[i + 1];
+
+            // push original
+            filledTimes.push(t1);
+            filledValues.push(v1);
+
+            // Zwischenzeiten im 5-Minuten-Raster
+            let t = new Date(t1.getTime() + 5 * 60000);
+            while (t < t2) {
+                const frac = (t - t1) / (t2 - t1);
+                const val = v1 + frac * (v2 - v1);
+                filledTimes.push(new Date(t));
+                filledValues.push(val);
+                t = new Date(t.getTime() + 5 * 60000);
+            }
+        }
+
+        // letzter Punkt
+        filledTimes.push(times[times.length - 1]);
+        filledValues.push(values[values.length - 1]);
+
+        return { filledTimes, filledValues };
+    }
+
+    const { filledTimes, filledValues } = fillAndInterpolateMET(times, results);
+
+    rainForecastData.times = filledTimes;
+    rainForecastData.results = filledValues;
+
+    // ---------------------------------------------------------
+    // 2️⃣ 1-Minuten Interpolation (wie bisher)
+    // ---------------------------------------------------------
     const realNow = new Date();
-    const baseTime = new Date(realNow);
-    baseTime.setUTCMinutes(
-        Math.floor(realNow.getUTCMinutes() / 5) * 5,
-        0,
-        0
-    ); // z.B. 12:17 → 12:15
-
-    const fixedResults = [];
-    const fixedTimes = [];
-
-    // 🔹 Letzten bekannten Wert als Startwert benutzen
-    const startValue = lastKnownRate !== null ? lastKnownRate : rainForecastData.results[0] || 0;
-    fixedResults.push(startValue);
-    fixedTimes.push(baseTime);
-
-    // MET-Daten anhängen
-    rainForecastData.results.forEach((v, i) => {
-        fixedResults.push(v);
-        fixedTimes.push(rainForecastData.times[i]);
-    });
-
-    // -------------------------------
-    // 1-Minuten Interpolation
-    // -------------------------------
+    const baseTime = filledTimes[0];
     const offsetMinutes = (realNow - baseTime) / 60000;
 
     function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
@@ -95,13 +109,13 @@ async function getMetNowcastRain(lat, lng) {
         return { values: minuteValues, times: minuteTimes };
     }
 
-    const interp = buildPerMinuteForecast(fixedResults, offsetMinutes, baseTime);
+    const interp = buildPerMinuteForecast(filledValues, offsetMinutes, baseTime);
     rainForecastData.perMinute = interp.values;
     rainForecastData.perMinuteTimes = interp.times;
 
-    // -------------------------------
-    // Start / Ende Regen
-    // -------------------------------
+    // ---------------------------------------------------------
+    // 3️⃣ Start / Ende Regen
+    // ---------------------------------------------------------
     if (rainForecastData.perMinute.length > 0) {
         const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
         if (startIdx !== -1) {
@@ -119,6 +133,7 @@ async function getMetNowcastRain(lat, lng) {
 
     return rainForecastData;
 }
+
 
 
 
