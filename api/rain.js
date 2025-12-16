@@ -1,5 +1,127 @@
 // /api/rain.js
 
+// Globale Variable, um letzten bekannten Wert pro Location zu speichern
+// Wenn du mehrere Locations hast, am besten als Map: lastKnownRate[lat+","+lng]
+let lastKnownRate = null;
+
+async function getMetNowcastRain(lat, lng) {
+    const url = `https://api.met.no/weatherapi/nowcast/2.0/complete?lat=${lat}&lon=${lng}`;
+
+    const res = await fetch(url, {
+        headers: {
+            "User-Agent": "wetter-crx/1.0 kettnerjustin8@gmail.com"
+        }
+    });
+
+    if (!res.ok) throw new Error("MET Nowcast request failed");
+
+    const data = await res.json();
+    const timeseries = data.properties?.timeseries || [];
+
+    const rainForecastData = {
+        results: [],
+        times: [],
+        startRain: null,
+        endRain: null,
+        duration: 0,
+        perMinute: [],
+        perMinuteTimes: []
+    };
+
+    // MET liefert 5-Minuten Schritte → wie DWD
+    timeseries.forEach(ts => {
+        const rate = ts.data?.instant?.details?.precipitation_rate ?? 0;
+
+        // ⚡ Letzten bekannten Wert merken
+        if (rate !== null) lastKnownRate = rate;
+
+        rainForecastData.results.push(rate); // mm/h
+        rainForecastData.times.push(new Date(ts.time));
+    });
+
+    // -------------------------------
+    // Virtuelle Stütze für aktuelle Zeit
+    // -------------------------------
+    const realNow = new Date();
+    const baseTime = new Date(realNow);
+    baseTime.setUTCMinutes(
+        Math.floor(realNow.getUTCMinutes() / 5) * 5,
+        0,
+        0
+    ); // z.B. 12:17 → 12:15
+
+    const fixedResults = [];
+    const fixedTimes = [];
+
+    // 🔹 Letzten bekannten Wert als Startwert benutzen
+    const startValue = lastKnownRate !== null ? lastKnownRate : rainForecastData.results[0] || 0;
+    fixedResults.push(startValue);
+    fixedTimes.push(baseTime);
+
+    // MET-Daten anhängen
+    rainForecastData.results.forEach((v, i) => {
+        fixedResults.push(v);
+        fixedTimes.push(rainForecastData.times[i]);
+    });
+
+    // -------------------------------
+    // 1-Minuten Interpolation
+    // -------------------------------
+    const offsetMinutes = (realNow - baseTime) / 60000;
+
+    function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
+        const minuteValues = [];
+        const minuteTimes = [];
+        let pos = startOffsetMinutes;
+
+        for (let m = 0; m <= 60; m++) {
+            const segIndex = Math.floor(pos / 5);
+            let value = 0;
+
+            if (segIndex >= results.length - 1) {
+                value = results[results.length - 1] || 0;
+            } else {
+                const left = results[segIndex] || 0;
+                const right = results[segIndex + 1] || 0;
+                const frac = (pos - segIndex * 5) / 5;
+                value = left + (right - left) * frac;
+            }
+
+            minuteValues.push(value);
+            minuteTimes.push(new Date(startTime.getTime() + pos * 60000));
+            pos += 1;
+        }
+
+        return { values: minuteValues, times: minuteTimes };
+    }
+
+    const interp = buildPerMinuteForecast(fixedResults, offsetMinutes, baseTime);
+    rainForecastData.perMinute = interp.values;
+    rainForecastData.perMinuteTimes = interp.times;
+
+    // -------------------------------
+    // Start / Ende Regen
+    // -------------------------------
+    if (rainForecastData.perMinute.length > 0) {
+        const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
+        if (startIdx !== -1) {
+            let endIdx = startIdx;
+            for (let i = startIdx; i < rainForecastData.perMinute.length; i++) {
+                if (rainForecastData.perMinute[i] > 0) endIdx = i;
+                else break;
+            }
+
+            rainForecastData.startRain = rainForecastData.perMinuteTimes[startIdx];
+            rainForecastData.endRain = rainForecastData.perMinuteTimes[endIdx];
+            rainForecastData.duration = endIdx - startIdx + 1;
+        }
+    }
+
+    return rainForecastData;
+}
+
+
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -18,9 +140,46 @@ export default async function handler(req, res) {
     }
 
     try {
-        const forecast = await getRainForecast(parseFloat(lat), parseFloat(lng));
-        res.status(200).json(forecast);
-    } catch (err) {
+    const latNum = parseFloat(lat);
+    const lngNum = parseFloat(lng);
+
+    const isGermany =
+    latNum >= 47 && latNum <= 55 &&
+    lngNum >= 5 && lngNum <= 16;
+
+    const isNorway =
+    latNum >= 57 && latNum <= 72 &&
+    lngNum >= 4 && lngNum <= 32;
+
+
+    let dwdForecast = null;
+    let metForecast = null;
+    
+    // 🇩🇪 Deutschland → DWD
+    if (isGermany) {
+        dwdForecast = await getRainForecast(latNum, lngNum);
+    }
+    
+    // 🇳🇴 Norwegen → MET
+    if (isNorway) {
+        metForecast = await getMetNowcastRain(latNum, lngNum);
+    }
+
+
+    const response = {};
+
+    if (isGermany) {
+        response.dwd = dwdForecast;
+    }
+    
+    if (isNorway) {
+        response.met = metForecast;
+    }
+    
+    res.status(200).json(response);
+
+
+} catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Failed to fetch rain forecast' });
     }
