@@ -54,9 +54,8 @@ export default async function handler(req) {
     const filteredAlerts = data.features?.map(feature => ({
     onset: feature.when?.interval?.[0] || null,
     ends: feature.when?.interval?.[1] || null,
-    event: feature.event || null,
-    description: feature.description || null,
-    updated: feature.updated || null,
+    event: feature.properties.event || null,
+    description: feature.properties.description || null,
   })) || [];
 
 
