@@ -52,12 +52,13 @@ export default async function handler(req) {
 
     // Filtere die gewünschten Felder
     const filteredAlerts = data.features?.map(feature => ({
-      onset: feature.properties.when?.interval?.[0] || null,
-      ends: feature.properties.when?.interval?.[1] || null,
-      event: feature.properties.event || null,
-      description: feature.properties.description || null,
-      updated: feature.properties.updated || null,
-    })) || [];
+    onset: feature.when?.interval?.[0] || null,
+    ends: feature.when?.interval?.[1] || null,
+    event: feature.event || null,
+    description: feature.description || null,
+    updated: feature.updated || null,
+  })) || [];
+
 
     return new Response(JSON.stringify({ alerts: filteredAlerts }), {
       status: 200,
