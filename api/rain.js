@@ -29,7 +29,7 @@ export default async function handler(req, res) {
 }
 
 // -----------------------------------------------------------
-// Bright Sky Version
+// Bright Sky Version mit 16-bit Dekompression & Box-Mittel
 // -----------------------------------------------------------
 
 let rainForecastData = {};
@@ -48,8 +48,9 @@ async function getRainForecast(lat, lng) {
     };
 
     // --------- 1 km Bounding Box berechnen ----------
-    const deltaLat = 0.009; // ca. 1 km in Grad
-    const deltaLon = 0.014 / Math.cos(lat * Math.PI / 180); // 1 km korrigiert nach Breitengrad
+    const deltaLat = 0.009; // ca. 1 km
+    const deltaLon = 0.014 / Math.cos(lat * Math.PI / 180); // ca. 1 km korrigiert
+
     const bbox = {
         minLat: lat - deltaLat / 2,
         maxLat: lat + deltaLat / 2,
@@ -57,29 +58,32 @@ async function getRainForecast(lat, lng) {
         maxLon: lng + deltaLon / 2
     };
 
-    // --------- 2. Holen der Bright Sky Radar-Daten ----------
+    // --------- 2. Bright Sky Radar holen ----------
     const radarRes = await fetch("https://api.brightsky.dev/radar");
     const radarJson = await radarRes.json();
-
-    // aktueller Zeitrahmen (5-Minuten-Radar)
     const radarFrame = radarJson.radar[0];
 
-    // Base64 → Uint8Array → dekomprimieren
-    const compressed = Uint8Array.from(atob(radarFrame.precipitation_5), c => c.charCodeAt(0));
-    const raster = pako.inflate(compressed); // Rohdaten, 900x1100 Pixel
+    // ---- Dekompression 16-bit mit Skalierung ----
+    function decompress(raw, factor = 0.1) {
+        const compressed = Uint8Array.from(atob(raw), c => c.charCodeAt(0));
+        const rawBytes = pako.inflate(compressed).buffer;
+        const u16 = new Uint16Array(rawBytes);
+        const data = new Float32Array(u16.length);
+        for (let i = 0; i < u16.length; i++) data[i] = u16[i] * factor;
+        return data;
+    }
 
-    const width = 1100;
-    const height = 900;
+    const precipData = decompress(radarFrame.precipitation_5, 0.1);
+    const width = radarFrame.width;
+    const height = radarFrame.height;
 
-    // Lat/Lon → Pixel
+    // ---- Lat/Lon → Pixel ----
     function latLonToPixel(lat, lon) {
-        // RADOLAN-Referenz
         const radolanOriginX = -523462.5;
         const radolanOriginY = 4658576.5;
         const pixelSize = 1000; // 1 km
 
         const R = 6370040;
-
         const φ = lat * Math.PI / 180;
         const λ = lon * Math.PI / 180;
         const φ0 = 60 * Math.PI / 180;
@@ -96,29 +100,38 @@ async function getRainForecast(lat, lng) {
         return { px, py };
     }
 
-    // Pixel für Bounding Box-Mitte
-    const midLat = (bbox.minLat + bbox.maxLat) / 2;
-    const midLon = (bbox.minLon + bbox.maxLon) / 2;
-    const { px, py } = latLonToPixel(midLat, midLon);
+    // ---- Mittlerer Regenwert über Bounding Box ----
+    const corners = [
+        latLonToPixel(bbox.minLat, bbox.minLon),
+        latLonToPixel(bbox.minLat, bbox.maxLon),
+        latLonToPixel(bbox.maxLat, bbox.minLon),
+        latLonToPixel(bbox.maxLat, bbox.maxLon)
+    ];
 
-    // Extrahiere Regenwert an Pixel
-    const index = py * width + px;
-    const rawValue = raster[index] || 0; // Rohwert 0-255
-    const mmh = rawValue * 0.1; // Skaliert auf mm/h (approx.)
+    const minPx = Math.max(0, Math.min(...corners.map(c => c.px)));
+    const maxPx = Math.min(width - 1, Math.max(...corners.map(c => c.px)));
+    const minPy = Math.max(0, Math.min(...corners.map(c => c.py)));
+    const maxPy = Math.min(height - 1, Math.max(...corners.map(c => c.py)));
 
-    // --------- 3. Ergebnisse speichern ----------
+    let sum = 0, count = 0;
+    for (let y = minPy; y <= maxPy; y++) {
+        for (let x = minPx; x <= maxPx; x++) {
+            const idx = y * width + x;
+            sum += precipData[idx];
+            count++;
+        }
+    }
+    const mmh = count > 0 ? sum / count : 0;
+
+    // --------- 3. Ergebnis speichern ----------
     const now = new Date();
     now.setMinutes(Math.floor(now.getMinutes() / 5) * 5, 0, 0);
-
     rainForecastData.results.push(mmh);
     rainForecastData.times.push(now);
 
-    // -----------------------------------------------------------
-    // 4. Per-Minute-Interpolation (wie vorher)
-    // -----------------------------------------------------------
+    // --------- 4. Per-Minute Interpolation ----------
     const realNow = new Date();
-    const offsetSeconds = (realNow.getMinutes() % 5) * 60 + realNow.getSeconds();
-    const offsetMinutes = offsetSeconds / 60;
+    const offsetMinutes = ((realNow.getMinutes() % 5) * 60 + realNow.getSeconds()) / 60;
 
     function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
         const minuteValues = [];
@@ -128,19 +141,11 @@ async function getRainForecast(lat, lng) {
         for (let m = 0; m <= 60; m++) {
             const segIndex = Math.floor(pos / 5);
             let value = 0;
-
-            if (segIndex >= results.length - 1) {
-                value = results[results.length - 1] || 0;
-            } else {
-                const left = results[segIndex] || 0;
-                const right = results[segIndex + 1] || 0;
-                const frac = (pos - segIndex * 5) / 5;
-                value = left + (right - left) * frac;
-            }
-
+            if (segIndex >= results.length - 1) value = results[results.length - 1];
+            else value = results[segIndex] + (results[segIndex + 1] - results[segIndex]) * ((pos - segIndex * 5) / 5);
             minuteValues.push(value);
             minuteTimes.push(new Date(startTime.getTime() + pos * 60000));
-            pos += 1;
+            pos++;
         }
 
         return { values: minuteValues, times: minuteTimes };
@@ -152,19 +157,15 @@ async function getRainForecast(lat, lng) {
         rainForecastData.perMinuteTimes = interp.times;
     }
 
-    // -----------------------------------------------------------
-    // 5. Start & Ende des Regens bestimmen
-    // -----------------------------------------------------------
+    // --------- 5. Start & Ende Regen ----------
     if (rainForecastData.perMinute.length > 0) {
         const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
-
         if (startIdx !== -1) {
             let endIdx = startIdx;
             for (let i = startIdx; i < rainForecastData.perMinute.length; i++) {
                 if (rainForecastData.perMinute[i] > 0) endIdx = i;
                 else break;
             }
-
             rainForecastData.startRain = rainForecastData.perMinuteTimes[startIdx];
             rainForecastData.endRain = rainForecastData.perMinuteTimes[endIdx];
             rainForecastData.duration = endIdx - startIdx + 1;
