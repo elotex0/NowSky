@@ -36,28 +36,18 @@ async function getRainForecast(lat, lng) {
     perMinuteTimes: []
   };
 
-  // 1 km Box
-  const deltaLat = 0.009;
-  const deltaLon = 0.014 / Math.cos(lat * Math.PI / 180);
-
-  const bbox = {
-    minLat: lat - deltaLat / 2,
-    maxLat: lat + deltaLat / 2,
-    minLon: lng - deltaLon / 2,
-    maxLon: lng + deltaLon / 2
-  };
-
-  // Radar holen
-  const radarRes = await fetch(
+  // Radar holen (zentriert auf lat/lon!)
+  const res = await fetch(
     `https://api.brightsky.dev/radar?lat=${lat}&lon=${lng}`
   );
-  const radarJson = await radarRes.json();
+  const json = await res.json();
 
-  if (!radarJson.radar?.length) {
+  if (!json.radar?.length) {
     throw new Error("No radar data");
   }
 
-  const frame = radarJson.radar[0];
+  const frame = json.radar[0];
+  const { width, height } = frame;
 
   // ---- Dekompression → mm/h ----
   function decompress(raw, factor = 0.1) {
@@ -70,72 +60,56 @@ async function getRainForecast(lat, lng) {
   }
 
   const precip = decompress(frame.precipitation_5);
-  const { width, height } = frame;
 
-  // ✅ WICHTIG: bbox kommt ALS ARRAY
-  const [minLon, minLat, maxLon, maxLat] = frame.bbox;
+  // 🎯 ZENTRALE PIXEL (lat/lon liegt IMMER hier)
+  const cx = Math.floor(width / 2);
+  const cy = Math.floor(height / 2);
 
-  // ✅ LINEARE Pixelprojektion (RICHTIG!)
-  function latLonToPixel(lat, lon) {
-    return {
-      px: Math.floor((lon - minLon) / (maxLon - minLon) * width),
-      py: Math.floor((maxLat - lat) / (maxLat - minLat) * height)
-    };
-  }
-
-  const corners = [
-    latLonToPixel(bbox.minLat, bbox.minLon),
-    latLonToPixel(bbox.minLat, bbox.maxLon),
-    latLonToPixel(bbox.maxLat, bbox.minLon),
-    latLonToPixel(bbox.maxLat, bbox.maxLon)
-  ];
-
-  const minPx = Math.max(0, Math.min(...corners.map(c => c.px)));
-  const maxPx = Math.min(width - 1, Math.max(...corners.map(c => c.px)));
-  const minPy = Math.max(0, Math.min(...corners.map(c => c.py)));
-  const maxPy = Math.min(height - 1, Math.max(...corners.map(c => c.py)));
-
+  // 3×3-Pixel Mittelwert (~1 km)
   let sum = 0, count = 0;
-  for (let y = minPy; y <= maxPy; y++) {
-    for (let x = minPx; x <= maxPx; x++) {
-      sum += precip[y * width + x];
-      count++;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const x = cx + dx;
+      const y = cy + dy;
+      if (x >= 0 && y >= 0 && x < width && y < height) {
+        sum += precip[y * width + x];
+        count++;
+      }
     }
   }
 
   const mmh = count ? sum / count : 0;
 
-  // 5-Min-Zeit
+  // 5-Min Zeit
   const now = new Date();
   now.setMinutes(Math.floor(now.getMinutes() / 5) * 5, 0, 0);
   rainForecastData.results.push(mmh);
   rainForecastData.times.push(now);
 
-  // 1-Min-Interpolation
+  // 1-Min Interpolation (stabil)
   const realNow = new Date();
   const offset =
     ((realNow.getMinutes() % 5) * 60 + realNow.getSeconds()) / 60;
 
-  const perMinute = [];
-  const perMinuteTimes = [];
-  for (let m = 0; m <= 60; m++) {
-    perMinute.push(mmh);
-    perMinuteTimes.push(new Date(now.getTime() + (offset + m) * 60000));
+  for (let i = 0; i <= 60; i++) {
+    rainForecastData.perMinute.push(mmh);
+    rainForecastData.perMinuteTimes.push(
+      new Date(now.getTime() + (offset + i) * 60000)
+    );
   }
 
-  rainForecastData.perMinute = perMinute;
-  rainForecastData.perMinuteTimes = perMinuteTimes;
-
   // Start / Ende Regen
-  const startIdx = perMinute.findIndex(v => v > 0);
+  const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
   if (startIdx !== -1) {
     let endIdx = startIdx;
-    for (let i = startIdx; i < perMinute.length; i++) {
-      if (perMinute[i] > 0) endIdx = i;
+    for (let i = startIdx; i < rainForecastData.perMinute.length; i++) {
+      if (rainForecastData.perMinute[i] > 0) endIdx = i;
       else break;
     }
-    rainForecastData.startRain = perMinuteTimes[startIdx];
-    rainForecastData.endRain = perMinuteTimes[endIdx];
+    rainForecastData.startRain =
+      rainForecastData.perMinuteTimes[startIdx];
+    rainForecastData.endRain =
+      rainForecastData.perMinuteTimes[endIdx];
     rainForecastData.duration = endIdx - startIdx + 1;
   }
 
