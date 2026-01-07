@@ -28,15 +28,9 @@ export default async function handler(req, res) {
     }
 }
 
-// -----------------------------------------------------------
-// Bright Sky Version mit 16-bit Dekompression & Box-Mittel
-// -----------------------------------------------------------
-
 let rainForecastData = {};
 
 async function getRainForecast(lat, lng) {
-    if (!lat || !lng) return null;
-
     rainForecastData = {
         results: [],
         times: [],
@@ -59,8 +53,14 @@ async function getRainForecast(lat, lng) {
     };
 
     // --------- 2. Bright Sky Radar holen ----------
-    const radarRes = await fetch("https://api.brightsky.dev/radar");
+    const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lng}`;
+    const radarRes = await fetch(url);
     const radarJson = await radarRes.json();
+
+    if (!radarJson.radar || radarJson.radar.length === 0) {
+        throw new Error("No radar data available");
+    }
+
     const radarFrame = radarJson.radar[0];
 
     // ---- Dekompression 16-bit mit Skalierung ----
