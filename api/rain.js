@@ -170,4 +170,4 @@ async function getRainForecast(lat, lng) {
   }
 
   return rainForecastData;
-}}
+}
