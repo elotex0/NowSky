@@ -1,107 +1,105 @@
 // /api/rain.js
-
 import pako from "pako";
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === 'OPTIONS') {
+  if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
   }
 
   const { lat, lng } = req.query;
-
   if (!lat || !lng) {
-    res.status(400).json({ error: 'lat and lng are required' });
+    res.status(400).json({ error: "lat and lng are required" });
     return;
   }
 
   try {
-    const forecast = await getRainForecast(parseFloat(lat), parseFloat(lng));
-    res.status(200).json(forecast);
+    const data = await getRainForecast(parseFloat(lat), parseFloat(lng));
+    res.status(200).json(data);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 }
 
-let rainForecastData = {};
-
 async function getRainForecast(lat, lng) {
-  rainForecastData = {
-    results: [],
-    times: [],
+  const result = {
+    mmh: 0,
+    timestamp: null,
     startRain: null,
     endRain: null,
-    duration: 0,
-    perMinute: [],
-    perMinuteTimes: []
+    duration: 0
   };
 
-  // 1 km Bounding Box berechnen
+  // -----------------------------
+  // 1️⃣ 1-km Bounding Box
+  // -----------------------------
   const deltaLat = 0.009;
   const deltaLon = 0.014 / Math.cos(lat * Math.PI / 180);
 
-  const bbox = {
-    minLat: lat - deltaLat/2,
-    maxLat: lat + deltaLat/2,
-    minLon: lng - deltaLon/2,
-    maxLon: lng + deltaLon/2
+  const bboxQuery = {
+    minLat: lat - deltaLat / 2,
+    maxLat: lat + deltaLat / 2,
+    minLon: lng - deltaLon / 2,
+    maxLon: lng + deltaLon / 2
   };
 
-  // Bright Sky Radar holen (direkt mit lat/lon)
+  // -----------------------------
+  // 2️⃣ Bright Sky Radar
+  // -----------------------------
   const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lng}`;
-  const radarRes = await fetch(url);
-  const radarJson = await radarRes.json();
+  const resRadar = await fetch(url);
+  const json = await resRadar.json();
 
-  if (!radarJson.radar || radarJson.radar.length === 0) {
+  if (!json.radar || json.radar.length === 0) {
     throw new Error("No radar data available");
   }
 
-  const radarFrame = radarJson.radar[0];
+  const frame = json.radar[0];
+  const { width, height, bbox } = frame;
 
-  // Dekompression 16-bit -> mm/h
+  // -----------------------------
+  // 3️⃣ Dekompression (16-bit → mm/h)
+  // -----------------------------
   function decompress(raw, factor = 0.1) {
     const compressed = Uint8Array.from(atob(raw), c => c.charCodeAt(0));
-    const rawBytes = pako.inflate(compressed).buffer;
-    const u16 = new Uint16Array(rawBytes);
-    const data = new Float32Array(u16.length);
-    for (let i = 0; i < u16.length; i++) data[i] = u16[i] * factor;
-    return data;
+    const inflated = pako.inflate(compressed);
+    const u16 = new Uint16Array(inflated.buffer);
+    const out = new Float32Array(u16.length);
+    for (let i = 0; i < u16.length; i++) out[i] = u16[i] * factor;
+    return out;
   }
 
-  const precipData = decompress(radarFrame.precipitation_5, 0.1);
-  const width = radarFrame.width;
-  const height = radarFrame.height;
+  const precip = decompress(frame.precipitation_5);
 
-  // Lat/Lon -> Pixel
+  // -----------------------------
+  // 4️⃣ Lat/Lon → Pixel (LINEAR, Bright-Sky-korrekt)
+  // -----------------------------
   function latLonToPixel(lat, lon) {
-    const radolanOriginX = -523462.5;
-    const radolanOriginY = 4658576.5;
-    const pixelSize = 1000; // 1 km
-    const R = 6370040;
-    const φ = lat * Math.PI / 180;
-    const λ = lon * Math.PI / 180;
-    const φ0 = 60 * Math.PI / 180;
-    const λ0 = 10 * Math.PI / 180;
-    const t = Math.tan(Math.PI / 4 - φ / 2);
-    const t0 = Math.tan(Math.PI / 4 - φ0 / 2);
-    const x = R * (λ - λ0);
-    const y = R * Math.log(t0 / t);
-    const px = Math.floor((x - radolanOriginX) / pixelSize);
-    const py = Math.floor((radolanOriginY - y) / pixelSize);
-    return { px, py };
+    return {
+      px: Math.floor(
+        (lon - bbox.minLon) /
+        (bbox.maxLon - bbox.minLon) * width
+      ),
+      py: Math.floor(
+        (bbox.maxLat - lat) /
+        (bbox.maxLat - bbox.minLat) * height
+      )
+    };
   }
 
-  // Bounding Box Pixel
+  // -----------------------------
+  // 5️⃣ Bounding Box → Pixel Box
+  // -----------------------------
   const corners = [
-    latLonToPixel(bbox.minLat, bbox.minLon),
-    latLonToPixel(bbox.minLat, bbox.maxLon),
-    latLonToPixel(bbox.maxLat, bbox.minLon),
-    latLonToPixel(bbox.maxLat, bbox.maxLon)
+    latLonToPixel(bboxQuery.minLat, bboxQuery.minLon),
+    latLonToPixel(bboxQuery.minLat, bboxQuery.maxLon),
+    latLonToPixel(bboxQuery.maxLat, bboxQuery.minLon),
+    latLonToPixel(bboxQuery.maxLat, bboxQuery.maxLon)
   ];
 
   const minPx = Math.max(0, Math.min(...corners.map(c => c.px)));
@@ -109,65 +107,37 @@ async function getRainForecast(lat, lng) {
   const minPy = Math.max(0, Math.min(...corners.map(c => c.py)));
   const maxPy = Math.min(height - 1, Math.max(...corners.map(c => c.py)));
 
-  // Mittelwert über Box (echte mm/h!)
-  let sum = 0, count = 0;
+  // -----------------------------
+  // 6️⃣ Mittelwert (ECHTE mm/h)
+  // -----------------------------
+  let sum = 0;
+  let count = 0;
+
   for (let y = minPy; y <= maxPy; y++) {
     for (let x = minPx; x <= maxPx; x++) {
-      const idx = y * width + x;
-      sum += precipData[idx];
-      count++;
-    }
-  }
-  const mmh = count > 0 ? sum / count : 0;
-
-  // Ergebnis speichern
-  const now = new Date();
-  now.setMinutes(Math.floor(now.getMinutes()/5)*5, 0, 0);
-  rainForecastData.results.push(mmh);
-  rainForecastData.times.push(now);
-
-  // Per-Minute Interpolation
-  const realNow = new Date();
-  const offsetMinutes = ((realNow.getMinutes() % 5) * 60 + realNow.getSeconds()) / 60;
-
-  function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
-    const minuteValues = [];
-    const minuteTimes = [];
-    let pos = startOffsetMinutes;
-
-    for (let m = 0; m <= 60; m++) {
-      const segIndex = Math.floor(pos / 5);
-      let value = 0;
-      if (segIndex >= results.length - 1) value = results[results.length - 1];
-      else value = results[segIndex] + (results[segIndex+1] - results[segIndex]) * ((pos - segIndex*5)/5);
-      minuteValues.push(value);
-      minuteTimes.push(new Date(startTime.getTime() + pos*60000));
-      pos++;
-    }
-
-    return { values: minuteValues, times: minuteTimes };
-  }
-
-  if (rainForecastData.results.length >= 1) {
-    const interp = buildPerMinuteForecast(rainForecastData.results, offsetMinutes, now);
-    rainForecastData.perMinute = interp.values;
-    rainForecastData.perMinuteTimes = interp.times;
-  }
-
-  // Start & Ende Regen
-  if (rainForecastData.perMinute.length > 0) {
-    const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
-    if (startIdx !== -1) {
-      let endIdx = startIdx;
-      for (let i = startIdx; i < rainForecastData.perMinute.length; i++) {
-        if (rainForecastData.perMinute[i] > 0) endIdx = i;
-        else break;
+      const v = precip[y * width + x];
+      if (v > 0) {
+        sum += v;
+        count++;
       }
-      rainForecastData.startRain = rainForecastData.perMinuteTimes[startIdx];
-      rainForecastData.endRain = rainForecastData.perMinuteTimes[endIdx];
-      rainForecastData.duration = endIdx - startIdx + 1;
     }
   }
 
-  return rainForecastData;
+  const mmh = count ? sum / count : 0;
+
+  // -----------------------------
+  // 7️⃣ Ergebnis
+  // -----------------------------
+  const ts = new Date(frame.timestamp);
+
+  result.mmh = mmh;
+  result.timestamp = ts;
+
+  if (mmh > 0) {
+    result.startRain = ts;
+    result.endRain = new Date(ts.getTime() + 5 * 60000);
+    result.duration = 5;
+  }
+
+  return result;
 }
