@@ -1,4 +1,3 @@
-// /api/wetterlage/hessen.js
 import * as cheerio from "cheerio";
 
 export default async function handler(req, res) {
@@ -7,20 +6,20 @@ export default async function handler(req, res) {
 
     const url = "https://www.dwd.de/DWD/wetter/wv_allg/deutschland/text/vhdl13_dwoh.html";
     const html = await fetch(url).then(r => r.text());
-
     const $ = cheerio.load(html);
 
-    // kompletten <pre>-Block holen
-    const preText = $("pre").text().trim();
+    // 1️⃣ Den <strong> mit "Detaillierter Wetterablauf:" finden
+    const strongElem = $("strong").filter((i, el) =>
+      $(el).text().trim().startsWith("Detaillierter Wetterablauf")
+    );
 
-    // nur ab "Detaillierter Wetterablauf:" nehmen
-    const marker = "Detaillierter Wetterablauf:";
-    const idx = preText.indexOf(marker);
+    let detaillierter = null;
 
-    const detaillierter =
-      idx !== -1
-        ? preText.substring(idx + marker.length).trim()
-        : null;
+    if (strongElem.length > 0) {
+      // 2️⃣ Nächstes <pre> nach diesem <strong> nehmen
+      const preElem = strongElem.nextAll("pre").first();
+      detaillierter = preElem.text().trim();
+    }
 
     res.status(200).json({
       source: url,
