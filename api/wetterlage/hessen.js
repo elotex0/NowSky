@@ -54,17 +54,25 @@ export default async function handler(req, res) {
     // -----------------------------
     // 3️⃣ Detaillierter Wetterablauf
     // -----------------------------
-    let detaillierter = "";
+    / -----------------------------
+    // 3️⃣ Detaillierter Wetterablauf als Array
+    // -----------------------------
+    let detaillierter = [];
     const detailliertStrong = $("strong").filter((i, el) =>
       $(el).text().trim().startsWith("Detaillierter Wetterablauf")
     );
 
     if (detailliertStrong.length > 0) {
       const preElems = detailliertStrong.nextAll("pre");
-      detaillierter = preElems.map((i, el) => $(el).text().trim()).get().join("");
-      detaillierter = detaillierter.replace(/\n/g, "");
-      detaillierter = detaillierter.replace(/\.(?!\s)/g, ". ");
+      preElems.each((i, el) => {
+        let text = $(el).text().trim();
+        text = text.replace(/\b[^\s]+:/g, ""); // Wörter mit : entfernen
+        text = text.replace(/\n/g, "");         // \n entfernen
+        text = text.replace(/\.(?!\s)/g, ". "); // Punkt + Leerzeichen
+        if (text.length > 0) detaillierter.push(text);
+      });
     }
+
 
     // -----------------------------
     // 4️⃣ JSON ausgeben
