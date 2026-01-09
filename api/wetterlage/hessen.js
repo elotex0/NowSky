@@ -6,16 +6,31 @@ export default async function handler(req, res) {
 
     const url = "https://www.dwd.de/DWD/wetter/wv_allg/deutschland/text/vhdl13_dwoh.html";
 
-    // Fetch als ArrayBuffer, dann korrekt decodieren
+    // Fetch als ArrayBuffer, korrekt decodieren
     const response = await fetch(url);
     const buffer = await response.arrayBuffer();
-    const decoder = new TextDecoder("iso-8859-1"); // DWD-Seiten sind Latin-1
+    const decoder = new TextDecoder("iso-8859-1");
     const html = decoder.decode(buffer);
 
     const $ = cheerio.load(html, { decodeEntities: true });
 
     // -----------------------------
-    // Allgemeiner Text nach <strong>Wetter- und Warnlage:</strong>
+    // 1️⃣ updatedAt
+    // -----------------------------
+    let updatedAt = null;
+    const strongElems = $("#wettertext strong");
+    strongElems.each((i, el) => {
+      const text = $(el).text().trim();
+      if (text.includes("am ")) {
+        // alles nach "am " nehmen
+        const idx = text.indexOf("am ");
+        updatedAt = text.substring(idx + 3).replace(/\s+/g, " ").trim();
+        return false; // break
+      }
+    });
+
+    // -----------------------------
+    // 2️⃣ Allgemeiner Text nach <strong>Wetter- und Warnlage:</strong>
     // -----------------------------
     let allgemein = "";
     const warnlageStrong = $("strong").filter((i, el) =>
@@ -31,16 +46,13 @@ export default async function handler(req, res) {
       }
 
       allgemein = preElems.map(el => $(el).text().trim()).join("");
-      // Wörter mit ":" entfernen
-      allgemein = allgemein.replace(/\b[^\s]+:/g, "");
-      // Alle \n entfernen
-      allgemein = allgemein.replace(/\n/g, "");
-      // Nach Punkt sicherstellen, dass ein Leerzeichen folgt
-      allgemein = allgemein.replace(/\.(?!\s)/g, ". ");
+      allgemein = allgemein.replace(/\b[^\s]+:/g, ""); // Wörter mit : entfernen
+      allgemein = allgemein.replace(/\n/g, "");         // \n entfernen
+      allgemein = allgemein.replace(/\.(?!\s)/g, ". "); // Punkt + Leerzeichen
     }
 
     // -----------------------------
-    // Detaillierter Wetterablauf
+    // 3️⃣ Detaillierter Wetterablauf
     // -----------------------------
     let detaillierter = "";
     const detailliertStrong = $("strong").filter((i, el) =>
@@ -50,17 +62,16 @@ export default async function handler(req, res) {
     if (detailliertStrong.length > 0) {
       const preElems = detailliertStrong.nextAll("pre");
       detaillierter = preElems.map((i, el) => $(el).text().trim()).get().join("");
-      // Alle \n entfernen
       detaillierter = detaillierter.replace(/\n/g, "");
-      // Nach Punkt sicherstellen, dass ein Leerzeichen folgt
       detaillierter = detaillierter.replace(/\.(?!\s)/g, ". ");
     }
 
     // -----------------------------
-    // JSON ausgeben
+    // 4️⃣ JSON ausgeben
     // -----------------------------
     res.status(200).json({
       source: url,
+      updatedAt,
       allgemein,
       detaillierterWetterablauf: detaillierter
     });
