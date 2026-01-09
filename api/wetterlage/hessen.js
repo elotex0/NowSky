@@ -28,8 +28,14 @@ export default async function handler(req, res) {
       // Text zusammenführen
       allgemein = preElems.map(el => $(el).text().trim()).join("\n\n");
 
-      // Überschriften in Großbuchstaben mit : entfernen
-      allgemein = allgemein.replace(/^[A-ZÄÖÜß\s\/]+:\s*$/gm, "").trim();
+      // -----------------------------
+      // Alle Wörter entfernen, die mit ":" enden
+      // -----------------------------
+      // Match: alles ohne Leerzeichen oder Zeilenumbruch, gefolgt von :
+      allgemein = allgemein.replace(/\b[^\s\n]+:/g, "").trim();
+
+      // Überflüssige Leerzeilen entfernen
+      allgemein = allgemein.replace(/\n{2,}/g, "\n\n");
     }
 
     // -----------------------------
