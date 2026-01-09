@@ -6,9 +6,11 @@ export default async function handler(req, res) {
 
     const url = "https://www.dwd.de/DWD/wetter/wv_allg/deutschland/text/vhdl13_dwoh.html";
 
-    // 1️⃣ Fetch HTML als UTF-8
-    const html = await fetch(url)
-      .then(r => r.text());
+    // 1️⃣ Fetch als ArrayBuffer, dann korrekt decodieren
+    const response = await fetch(url);
+    const buffer = await response.arrayBuffer();
+    const decoder = new TextDecoder("iso-8859-1"); // DWD-Seiten sind Latin-1
+    const html = decoder.decode(buffer);
 
     const $ = cheerio.load(html, { decodeEntities: true });
 
@@ -28,13 +30,11 @@ export default async function handler(req, res) {
         next = next.next();
       }
 
-      allgemein = preElems.map(el => $(el).text().trim()).join(" ");
-
-      // Alle Wörter entfernen, die mit ":" enden
-      allgemein = allgemein.replace(/\b[^\s]+:/g, "").trim();
-
-      // Alle \n durch Leerzeichen ersetzen
-      allgemein = allgemein.replace(/\n+/g, " ");
+      allgemein = preElems.map(el => $(el).text().trim()).join("");
+      // Wörter mit ":" entfernen
+      allgemein = allgemein.replace(/\b[^\s]+:/g, "");
+      // Alle \n entfernen (kein Leerzeichen hinzufügen)
+      allgemein = allgemein.replace(/\n/g, "");
     }
 
     // -----------------------------
@@ -47,9 +47,8 @@ export default async function handler(req, res) {
 
     if (detailliertStrong.length > 0) {
       const preElems = detailliertStrong.nextAll("pre");
-      detaillierter = preElems.map((i, el) => $(el).text().trim()).get().join(" ");
-      // Alle \n durch Leerzeichen ersetzen
-      detaillierter = detaillierter.replace(/\n+/g, " ");
+      detaillierter = preElems.map((i, el) => $(el).text().trim()).get().join("");
+      detaillierter = detaillierter.replace(/\n/g, "");
     }
 
     // -----------------------------
