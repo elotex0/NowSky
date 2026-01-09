@@ -8,21 +8,50 @@ export default async function handler(req, res) {
     const html = await fetch(url).then(r => r.text());
     const $ = cheerio.load(html);
 
-    // 1️⃣ Den <strong> mit "Detaillierter Wetterablauf:" finden
-    const strongElem = $("strong").filter((i, el) =>
+    // -----------------------------
+    // 1️⃣ Allgemeiner Text nach <strong>Wetter- und Warnlage:</strong>
+    // -----------------------------
+    let allgemein = "";
+    const warnlageStrong = $("strong").filter((i, el) =>
+      $(el).text().trim().startsWith("Wetter- und Warnlage:")
+    );
+
+    if (warnlageStrong.length > 0) {
+      // Alle <pre> nach diesem strong nehmen, bis zum nächsten strong
+      let preElems = [];
+      let next = warnlageStrong.next();
+      while (next.length && next[0].name !== "strong") {
+        if (next[0].name === "pre") preElems.push(next);
+        next = next.next();
+      }
+
+      // Text zusammenführen
+      allgemein = preElems.map(el => $(el).text().trim()).join("\n\n");
+
+      // Überschriften in Großbuchstaben mit : entfernen
+      allgemein = allgemein.replace(/^[A-ZÄÖÜß\s\/]+:\s*$/gm, "").trim();
+    }
+
+    // -----------------------------
+    // 2️⃣ Detaillierter Wetterablauf
+    // -----------------------------
+    let detaillierter = "";
+    const detailliertStrong = $("strong").filter((i, el) =>
       $(el).text().trim().startsWith("Detaillierter Wetterablauf")
     );
 
-    let detaillierter = null;
-
-    if (strongElem.length > 0) {
-      // 2️⃣ Nächstes <pre> nach diesem <strong> nehmen
-      const preElem = strongElem.nextAll("pre").first();
-      detaillierter = preElem.text().trim();
+    if (detailliertStrong.length > 0) {
+      // Alle <pre> nach diesem strong
+      const preElems = detailliertStrong.nextAll("pre");
+      detaillierter = preElems.map((i, el) => $(el).text().trim()).get().join("\n\n");
     }
 
+    // -----------------------------
+    // 3️⃣ JSON ausgeben
+    // -----------------------------
     res.status(200).json({
       source: url,
+      allgemein,
       detaillierterWetterablauf: detaillierter
     });
 
