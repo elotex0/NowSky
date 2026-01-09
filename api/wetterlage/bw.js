@@ -4,7 +4,7 @@ export default async function handler(req, res) {
   try {
     res.setHeader("Access-Control-Allow-Origin", "*");
 
-    const url = "https://www.dwd.de/DWD/wetter/wv_allg/deutschland/text/vhdl13_dwoh.html";
+    const url = "https://www.dwd.de/DWD/wetter/wv_allg/deutschland/text/vhdl13_dwsg.html";
 
     // Fetch als ArrayBuffer, korrekt decodieren
     const response = await fetch(url);
