@@ -50,7 +50,8 @@ export default async function handler(req, res) {
         wind_gust_speed_10: weather.wind_gust_speed_10,     // km/h
         precipitation_60: weather.precipitation_60,         // mm/h
         visibility: weather.visibility,                     // m
-        relative_humidity: weather.relative_humidity        // %
+        relative_humidity: weather.relative_humidity,        // %
+        pressure_msl: weather.pressure_msl
       }
     };
 
