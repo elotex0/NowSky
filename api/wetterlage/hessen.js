@@ -6,7 +6,7 @@ export default async function handler(req, res) {
 
     const url = "https://www.dwd.de/DWD/wetter/wv_allg/deutschland/text/vhdl13_dwoh.html";
 
-    // 1️⃣ Fetch als ArrayBuffer, dann korrekt decodieren
+    // Fetch als ArrayBuffer, dann korrekt decodieren
     const response = await fetch(url);
     const buffer = await response.arrayBuffer();
     const decoder = new TextDecoder("iso-8859-1"); // DWD-Seiten sind Latin-1
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     const $ = cheerio.load(html, { decodeEntities: true });
 
     // -----------------------------
-    // 2️⃣ Allgemeiner Text nach <strong>Wetter- und Warnlage:</strong>
+    // Allgemeiner Text nach <strong>Wetter- und Warnlage:</strong>
     // -----------------------------
     let allgemein = "";
     const warnlageStrong = $("strong").filter((i, el) =>
@@ -33,12 +33,14 @@ export default async function handler(req, res) {
       allgemein = preElems.map(el => $(el).text().trim()).join("");
       // Wörter mit ":" entfernen
       allgemein = allgemein.replace(/\b[^\s]+:/g, "");
-      // Alle \n entfernen (kein Leerzeichen hinzufügen)
+      // Alle \n entfernen
       allgemein = allgemein.replace(/\n/g, "");
+      // Nach Punkt sicherstellen, dass ein Leerzeichen folgt
+      allgemein = allgemein.replace(/\.(?!\s)/g, ". ");
     }
 
     // -----------------------------
-    // 3️⃣ Detaillierter Wetterablauf
+    // Detaillierter Wetterablauf
     // -----------------------------
     let detaillierter = "";
     const detailliertStrong = $("strong").filter((i, el) =>
@@ -48,11 +50,14 @@ export default async function handler(req, res) {
     if (detailliertStrong.length > 0) {
       const preElems = detailliertStrong.nextAll("pre");
       detaillierter = preElems.map((i, el) => $(el).text().trim()).get().join("");
+      // Alle \n entfernen
       detaillierter = detaillierter.replace(/\n/g, "");
+      // Nach Punkt sicherstellen, dass ein Leerzeichen folgt
+      detaillierter = detaillierter.replace(/\.(?!\s)/g, ". ");
     }
 
     // -----------------------------
-    // 4️⃣ JSON ausgeben
+    // JSON ausgeben
     // -----------------------------
     res.status(200).json({
       source: url,
