@@ -45,10 +45,12 @@ export default async function handler(req, res) {
         next = next.next();
       }
 
-      allgemein = preElems.map(el => $(el).text().trim()).join("");
+      allgemein = preElems.map(el => $(el).text().trim()).join(" ");
       allgemein = allgemein.replace(/\b[^\s]+:/g, ""); // Wörter mit : entfernen
-      allgemein = allgemein.replace(/\n/g, "");         // \n entfernen
+      allgemein = allgemein.replace(/\n/g, " ");       // \n → ein Leerzeichen
+      allgemein = allgemein.replace(/\s+/g, " ");      // Mehrfache Leerzeichen → eins
       allgemein = allgemein.replace(/\.(?!\s)/g, ". "); // Punkt + Leerzeichen
+      allgemein = allgemein.trim();  
     }
 
     // -----------------------------
