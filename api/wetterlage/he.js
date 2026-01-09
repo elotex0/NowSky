@@ -22,7 +22,6 @@ export default async function handler(req, res) {
     strongElems.each((i, el) => {
       const text = $(el).text().trim();
       if (text.includes("am ")) {
-        // alles nach "am " nehmen
         const idx = text.indexOf("am ");
         updatedAt = text.substring(idx + 3).replace(/\s+/g, " ").trim();
         return false; // break
@@ -45,14 +44,16 @@ export default async function handler(req, res) {
         next = next.next();
       }
 
-      allgemein = preElems.map(el => $(el).text().trim()).join("");
+      allgemein = preElems.map(el => $(el).text().trim()).join(" ");
       allgemein = allgemein.replace(/\b[^\s]+:/g, ""); // Wörter mit : entfernen
-      allgemein = allgemein.replace(/\n/g, "");         // \n entfernen
+      allgemein = allgemein.replace(/\n/g, " ");       // \n → ein Leerzeichen
+      allgemein = allgemein.replace(/\s+/g, " ");      // Mehrfache Leerzeichen → eins
       allgemein = allgemein.replace(/\.(?!\s)/g, ". "); // Punkt + Leerzeichen
+      allgemein = allgemein.trim();                     // Anfang/Ende sauber
     }
 
     // -----------------------------
-    // 3️⃣ Detaillierter Wetterablauf
+    // 3️⃣ Detaillierter Wetterablauf als Array
     // -----------------------------
     let detaillierter = [];
     const detailliertStrong = $("strong").filter((i, el) =>
@@ -64,12 +65,13 @@ export default async function handler(req, res) {
       preElems.each((i, el) => {
         let text = $(el).text().trim();
         text = text.replace(/\b[^\s]+:/g, ""); // Wörter mit : entfernen
-        text = text.replace(/\n/g, "");         // \n entfernen
+        text = text.replace(/\n/g, " ");       // \n → ein Leerzeichen
+        text = text.replace(/\s+/g, " ");      // Mehrfache Leerzeichen → eins
         text = text.replace(/\.(?!\s)/g, ". "); // Punkt + Leerzeichen
+        text = text.trim();
         if (text.length > 0) detaillierter.push(text);
       });
     }
-
 
     // -----------------------------
     // 4️⃣ JSON ausgeben
