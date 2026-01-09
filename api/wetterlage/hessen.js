@@ -54,9 +54,6 @@ export default async function handler(req, res) {
     // -----------------------------
     // 3️⃣ Detaillierter Wetterablauf
     // -----------------------------
-    / -----------------------------
-    // 3️⃣ Detaillierter Wetterablauf als Array
-    // -----------------------------
     let detaillierter = [];
     const detailliertStrong = $("strong").filter((i, el) =>
       $(el).text().trim().startsWith("Detaillierter Wetterablauf")
