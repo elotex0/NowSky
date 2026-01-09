@@ -5,11 +5,15 @@ export default async function handler(req, res) {
     res.setHeader("Access-Control-Allow-Origin", "*");
 
     const url = "https://www.dwd.de/DWD/wetter/wv_allg/deutschland/text/vhdl13_dwoh.html";
-    const html = await fetch(url).then(r => r.text());
-    const $ = cheerio.load(html);
+
+    // 1️⃣ Fetch HTML als UTF-8
+    const html = await fetch(url)
+      .then(r => r.text());
+
+    const $ = cheerio.load(html, { decodeEntities: true });
 
     // -----------------------------
-    // 1️⃣ Allgemeiner Text nach <strong>Wetter- und Warnlage:</strong>
+    // 2️⃣ Allgemeiner Text nach <strong>Wetter- und Warnlage:</strong>
     // -----------------------------
     let allgemein = "";
     const warnlageStrong = $("strong").filter((i, el) =>
@@ -17,7 +21,6 @@ export default async function handler(req, res) {
     );
 
     if (warnlageStrong.length > 0) {
-      // Alle <pre> nach diesem strong nehmen, bis zum nächsten strong
       let preElems = [];
       let next = warnlageStrong.next();
       while (next.length && next[0].name !== "strong") {
@@ -25,21 +28,17 @@ export default async function handler(req, res) {
         next = next.next();
       }
 
-      // Text zusammenführen
-      allgemein = preElems.map(el => $(el).text().trim()).join("\n\n");
+      allgemein = preElems.map(el => $(el).text().trim()).join(" ");
 
-      // -----------------------------
       // Alle Wörter entfernen, die mit ":" enden
-      // -----------------------------
-      // Match: alles ohne Leerzeichen oder Zeilenumbruch, gefolgt von :
-      allgemein = allgemein.replace(/\b[^\s\n]+:/g, "").trim();
+      allgemein = allgemein.replace(/\b[^\s]+:/g, "").trim();
 
-      // Überflüssige Leerzeilen entfernen
-      allgemein = allgemein.replace(/\n{2,}/g, "\n\n");
+      // Alle \n durch Leerzeichen ersetzen
+      allgemein = allgemein.replace(/\n+/g, " ");
     }
 
     // -----------------------------
-    // 2️⃣ Detaillierter Wetterablauf
+    // 3️⃣ Detaillierter Wetterablauf
     // -----------------------------
     let detaillierter = "";
     const detailliertStrong = $("strong").filter((i, el) =>
@@ -47,13 +46,14 @@ export default async function handler(req, res) {
     );
 
     if (detailliertStrong.length > 0) {
-      // Alle <pre> nach diesem strong
       const preElems = detailliertStrong.nextAll("pre");
-      detaillierter = preElems.map((i, el) => $(el).text().trim()).get().join("\n\n");
+      detaillierter = preElems.map((i, el) => $(el).text().trim()).get().join(" ");
+      // Alle \n durch Leerzeichen ersetzen
+      detaillierter = detaillierter.replace(/\n+/g, " ");
     }
 
     // -----------------------------
-    // 3️⃣ JSON ausgeben
+    // 4️⃣ JSON ausgeben
     // -----------------------------
     res.status(200).json({
       source: url,
