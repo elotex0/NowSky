@@ -22,10 +22,19 @@ export default async function handler(req, res) {
     strongElems.each((i, el) => {
       const text = $(el).text().trim();
       if (text.includes("am ")) {
-        // alles nach "am " nehmen
-        const idx = text.indexOf("am ");
-        updatedAt = text.substring(idx + 3).replace(/\s+/g, " ").trim();
-        return false; // break
+        const amText = text.split("am ")[1].trim(); // z.B. "Freitag, 09.01.26, 20:30 Uhr"
+        
+        // Regex für Tag, Monat, Jahr, Stunde, Minute
+        const match = amText.match(/(\d{2})\.(\d{2})\.(\d{2}),\s*(\d{2}):(\d{2})/);
+        if (match) {
+          let [_, day, month, year, hour, minute] = match;
+          // Jahr auf 2000er auflösen
+          year = "20" + year;
+          const dateObj = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+          updatedAt = dateObj.toISOString();
+        }
+    
+        return false; // break loop
       }
     });
 
