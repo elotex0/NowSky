@@ -1,4 +1,5 @@
 // /api/rain.js
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // 🔥 TLS ignorieren
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -45,49 +46,58 @@ async function getRainForecast(lat, lng) {
         perMinuteTimes: []
     };
 
-    // Kleinere Box = schneller
-    const delta = 0.001; // ~100–200m
+    const delta = 0.001;
     const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
 
     const now = new Date();
     now.setMinutes(Math.floor(now.getMinutes() / 5) * 5, 0, 0);
 
-    // --------- 1. Alle Zeitpunkte sammeln ----------
     const timeList = [];
     const timeObjects = [];
-
     for (let i = 0; i < 13; i++) {
         const t = new Date(now.getTime() + i * 5 * 60 * 1000);
         timeList.push(t.toISOString());
         timeObjects.push(t);
     }
 
-    // --------- 2. EIN Request an den DWD ----------
-    const url = new URL("https://maps.dwd.de/geoserver/dwd/wms");
-    url.searchParams.set("SERVICE", "WMS");
-    url.searchParams.set("VERSION", "1.1.1");
-    url.searchParams.set("REQUEST", "GetFeatureInfo");
-    url.searchParams.set("LAYERS", "dwd:Niederschlagsradar");
-    url.searchParams.set("QUERY_LAYERS", "dwd:Niederschlagsradar");
-    url.searchParams.set("STYLES", "");
-    url.searchParams.set("BBOX", bbox);
-    url.searchParams.set("FEATURE_COUNT", "1");
-    url.searchParams.set("HEIGHT", "1");
-    url.searchParams.set("WIDTH", "1");
-    url.searchParams.set("INFO_FORMAT", "application/json");
-    url.searchParams.set("SRS", "EPSG:4326");
-    url.searchParams.set("X", "0");
-    url.searchParams.set("Y", "0");
+    const urls = [
+        "https://maps.dwd.de/geoserver/dwd/wms",
+        "https://brz-maps.dwd.de/geoserver/dwd/wms" // fallback
+    ];
 
-    // WICHTIG: mehrere Zeiten, durch Komma getrennt = 1 Request
-    url.searchParams.set("TIME", timeList.join(","));
+    let data = null;
+    for (let baseUrl of urls) {
+        try {
+            const url = new URL(baseUrl);
+            url.searchParams.set("SERVICE", "WMS");
+            url.searchParams.set("VERSION", "1.1.1");
+            url.searchParams.set("REQUEST", "GetFeatureInfo");
+            url.searchParams.set("LAYERS", "dwd:Niederschlagsradar");
+            url.searchParams.set("QUERY_LAYERS", "dwd:Niederschlagsradar");
+            url.searchParams.set("STYLES", "");
+            url.searchParams.set("BBOX", bbox);
+            url.searchParams.set("FEATURE_COUNT", "1");
+            url.searchParams.set("HEIGHT", "1");
+            url.searchParams.set("WIDTH", "1");
+            url.searchParams.set("INFO_FORMAT", "application/json");
+            url.searchParams.set("SRS", "EPSG:4326");
+            url.searchParams.set("X", "0");
+            url.searchParams.set("Y", "0");
+            url.searchParams.set("TIME", timeList.join(","));
 
-    const res = await fetch(url.toString());
-    const data = await res.json();
+            const res = await fetch(url.toString());
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            data = await res.json();
+            break; // erfolgreich, Schleife abbrechen
+        } catch (err) {
+            console.warn(`Fetch von ${baseUrl} fehlgeschlagen:`, err.message);
+            // nächster URL wird probiert
+        }
+    }
 
-    // --------- 3. Werte extrahieren ----------
-    // Die Antwort enthält features[] pro Zeitscheibe
-    // Reihenfolge = Reihenfolge der TIME-Liste
+    if (!data) {
+        throw new Error("Keine DWD-Daten verfügbar (beide URLs failed)");
+    }
 
     (data.features || []).forEach((f, i) => {
         const raw = parseFloat(f.properties.RV_ANALYSIS) || 0;
@@ -97,10 +107,7 @@ async function getRainForecast(lat, lng) {
         rainForecastData.times.push(timeObjects[i]);
     });
 
-    // -----------------------------------------------------------
-    // 4. PER-MINUTE INTERPOLATION (unverändert zu deinem Code)
-    // -----------------------------------------------------------
-
+    // Per-minute Interpolation
     const realNow = new Date();
     const offsetSeconds = (realNow.getMinutes() % 5) * 60 + realNow.getSeconds();
     const offsetMinutes = offsetSeconds / 60;
@@ -137,10 +144,7 @@ async function getRainForecast(lat, lng) {
         rainForecastData.perMinuteTimes = interp.times;
     }
 
-    // -----------------------------------------------------------
-    // 5. Start & Ende des Regens bestimmen
-    // -----------------------------------------------------------
-
+    // Start & Ende des Regens
     if (rainForecastData.perMinute.length > 0) {
         const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
 
