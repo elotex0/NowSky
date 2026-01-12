@@ -49,6 +49,9 @@ async function getRainForecast(lat, lng) {
     const delta = 0.001; // ~100–200m
     const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
 
+    const now = new Date();
+    now.setMinutes(Math.floor(now.getMinutes() / 5) * 5, 0, 0);
+
     
     const timeList = [];
     const timeObjects = [];
