@@ -1,6 +1,6 @@
 // /api/rain.js
-import https from 'https';
-const agent = new https.Agent({ rejectUnauthorized: false });
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // 🔥 TLS ignorieren
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -46,69 +46,56 @@ async function getRainForecast(lat, lng) {
         perMinuteTimes: []
     };
 
-    // Kleinere Box = schneller
     const delta = 0.001; // ~100–200m
     const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
 
-    const now = new Date();
-    now.setMinutes(Math.floor(now.getMinutes() / 5) * 5, 0, 0);
-
-    // --------- 1. Alle Zeitpunkte sammeln ----------
+    // Wir nehmen fix die gewünschte Zeit: 2026-01-12 20:15 bis 20:45
+    const baseTime = new Date('2026-01-12T20:15:00Z');
     const timeList = [];
     const timeObjects = [];
-
-    for (let i = 0; i < 13; i++) {
-        const t = new Date(now.getTime() + i * 5 * 60 * 1000);
+    for (let i = 0; i <= 6; i++) {
+        const t = new Date(baseTime.getTime() + i * 5 * 60 * 1000);
         timeList.push(t.toISOString());
         timeObjects.push(t);
     }
 
-    // --------- 2. EIN Request an den DWD ----------
-    const url = new URL("https://brz-maps.dwd.de/geoserver/dwd/wms");
-    url.searchParams.set("SERVICE", "WMS");
-    url.searchParams.set("VERSION", "1.1.1");
-    url.searchParams.set("REQUEST", "GetFeatureInfo");
-    url.searchParams.set("LAYERS", "dwd:Radar_rv_product_1x1km_ger");
-    url.searchParams.set("QUERY_LAYERS", "dwd:Radar_rv_product_1x1km_ger");
-    url.searchParams.set("BBOX", bbox);
-    url.searchParams.set("FEATURE_COUNT", "1");
-    url.searchParams.set("HEIGHT", "1");
-    url.searchParams.set("WIDTH", "1");
-    url.searchParams.set("INFO_FORMAT", "application/json");
-    url.searchParams.set("SRS", "EPSG:4326");
-    url.searchParams.set("X", "0");
-    url.searchParams.set("Y", "0");
+    // Build URL
+    const url = new URL('https://brz-maps.dwd.de/geoserver/dwd/wms');
+    url.searchParams.set('SERVICE', 'WMS');
+    url.searchParams.set('VERSION', '1.1.1');
+    url.searchParams.set('REQUEST', 'GetFeatureInfo');
+    url.searchParams.set('LAYERS', 'dwd:Radar_rv_product_1x1km_ger');
+    url.searchParams.set('QUERY_LAYERS', 'dwd:Radar_rv_product_1x1km_ger');
+    url.searchParams.set('BBOX', bbox);
+    url.searchParams.set('FEATURE_COUNT', '1');
+    url.searchParams.set('HEIGHT', '1');
+    url.searchParams.set('WIDTH', '1');
+    url.searchParams.set('INFO_FORMAT', 'application/json');
+    url.searchParams.set('SRS', 'EPSG:4326');
+    url.searchParams.set('X', '0');
+    url.searchParams.set('Y', '0');
+    url.searchParams.set('TIME', timeList.join(',')); // 🔥 mehrere Zeiten in einem Request
 
-    // WICHTIG: mehrere Zeiten, durch Komma getrennt = 1 Request
-    url.searchParams.set("TIME", timeList.join(","));
-
-    console.log("Fetching BRZ rain forecast from URL:");
+    console.log('Fetching BRZ rain forecast from URL:');
     console.log(url.toString());
 
-    const res = await fetch(url.toString(), { agent });
-    const data = await res.json();
+    const fetchRes = await fetch(url.toString());
+    const data = await fetchRes.json();
 
     console.log(`Fetched ${data.features?.length || 0} features from BRZ`);
 
-    // --------- 3. Werte extrahieren ----------
-    // Die Antwort enthält features[] pro Zeitscheibe
-    // Reihenfolge = Reihenfolge der TIME-Liste
-
+    // Werte extrahieren
     (data.features || []).forEach((f, i) => {
         const raw = parseFloat(f.properties.RV_ANALYSIS) || 0;
-        const mmh = raw * 12;
-
+        const mmh = raw * 12; // Umrechnung auf mm/h
         rainForecastData.results.push(mmh);
         rainForecastData.times.push(timeObjects[i]);
     });
 
     // -----------------------------------------------------------
-    // 4. PER-MINUTE INTERPOLATION (unverändert zu deinem Code)
+    // 4. PER-MINUTE INTERPOLATION
     // -----------------------------------------------------------
-
-    const realNow = new Date();
-    const offsetSeconds = (realNow.getMinutes() % 5) * 60 + realNow.getSeconds();
-    const offsetMinutes = offsetSeconds / 60;
+    const offsetMinutes = 0; // wir starten exakt bei 20:15
 
     function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
         const minuteValues = [];
@@ -137,7 +124,7 @@ async function getRainForecast(lat, lng) {
     }
 
     if (rainForecastData.results.length >= 2) {
-        const interp = buildPerMinuteForecast(rainForecastData.results, offsetMinutes, now);
+        const interp = buildPerMinuteForecast(rainForecastData.results, offsetMinutes, baseTime);
         rainForecastData.perMinute = interp.values;
         rainForecastData.perMinuteTimes = interp.times;
     }
@@ -145,7 +132,6 @@ async function getRainForecast(lat, lng) {
     // -----------------------------------------------------------
     // 5. Start & Ende des Regens bestimmen
     // -----------------------------------------------------------
-
     if (rainForecastData.perMinute.length > 0) {
         const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
 
