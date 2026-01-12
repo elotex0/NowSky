@@ -61,19 +61,27 @@ async function getRainForecast(lat, lng) {
     }
 
     const urls = [
-        "https://maps.dwd3.de/geoserver/dwd/wms",
-        "https://brz-maps.dwd.de/geoserver/dwd/wms" // fallback
-    ];
+    {
+        url: "https://maps.dwd.de/geoserver/dwd/wms",
+        layer: "dwd:Niederschlagsradar",
+        queryLayer: "dwd:Niederschlagsradar"
+    },
+    {
+        url: "https://brz-maps.dwd.de/geoserver/dwd/wms",
+        layer: "dwd:Radar_rv_product_1x1km_ger",
+        queryLayer: "dwd:Radar_rv_product_1x1km_ger"
+    }
+];
 
     let data = null;
-    for (let baseUrl of urls) {
+    for (let entry of urls) {
         try {
-            const url = new URL(baseUrl);
+            const url = new URL(entry.url);
             url.searchParams.set("SERVICE", "WMS");
             url.searchParams.set("VERSION", "1.1.1");
             url.searchParams.set("REQUEST", "GetFeatureInfo");
-            url.searchParams.set("LAYERS", "dwd:Niederschlagsradar");
-            url.searchParams.set("QUERY_LAYERS", "dwd:Niederschlagsradar");
+            url.searchParams.set("LAYERS", entry.layer);
+            url.searchParams.set("QUERY_LAYERS", entry.queryLayer);
             url.searchParams.set("STYLES", "");
             url.searchParams.set("BBOX", bbox);
             url.searchParams.set("FEATURE_COUNT", "1");
@@ -84,20 +92,20 @@ async function getRainForecast(lat, lng) {
             url.searchParams.set("X", "0");
             url.searchParams.set("Y", "0");
             url.searchParams.set("TIME", timeList.join(","));
-
+    
             const res = await fetch(url.toString());
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             data = await res.json();
             break; // erfolgreich, Schleife abbrechen
         } catch (err) {
-            console.warn(`Fetch von ${baseUrl} fehlgeschlagen:`, err.message);
-            // nächster URL wird probiert
+            console.warn(`Fetch von ${entry.url} fehlgeschlagen:`, err.message);
         }
     }
-
+    
     if (!data) {
         throw new Error("Keine DWD-Daten verfügbar (beide URLs failed)");
     }
+
 
     (data.features || []).forEach((f, i) => {
         const raw = parseFloat(f.properties.RV_ANALYSIS) || 0;
