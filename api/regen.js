@@ -65,7 +65,7 @@ async function getRainForecast(lat, lng) {
     // --------- 2. EIN Request an den DWD ----------
     const url = new URL("https://brz-maps.dwd.de/geoserver/dwd/wms");
     url.searchParams.set("SERVICE", "WMS");
-    url.searchParams.set("VERSION", "1.1.1");
+    url.searchParams.set("VERSION", "1.1.0");
     url.searchParams.set("REQUEST", "GetFeatureInfo");
     url.searchParams.set("LAYERS", "dwd:Radar_rv_product_1x1km_ger");
     url.searchParams.set("QUERY_LAYERS", "dwd:Radar_rv_product_1x1km_ger");
