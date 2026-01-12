@@ -61,7 +61,7 @@ async function getRainForecast(lat, lng) {
     }
 
     const urls = [
-        "https://maps.dwd.de/geoserver/dwd/wms",
+        "https://maps.dwd3.de/geoserver/dwd/wms",
         "https://brz-maps.dwd.de/geoserver/dwd/wms" // fallback
     ];
 
