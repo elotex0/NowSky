@@ -1,5 +1,4 @@
 // /api/rain.js
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // 🔥 TLS ignorieren
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -63,7 +62,7 @@ async function getRainForecast(lat, lng) {
     }
 
     // Build URL
-    const url = new URL('https://brz-maps.dwd.de/geoserver/dwd/wms');
+    const url = new URL('https://brz-maps.dwd.de/geoproxy');
     url.searchParams.set('SERVICE', 'WMS');
     url.searchParams.set('VERSION', '1.1.1');
     url.searchParams.set('REQUEST', 'GetFeatureInfo');
