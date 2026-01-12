@@ -1,5 +1,6 @@
 // /api/rain.js
-
+import https from 'https';
+const agent = new https.Agent({ rejectUnauthorized: false });
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -84,7 +85,7 @@ async function getRainForecast(lat, lng) {
     console.log("Fetching BRZ rain forecast from URL:");
     console.log(url.toString());
 
-    const res = await fetch(url.toString());
+    const res = await fetch(url.toString(), { agent });
     const data = await res.json();
 
     console.log(`Fetched ${data.features?.length || 0} features from BRZ`);
