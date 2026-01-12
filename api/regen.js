@@ -127,7 +127,7 @@ async function getRainForecast(lat, lng) {
     }
 
     if (rainForecastData.results.length >= 2) {
-        const interp = buildPerMinuteForecast(rainForecastData.results, offsetMinutes, baseTime);
+        const interp = buildPerMinuteForecast(rainForecastData.results, offsetMinutes, now);
         rainForecastData.perMinute = interp.values;
         rainForecastData.perMinuteTimes = interp.times;
     }
