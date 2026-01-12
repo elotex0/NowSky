@@ -69,7 +69,6 @@ async function getRainForecast(lat, lng) {
     url.searchParams.set("REQUEST", "GetFeatureInfo");
     url.searchParams.set("LAYERS", "dwd:Radar_rv_product_1x1km_ger");
     url.searchParams.set("QUERY_LAYERS", "dwd:Radar_rv_product_1x1km_ger");
-    url.searchParams.set("STYLES", "");
     url.searchParams.set("BBOX", bbox);
     url.searchParams.set("FEATURE_COUNT", "1");
     url.searchParams.set("HEIGHT", "1");
