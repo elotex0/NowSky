@@ -62,7 +62,7 @@ async function getRainForecast(lat, lng) {
 
     const urls = [
     {
-        url: "https://maps.dwd3.de/geoserver/dwd/wms",
+        url: "https://maps.dwd.de/geoserver/dwd/wms",
         layer: "dwd:Niederschlagsradar",
         queryLayer: "dwd:Niederschlagsradar"
     },
