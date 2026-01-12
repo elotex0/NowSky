@@ -82,8 +82,13 @@ async function getRainForecast(lat, lng) {
     // WICHTIG: mehrere Zeiten, durch Komma getrennt = 1 Request
     url.searchParams.set("TIME", timeList.join(","));
 
+    console.log("Fetching BRZ rain forecast from URL:");
+    console.log(url.toString());
+
     const res = await fetch(url.toString());
     const data = await res.json();
+
+    console.log(`Fetched ${data.features?.length || 0} features from BRZ`);
 
     // --------- 3. Werte extrahieren ----------
     // Die Antwort enthält features[] pro Zeitscheibe
