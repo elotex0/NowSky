@@ -49,12 +49,12 @@ async function getRainForecast(lat, lng) {
     const delta = 0.001; // ~100–200m
     const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
 
-    // Wir nehmen fix die gewünschte Zeit: 2026-01-12 20:15 bis 20:45
-    const baseTime = new Date('2026-01-12T20:15:00Z');
+    
     const timeList = [];
     const timeObjects = [];
-    for (let i = 0; i <= 6; i++) {
-        const t = new Date(baseTime.getTime() + i * 5 * 60 * 1000);
+
+    for (let i = 0; i < 13; i++) {
+        const t = new Date(now.getTime() + i * 5 * 60 * 1000);
         timeList.push(t.toISOString());
         timeObjects.push(t);
     }
