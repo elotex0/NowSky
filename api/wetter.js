@@ -7,15 +7,15 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
-
+https://api.brightsky.dev/weather?date=2026-01-12&lat=49.4568&lon=8.45877'
   const { lat, lon } = req.query;
-  const max_dist = 20000; // always fixed
+  const date = new Date().toISOString().split('T')[0];
 
   if (!lat || !lon) {
     return res.status(400).json({ error: "lat und lon sind erforderlich" });
   }
 
-  const url = `https://api.brightsky.dev/current_weather?lat=${lat}&lon=${lon}&max_dist=${max_dist}`;
+  const url = `https://api.brightsky.dev/weather?lat=${lat}&lon=${lon}&data=${date}`;
 
   try {
     const response = await fetch(url);
