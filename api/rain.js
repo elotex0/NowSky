@@ -54,7 +54,7 @@ async function getRainForecast(lat, lng) {
 
     const timeList = [];
     const timeObjects = [];
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 13; i++) {
         const t = new Date(now.getTime() + i * 5 * 60 * 1000);
         timeList.push(t.toISOString());
         timeObjects.push(t);
@@ -124,7 +124,7 @@ async function getRainForecast(lat, lng) {
         const minuteTimes = [];
         let pos = startOffsetMinutes;
 
-        for (let m = 0; m <= 120; m++) {
+        for (let m = 0; m <= 60; m++) {
             const segIndex = Math.floor(pos / 5);
             let value = 0;
 
