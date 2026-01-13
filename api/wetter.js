@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  // CORS Header
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -15,47 +14,41 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "lat und lon sind erforderlich" });
   }
 
-  const url = `https://api.brightsky.dev/weather?lat=${lat}&lon=${lon}&data=${date}`;
+  const url = `https://api.brightsky.dev/weather?lat=${lat}&lon=${lon}&date=${date}`;
 
   try {
     const response = await fetch(url);
     const json = await response.json();
 
-    const weather = json.weather;
+    const weatherArray = json.weather;
     const sources = json.sources;
 
-    // Hauptstation ermitteln
-    const station = sources.find(s => s.id === weather.source_id);
-
-    if (!station) {
-      return res.status(404).json({ error: "Keine Station gefunden" });
+    if (!weatherArray || weatherArray.length === 0) {
+      return res.status(404).json({ error: "Keine Wetterdaten gefunden" });
     }
 
-    // gewünschte Werte extrahieren
-    const result = {
-      id: station.id,
-      dwd_station_id: station.dwd_station_id,
-      station_name: station.station_name,
-      observation_type: station.observation_type,
-      lat: station.lat,
-      lon: station.lon,
-      height: station.height,
-      wmo_station_id: station.wmo_station_id,
-      distance: station.distance,
-      first_record: station.first_record,
-      last_record: station.last_record,
-      data: {
-        timestamp: weather.timestamp,
-        temperature: weather.temperature,                   // °C
-        wind_gust_speed_10: weather.wind_gust_speed_10,     // km/h
-        precipitation_60: weather.precipitation_60,         // mm/h
-        visibility: weather.visibility,                     // m
-        relative_humidity: weather.relative_humidity,        // %
-        pressure_msl: weather.pressure_msl
-      }
-    };
+    // Hauptstation ermitteln (über den ersten Eintrag)
+    const mainSourceId = weatherArray[0].source_id;
+    const station = sources.find(s => s.id === mainSourceId);
 
-    return res.status(200).json(result);
+    // Daten pro Timestamp aufbereiten
+    const data = weatherArray.map(w => ({
+      timestamp: w.timestamp,
+      temperature: w.temperature,
+      wind_speed: w.wind_speed,
+      wind_gust_speed: w.wind_gust_speed,
+      precipitation: w.precipitation,
+      relative_humidity: w.relative_humidity,
+      visibility: w.visibility,
+      pressure_msl: w.pressure_msl,
+      condition: w.condition,
+      icon: w.icon
+    }));
+
+    return res.status(200).json({
+      station,
+      data
+    });
 
   } catch (err) {
     console.error("API Error:", err);
