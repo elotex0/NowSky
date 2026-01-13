@@ -11,15 +11,15 @@ export default async function handler(req, res) {
         return;
     }
 
-    const { lat, lng } = req.query;
+    const { lat, lon } = req.query;
 
-    if (!lat || !lng) {
-        res.status(400).json({ error: 'lat and lng are required' });
+    if (!lat || !lon) {
+        res.status(400).json({ error: 'Bitte Lat und Lon eingeben!' });
         return;
     }
 
     try {
-        const forecast = await getRainForecast(parseFloat(lat), parseFloat(lng));
+        const forecast = await getRainForecast(parseFloat(lat), parseFloat(lon));
         res.status(200).json(forecast);
     } catch (err) {
         console.error(err);
@@ -33,8 +33,8 @@ export default async function handler(req, res) {
 
 let rainForecastData = {};
 
-async function getRainForecast(lat, lng) {
-    if (!lat || !lng) return null;
+async function getRainForecast(lat, lon) {
+    if (!lat || !lon) return null;
 
     rainForecastData = {
         results: [],
@@ -47,7 +47,7 @@ async function getRainForecast(lat, lng) {
     };
 
     const delta = 0.001;
-    const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
+    const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
 
     const now = new Date();
     now.setMinutes(Math.floor(now.getMinutes() / 5) * 5, 0, 0);
