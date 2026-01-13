@@ -7,7 +7,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
-https://api.brightsky.dev/weather?date=2026-01-12&lat=49.4568&lon=8.45877'
+
   const { lat, lon } = req.query;
   const date = new Date().toISOString().split('T')[0];
 
