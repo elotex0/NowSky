@@ -124,7 +124,7 @@ async function getRainForecast(lat, lng) {
         const minuteTimes = [];
         let pos = startOffsetMinutes;
 
-        for (let m = 0; m <= 60; m++) {
+        for (let m = 0; m <= 120; m++) {
             const segIndex = Math.floor(pos / 5);
             let value = 0;
 
