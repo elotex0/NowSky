@@ -1,0 +1,73 @@
+// /api/hitzetrend.js
+import fetch from "node-fetch";
+
+export default async function handler(req, res) {
+  const { lat, lon } = req.query;
+  if (!lat || !lon) {
+    return res.status(400).json({ error: "lat und lon müssen angegeben werden" });
+  }
+
+  const latNum = parseFloat(lat);
+  const lonNum = parseFloat(lon);
+
+  try {
+    // ----------------------------
+    // 1️⃣ Reverse Geocoding über Nominatim
+    // ----------------------------
+    const nominatimUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latNum}&lon=${lonNum}&addressdetails=1`;
+    const geoRes = await fetch(nominatimUrl, {
+      headers: { "User-Agent": "Vercel-Hitzetrend-App/1.0" }
+    });
+    if (!geoRes.ok) throw new Error("Nominatim konnte den Ort nicht finden");
+
+    const geoData = await geoRes.json();
+    const { county, state } = geoData.address;
+
+    if (!county) {
+      return res.status(404).json({ error: "Kein Landkreis gefunden" });
+    }
+
+    // ----------------------------
+    // 2️⃣ DWD JSON live abrufen
+    // ----------------------------
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const dwdUrl = `https://opendata.dwd.de/climate_environment/health/forecasts/heat/hwtrend_${today}.json`;
+
+    const dwdRes = await fetch(dwdUrl);
+    if (!dwdRes.ok) throw new Error("DWD Heat Trend konnte nicht geladen werden");
+    const dwdData = await dwdRes.json();
+
+    // ----------------------------
+    // 3️⃣ Kreis im DWD JSON finden
+    // ----------------------------
+    let trend = null;
+    let codeFound = null;
+
+    for (const code in dwdData) {
+      const info = dwdData[code];
+      if (info.Name.includes(county)) {
+        trend = info.Trend;
+        codeFound = code;
+        break;
+      }
+    }
+
+    if (!trend) {
+      return res.status(404).json({ error: "Kein Heat Trend für den Kreis gefunden", county });
+    }
+
+    // ----------------------------
+    // 4️⃣ Ergebnis zurückgeben
+    // ----------------------------
+    res.status(200).json({
+      code: codeFound,
+      county,
+      state,
+      trend
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+}
