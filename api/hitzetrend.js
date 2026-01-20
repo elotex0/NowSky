@@ -12,75 +12,70 @@ const trendDescriptions = {
   7: "Hitzetrendvorhersage aktiv; Warnung Stufe 2 wahrscheinlich"
 };
 
+// Optional: DWD JSON pro warm Function speichern
+let dwdCache = null;
+let cachedDay = null;
+
+async function getDWDJson() {
+  const todayStr = new Date().toISOString().slice(0,10).replace(/-/g,"");
+  if (dwdCache && cachedDay === todayStr) return dwdCache;
+
+  const url = `https://opendata.dwd.de/climate_environment/health/forecasts/heat/hwtrend_${todayStr}.json`;
+  const res = await fetch(url);
+  const data = await res.json();
+  dwdCache = data;
+  cachedDay = todayStr;
+  return data;
+}
+
 export default async function handler(req, res) {
   const { lat, lon } = req.query;
   if (!lat || !lon) return res.status(400).json({ error: "lat & lon required" });
 
-  try {
-    const latNum = parseFloat(lat);
-    const lonNum = parseFloat(lon);
+  const latNum = parseFloat(lat);
+  const lonNum = parseFloat(lon);
 
-    // ----------------------------
-    // 1️⃣ Reverse-Geocoding für COUNTY
-    // ----------------------------
-    const nominatimUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latNum}&lon=${lonNum}&addressdetails=1&zoom=10`;
-    const geoRes = await fetch(nominatimUrl, {
-      headers: { "User-Agent": "Vercel-Hitzetrend-App/1.0" }
-    });
-    if (!geoRes.ok) throw new Error("Nominatim konnte den Ort nicht finden");
+  try {
+    // Reverse-Geocoding Nominatim
+    const nomUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latNum}&lon=${lonNum}&addressdetails=1&zoom=10`;
+    const geoRes = await fetch(nomUrl, { headers: { "User-Agent": "Vercel-Hitzetrend-App/1.0" } });
     const geoData = await geoRes.json();
     const county = geoData.address.county;
-    const state = geoData.address.state;
-    if (!county) return res.status(404).json({ error: "Kein Kreis (county) gefunden" });
+    const state = geoData.address.state || "";
+    if (!county) return res.status(404).json({ error: "Kein Kreis gefunden" });
 
-    // ----------------------------
-    // 2️⃣ DWD JSON abrufen
-    // ----------------------------
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g,""); // YYYYMMDD
-    const dwdUrl = `https://opendata.dwd.de/climate_environment/health/forecasts/heat/hwtrend_${dateStr}.json`;
-    const dwdRes = await fetch(dwdUrl);
-    if (!dwdRes.ok) throw new Error("DWD JSON konnte nicht geladen werden");
-    const dwdData = await dwdRes.json();
+    // DWD JSON abrufen (optional warm cache)
+    const dwdData = await getDWDJson();
 
-    // ----------------------------
-    // 3️⃣ Kreis im DWD JSON finden
-    // ----------------------------
-    let trendArray = null;
+    // Kreis suchen
+    let trendArr = null;
     let codeFound = null;
     for (const code in dwdData) {
-      const info = dwdData[code];
-      if (info.Name.includes(county)) {
-        trendArray = info.Trend;
+      if (dwdData[code].Name.includes(county)) {
+        trendArr = dwdData[code].Trend;
         codeFound = code;
         break;
       }
     }
+    if (!trendArr) return res.status(404).json({ error: "Kein Heat Trend für den Kreis gefunden", county });
 
-    if (!trendArray) return res.status(404).json({ error: "Kein Heat Trend für den Kreis gefunden", county });
-
-    // ----------------------------
-    // 4️⃣ Trend-Array in Zeitreihe umwandeln
-    // ----------------------------
-    const trendWithDates = trendArray.map((value, idx) => {
-      const date = new Date(today);
-      date.setDate(date.getDate() + idx);
-      const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
+    // Trend + Datum map
+    const today = new Date();
+    const trends = trendArr.map((value, idx) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() + idx);
       return {
-        date: dateStr,
+        date: d.toISOString().slice(0,10),
         trend: value,
         description: trendDescriptions[value] || "unbekannter Trendwert"
       };
     });
 
-    // ----------------------------
-    // 5️⃣ Ergebnis zurückgeben
-    // ----------------------------
     res.status(200).json({
       code: codeFound,
       county,
       state,
-      trends: trendWithDates
+      trends
     });
 
   } catch(err) {
