@@ -27,20 +27,22 @@ export default async function handler(req, res) {
 }
 
 // -----------------------------------------------------------
-// BrightSky Version MIT FIX: Vergangenheit raus
+// BrightSky Version MIT FIX: letzter Block + ETA/Alarm
 // -----------------------------------------------------------
 
 let rainForecastData = {};
 
 async function getRainForecast(lat, lon) {
     rainForecastData = {
-        results: [],        // mm/h pro 5 Minuten (nur Zukunft)
-        times: [],          // Zeitobjekte der 5-Minuten-Schritte (nur Zukunft)
+        results: [],        // mm/h pro 5 Minuten
+        times: [],          // Zeitobjekte der 5-Minuten-Schritte
         startRain: null,
         endRain: null,
         durationMinutes: 0,
         perMinute: [],      // per minute mm/h
-        perMinuteTimes: []
+        perMinuteTimes: [],
+        rainInMinutes: null,        // ETA bis Regen
+        rainDurationMinutes: null   // Dauer des Regenblocks
     };
 
     const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lon}&distance=1&format=plain`;
@@ -53,27 +55,44 @@ async function getRainForecast(lat, lon) {
     }
 
     const now = new Date();
+    let lastPast = null;
 
-    // --- 1️⃣ Nur Zukunftswerte übernehmen ---
+    // --- 1️⃣ Ergebnisse vorbereiten, letzter Block vor jetzt noch einfügen ---
     for (let item of data.radar) {
         const timestamp = new Date(item.timestamp);
-        if (timestamp < now) continue; // Vergangenheit ignorieren
 
-        const val = item.precipitation_5?.[0]?.[0] || 0; // 1x1 Raster
-        const mmh = (val / 100) * 12; // mm/h
+        if (timestamp <= now) {
+            lastPast = item; // letzten Block merken
+        } else {
+            // letzten vergangene Block einmal einfügen
+            if (lastPast) {
+                const valPast = lastPast.precipitation_5?.[0]?.[0] || 0;
+                const mmhPast = (valPast / 100) * 12;
+                rainForecastData.results.push(mmhPast);
+                rainForecastData.times.push(new Date(lastPast.timestamp));
+                lastPast = null; // nur einmal einfügen
+            }
 
-        rainForecastData.results.push(mmh);
-        rainForecastData.times.push(timestamp);
+            const val = item.precipitation_5?.[0]?.[0] || 0;
+            const mmh = (val / 100) * 12;
+            rainForecastData.results.push(mmh);
+            rainForecastData.times.push(timestamp);
+        }
     }
 
-    if (rainForecastData.results.length === 0) {
-        // Kein Regen in Zukunft
-        return rainForecastData;
+    // Falls alle Blöcke in der Vergangenheit, letzten trotzdem einfügen
+    if (rainForecastData.results.length === 0 && lastPast) {
+        const valPast = lastPast.precipitation_5?.[0]?.[0] || 0;
+        const mmhPast = (valPast / 100) * 12;
+        rainForecastData.results.push(mmhPast);
+        rainForecastData.times.push(new Date(lastPast.timestamp));
     }
+
+    if (rainForecastData.results.length === 0) return rainForecastData;
 
     // --- 2️⃣ Per-minute Interpolation ---
-    const firstTimestamp = rainForecastData.times[0]; // ab jetzt
-    const offsetMinutes = 0; // starten direkt ab firstTimestamp
+    const firstTimestamp = rainForecastData.times[0];
+    const offsetMinutes = 0; // starten direkt ab dem ersten Block
 
     function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
         const minuteValues = [];
@@ -106,35 +125,39 @@ async function getRainForecast(lat, lon) {
         rainForecastData.perMinuteTimes = interp.times;
     }
 
-    // --- 3️⃣ Start & Ende des Regens berechnen ---
+    // --- 3️⃣ Start & Ende des Regens + ETA/Alarm ---
     const filtered = rainForecastData.perMinuteTimes
-        .map((t, i) => ({ t, v: rainForecastData.perMinute[i] }))
-        .filter(x => x.t >= now);
+        .map((t, i) => ({ t, v: rainForecastData.perMinute[i] }));
 
-    if (filtered.length === 0) {
+    const nowMinutes = new Date();
+
+    const startIdx = filtered.findIndex(x => x.v > 0);
+
+    if (startIdx === -1) {
+        // kein Regen
         rainForecastData.startRain = null;
         rainForecastData.endRain = null;
         rainForecastData.durationMinutes = 0;
+        rainForecastData.rainInMinutes = null;
+        rainForecastData.rainDurationMinutes = null;
     } else {
-        const startIdx = filtered.findIndex(x => x.v > 0);
+        const start = filtered[startIdx];
+        let end = start;
 
-        if (startIdx === -1) {
-            rainForecastData.startRain = null;
-            rainForecastData.endRain = null;
-            rainForecastData.durationMinutes = 0;
-        } else {
-            const start = filtered[startIdx];
-            let end = start;
-
-            for (let i = startIdx + 1; i < filtered.length; i++) {
-                if (filtered[i].v > 0) end = filtered[i];
-                else break;
-            }
-
-            rainForecastData.startRain = start.t;
-            rainForecastData.endRain = end.t;
-            rainForecastData.durationMinutes = Math.round((end.t - start.t) / 60000);
+        for (let i = startIdx + 1; i < filtered.length; i++) {
+            if (filtered[i].v > 0) end = filtered[i];
+            else break;
         }
+
+        rainForecastData.startRain = start.t;
+        rainForecastData.endRain = end.t;
+        rainForecastData.durationMinutes = Math.round((end.t - start.t) / 60000);
+
+        // ETA: Minuten bis Regen von jetzt
+        rainForecastData.rainInMinutes = Math.max(0, Math.round((start.t - nowMinutes) / 60000));
+
+        // Dauer des Regenblocks
+        rainForecastData.rainDurationMinutes = rainForecastData.durationMinutes;
     }
 
     return rainForecastData;
