@@ -28,7 +28,7 @@ export default async function handler(req, res) {
 
 
 // -----------------------------------------------------------
-// EIN REQUEST BrightSky Version
+// EIN REQUEST BrightSky Version MIT FIX
 // -----------------------------------------------------------
 
 let rainForecastData = {};
@@ -39,7 +39,7 @@ async function getRainForecast(lat, lon) {
         times: [],          // Zeitobjekte der 5-Minuten-Steps
         startRain: null,
         endRain: null,
-        duration: 0,
+        durationMinutes: 0,
         perMinute: [],      // per minute mm/h
         perMinuteTimes: []
     };
@@ -54,11 +54,6 @@ async function getRainForecast(lat, lon) {
         throw new Error("Keine Radardaten gefunden");
     }
 
-    // BrightSky Werte:
-    // precipitation_5 = HUNDERTSTEL-mm / 5 Minuten
-    // → Umrechnung: value(plain) / 100 mm in 5 Minuten
-    // → mm/h = (value / 100) * 12
-
     const timeObjects = [];
 
     for (let item of data.radar) {
@@ -70,12 +65,10 @@ async function getRainForecast(lat, lon) {
         timeObjects.push(new Date(item.timestamp));
     }
 
-
     // -------- Per-minute Interpolation ----------
     const realNow = new Date();
     const firstTimestamp = timeObjects[0];
 
-    // Abstand zwischen realNow und dem ersten 5-min Block in Minuten
     const diffMs = realNow - firstTimestamp;
     const offsetMinutes = diffMs / 60000;
 
@@ -110,20 +103,36 @@ async function getRainForecast(lat, lon) {
         rainForecastData.perMinuteTimes = interp.times;
     }
 
-    // -------- Start & Ende des Regens ----------
-    if (rainForecastData.perMinute.length > 0) {
-        const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
+    // --- FIX: Vergangenheit ignorieren und Start/Ende korrekt berechnen ---
+    const now = new Date();
 
-        if (startIdx !== -1) {
-            let endIdx = startIdx;
-            for (let i = startIdx; i < rainForecastData.perMinute.length; i++) {
-                if (rainForecastData.perMinute[i] > 0) endIdx = i;
+    const filtered = rainForecastData.perMinuteTimes
+        .map((t, i) => ({ t, v: rainForecastData.perMinute[i] }))
+        .filter(x => x.t >= now);
+
+    if (filtered.length === 0) {
+        rainForecastData.startRain = null;
+        rainForecastData.endRain = null;
+        rainForecastData.durationMinutes = 0;
+    } else {
+        const startIdx = filtered.findIndex(x => x.v > 0);
+
+        if (startIdx === -1) {
+            rainForecastData.startRain = null;
+            rainForecastData.endRain = null;
+            rainForecastData.durationMinutes = 0;
+        } else {
+            const start = filtered[startIdx];
+
+            let end = start;
+            for (let i = startIdx + 1; i < filtered.length; i++) {
+                if (filtered[i].v > 0) end = filtered[i];
                 else break;
             }
 
-            rainForecastData.startRain = rainForecastData.perMinuteTimes[startIdx];
-            rainForecastData.endRain = rainForecastData.perMinuteTimes[endIdx];
-            rainForecastData.duration = endIdx - startIdx + 1;
+            rainForecastData.startRain = start.t;
+            rainForecastData.endRain = end.t;
+            rainForecastData.durationMinutes = Math.round((end.t - start.t) / 60000);
         }
     }
 
