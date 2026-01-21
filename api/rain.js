@@ -108,7 +108,7 @@ async function getRainForecast(lat, lon) {
 
     (data.features || []).forEach((f, i) => {
         const raw = parseFloat(f.properties.RV_ANALYSIS) || 0;
-        const mmh = raw * 12;
+        const mmh = Math.max(0, raw * 12);
 
         rainForecastData.results.push(mmh);
         rainForecastData.times.push(timeObjects[i]);
@@ -134,7 +134,7 @@ async function getRainForecast(lat, lon) {
                 const left = results[segIndex] || 0;
                 const right = results[segIndex + 1] || 0;
                 const frac = (pos - segIndex * 5) / 5;
-                value = left + (right - left) * frac;
+                value = Math.max (0, left + (right - left) * frac);
             }
 
             minuteValues.push(value);
