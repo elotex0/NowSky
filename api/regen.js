@@ -26,17 +26,16 @@ export default async function handler(req, res) {
     }
 }
 
-
 // -----------------------------------------------------------
-// EIN REQUEST BrightSky Version MIT FIX
+// BrightSky Version MIT FIX: Vergangenheit raus
 // -----------------------------------------------------------
 
 let rainForecastData = {};
 
 async function getRainForecast(lat, lon) {
     rainForecastData = {
-        results: [],        // mm/h pro 5 Minuten
-        times: [],          // Zeitobjekte der 5-Minuten-Steps
+        results: [],        // mm/h pro 5 Minuten (nur Zukunft)
+        times: [],          // Zeitobjekte der 5-Minuten-Schritte (nur Zukunft)
         startRain: null,
         endRain: null,
         durationMinutes: 0,
@@ -44,7 +43,6 @@ async function getRainForecast(lat, lon) {
         perMinuteTimes: []
     };
 
-    // BrightSky liefert alle Radar timestamps automatisch
     const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lon}&distance=1&format=plain`;
     const res = await fetch(url);
     if (!res.ok) throw new Error("BrightSky Radar fetch failed");
@@ -54,22 +52,28 @@ async function getRainForecast(lat, lon) {
         throw new Error("Keine Radardaten gefunden");
     }
 
-    const timeObjects = [];
+    const now = new Date();
 
+    // --- 1️⃣ Nur Zukunftswerte übernehmen ---
     for (let item of data.radar) {
-        const val = item.precipitation_5?.[0]?.[0] || 0; // 1x1 raster
+        const timestamp = new Date(item.timestamp);
+        if (timestamp < now) continue; // Vergangenheit ignorieren
+
+        const val = item.precipitation_5?.[0]?.[0] || 0; // 1x1 Raster
         const mmh = (val / 100) * 12; // mm/h
 
         rainForecastData.results.push(mmh);
-        rainForecastData.times.push(new Date(item.timestamp));
-        timeObjects.push(new Date(item.timestamp));
+        rainForecastData.times.push(timestamp);
     }
 
-    // -------- Per-minute Interpolation ----------
-    const realNow = new Date();
-    // Runden auf nächste 5-Minuten-Marke
-    const firstTimestamp = new Date(Math.ceil(realNow.getTime() / (5*60*1000)) * 5*60*1000);
-    const offsetMinutes = 0; // wir starten die Interpolation direkt ab jetzt
+    if (rainForecastData.results.length === 0) {
+        // Kein Regen in Zukunft
+        return rainForecastData;
+    }
+
+    // --- 2️⃣ Per-minute Interpolation ---
+    const firstTimestamp = rainForecastData.times[0]; // ab jetzt
+    const offsetMinutes = 0; // starten direkt ab firstTimestamp
 
     function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
         const minuteValues = [];
@@ -102,9 +106,7 @@ async function getRainForecast(lat, lon) {
         rainForecastData.perMinuteTimes = interp.times;
     }
 
-    // --- FIX: Vergangenheit ignorieren und Start/Ende korrekt berechnen ---
-    const now = new Date();
-
+    // --- 3️⃣ Start & Ende des Regens berechnen ---
     const filtered = rainForecastData.perMinuteTimes
         .map((t, i) => ({ t, v: rainForecastData.perMinute[i] }))
         .filter(x => x.t >= now);
@@ -122,8 +124,8 @@ async function getRainForecast(lat, lon) {
             rainForecastData.durationMinutes = 0;
         } else {
             const start = filtered[startIdx];
-
             let end = start;
+
             for (let i = startIdx + 1; i < filtered.length; i++) {
                 if (filtered[i].v > 0) end = filtered[i];
                 else break;
