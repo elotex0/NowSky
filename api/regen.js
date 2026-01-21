@@ -67,10 +67,9 @@ async function getRainForecast(lat, lon) {
 
     // -------- Per-minute Interpolation ----------
     const realNow = new Date();
-    const firstTimestamp = timeObjects[0];
-
-    const diffMs = realNow - firstTimestamp;
-    const offsetMinutes = diffMs / 60000;
+    // Runden auf nächste 5-Minuten-Marke
+    const firstTimestamp = new Date(Math.ceil(realNow.getTime() / (5*60*1000)) * 5*60*1000);
+    const offsetMinutes = 0; // wir starten die Interpolation direkt ab jetzt
 
     function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
         const minuteValues = [];
