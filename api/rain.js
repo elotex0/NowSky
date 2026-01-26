@@ -1,5 +1,5 @@
 // /api/rain.js
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // 🔥 TLS ignorieren
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -27,25 +27,16 @@ export default async function handler(req, res) {
     }
 }
 
-// ======================================================================
-// MAIN
-// ======================================================================
+// -----------------------------------------------------------
+// EIN REQUEST Version
+// -----------------------------------------------------------
+
+let rainForecastData = {};
 
 async function getRainForecast(lat, lon) {
-    try {
-        return await getFromDwdWms(lat, lon);
-    } catch (e) {
-        console.warn("DWD WMS failed → BrightSky fallback");
-        return await getFromBrightSky(lat, lon);
-    }
-}
+    if (!lat || !lon) return null;
 
-// ======================================================================
-// 1️⃣ DWD WMS API
-// ======================================================================
-
-async function getFromDwdWms(lat, lon) {
-    let rainForecastData = {
+    rainForecastData = {
         results: [],
         times: [],
         startRain: null,
@@ -69,227 +60,113 @@ async function getFromDwdWms(lat, lon) {
         timeObjects.push(t);
     }
 
-    const url = new URL("https://maps.dwd.de/geoserver/dwd/wms");
-    url.searchParams.set("SERVICE", "WMS");
-    url.searchParams.set("VERSION", "1.1.1");
-    url.searchParams.set("REQUEST", "GetFeatureInfo");
-    url.searchParams.set("LAYERS", "dwd:Niederschlagsradar");
-    url.searchParams.set("QUERY_LAYERS", "dwd:Niederschlagsradar");
-    url.searchParams.set("BBOX", bbox);
-    url.searchParams.set("FEATURE_COUNT", "1");
-    url.searchParams.set("HEIGHT", "1");
-    url.searchParams.set("WIDTH", "1");
-    url.searchParams.set("INFO_FORMAT", "application/json");
-    url.searchParams.set("SRS", "EPSG:4326");
-    url.searchParams.set("X", "0");
-    url.searchParams.set("Y", "0");
-    url.searchParams.set("TIME", timeList.join(","));
+    const urls = [
+    {
+        url: "https://maps.dwd.de/geoserver/dwd/wms",
+        layer: "dwd:Niederschlagsradar",
+        queryLayer: "dwd:Niederschlagsradar"
+    },
+    {
+        url: "https://brz-maps.dwd.de/geoserver/dwd/wms",
+        layer: "dwd:Radar_rv_product_1x1km_ger",
+        queryLayer: "dwd:Radar_rv_product_1x1km_ger"
+    }
+];
 
-    const res = await fetch(url.toString());
-    if (!res.ok) throw new Error(`DWD HTTP ${res.status}`);
+    let data = null;
+    for (let entry of urls) {
+        try {
+            const url = new URL(entry.url);
+            url.searchParams.set("SERVICE", "WMS");
+            url.searchParams.set("VERSION", "1.1.1");
+            url.searchParams.set("REQUEST", "GetFeatureInfo");
+            url.searchParams.set("LAYERS", entry.layer);
+            url.searchParams.set("QUERY_LAYERS", entry.queryLayer);
+            url.searchParams.set("BBOX", bbox);
+            url.searchParams.set("FEATURE_COUNT", "1");
+            url.searchParams.set("HEIGHT", "1");
+            url.searchParams.set("WIDTH", "1");
+            url.searchParams.set("INFO_FORMAT", "application/json");
+            url.searchParams.set("SRS", "EPSG:4326");
+            url.searchParams.set("X", "0");
+            url.searchParams.set("Y", "0");
+            url.searchParams.set("TIME", timeList.join(","));
+    
+            const res = await fetch(url.toString());
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            data = await res.json();
+            break; // erfolgreich, Schleife abbrechen
+        } catch (err) {
+            console.warn(`Fetch von ${entry.url} fehlgeschlagen:`, err.message);
+        }
+    }
+    
+    if (!data) {
+        throw new Error("Keine DWD-Daten verfügbar (beide URLs failed)");
+    }
 
-    const data = await res.json();
-    if (!data || !data.features) throw new Error("DWD JSON leer");
 
-    data.features.forEach((f, i) => {
+    (data.features || []).forEach((f, i) => {
         const raw = parseFloat(f.properties.RV_ANALYSIS) || 0;
         const mmh = Math.max(0, raw * 12);
+
         rainForecastData.results.push(mmh);
         rainForecastData.times.push(timeObjects[i]);
     });
 
-    buildMinuteForecast(rainForecastData);
-
-    return rainForecastData;
-}
-
-// ======================================================================
-// 2️⃣ BrightSky Fallback
-// ======================================================================
-
-async function getFromBrightSky(lat, lon) {
-    let rainForecastData = {
-        results: [],
-        times: [],
-        perMinute: [],
-        perMinuteTimes: [],
-        startRain: null,
-        endRain: null,
-        duration: 0
-    };
-
-    const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lon}&distance=1&format=plain`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("BrightSky Radar fetch failed");
-
-    const data = await res.json();
-    if (!data.radar || data.radar.length === 0) throw new Error("BrightSky keine Radardaten");
-
-    const now = new Date();
-    let lastPast = null;
-
-    for (let item of data.radar) {
-        const timestamp = new Date(item.timestamp);
-
-        if (timestamp <= now) {
-            lastPast = item;
-        } else {
-            if (lastPast) {
-                const valPast = lastPast.precipitation_5?.[0]?.[0] || 0;
-                const mmhPast = (valPast / 100) * 12;
-                rainForecastData.results.push(mmhPast);
-                rainForecastData.times.push(new Date(lastPast.timestamp));
-                lastPast = null;
-            }
-
-            const val = item.precipitation_5?.[0]?.[0] || 0;
-            const mmh = (val / 100) * 12;
-            rainForecastData.results.push(mmh);
-            rainForecastData.times.push(timestamp);
-        }
-    }
-
-    // Falls alles Vergangenheit war
-    if (rainForecastData.results.length === 0 && lastPast) {
-        const valPast = lastPast.precipitation_5?.[0]?.[0] || 0;
-        const mmhPast = (valPast / 100) * 12;
-        rainForecastData.results.push(mmhPast);
-        rainForecastData.times.push(new Date(lastPast.timestamp));
-    }
-
-    // Wenn nichts → zurückgeben
-    if (rainForecastData.results.length === 0) return rainForecastData;
-
-    // per minute Interpolation wie DWD
-    const startTime = rainForecastData.times[0];
-    const results = rainForecastData.results;
-    const minuteValues = [];
-    const minuteTimes = [];
-
-    for (let m = 0; m <= 60; m++) {
-        const pos = m;
-        const segIndex = Math.floor(pos / 5);
-        let value = 0;
-
-        if (segIndex >= results.length - 1) {
-            value = results[results.length - 1];
-        } else {
-            const left = results[segIndex];
-            const right = results[segIndex + 1];
-            const frac = (pos - segIndex * 5) / 5;
-            value = left + (right - left) * frac;
-        }
-
-        minuteValues.push(value);
-        minuteTimes.push(new Date(startTime.getTime() + pos * 60000));
-    }
-
-    rainForecastData.perMinute = minuteValues;
-    rainForecastData.perMinuteTimes = minuteTimes;
-
-    // Regenblock ermitteln -> wie DWD
-    const startIdx = minuteValues.findIndex(v => v > 0);
-
-    if (startIdx !== -1) {
-        let endIdx = startIdx;
-        for (let i = startIdx + 1; i < minuteValues.length; i++) {
-            if (minuteValues[i] > 0) endIdx = i;
-            else break;
-        }
-
-        rainForecastData.startRain = minuteTimes[startIdx];
-        rainForecastData.endRain = minuteTimes[endIdx];
-        rainForecastData.duration = endIdx - startIdx + 1;
-    }
-
-    return rainForecastData;
-}
-
-
-// ======================================================================
-// Minute Interpolation für DWD
-// ======================================================================
-
-function buildMinuteForecast(rain) {
+    // Per-minute Interpolation
     const realNow = new Date();
     const offsetSeconds = (realNow.getMinutes() % 5) * 60 + realNow.getSeconds();
     const offsetMinutes = offsetSeconds / 60;
 
-    const results = rain.results;
-    const startTime = rain.times[0];
+    function buildPerMinuteForecast(results, startOffsetMinutes, startTime) {
+        const minuteValues = [];
+        const minuteTimes = [];
+        let pos = startOffsetMinutes;
 
-    const minuteValues = [];
-    const minuteTimes = [];
+        for (let m = 0; m <= 60; m++) {
+            const segIndex = Math.floor(pos / 5);
+            let value = 0;
 
-    for (let m = 0; m <= 60; m++) {
-        const pos = offsetMinutes + m;
-        const segIndex = Math.floor(pos / 5);
-        let value = 0;
+            if (segIndex >= results.length - 1) {
+                value = results[results.length - 1] || 0;
+            } else {
+                const left = results[segIndex] || 0;
+                const right = results[segIndex + 1] || 0;
+                const frac = (pos - segIndex * 5) / 5;
+                value = Math.max (0, left + (right - left) * frac);
+            }
 
-        if (segIndex >= results.length - 1) {
-            value = results[results.length - 1] || 0;
-        } else {
-            const left = results[segIndex] || 0;
-            const right = results[segIndex + 1] || 0;
-            const frac = (pos - segIndex * 5) / 5;
-            value = Math.max(0, left + (right - left) * frac);
+            minuteValues.push(value);
+            minuteTimes.push(new Date(startTime.getTime() + pos * 60000));
+            pos += 1;
         }
 
-        minuteValues.push(value);
-        minuteTimes.push(new Date(startTime.getTime() + pos * 60000));
+        return { values: minuteValues, times: minuteTimes };
     }
 
-    rain.perMinute = minuteValues;
-    rain.perMinuteTimes = minuteTimes;
-}
+    if (rainForecastData.results.length >= 2) {
+        const interp = buildPerMinuteForecast(rainForecastData.results, offsetMinutes, now);
+        rainForecastData.perMinute = interp.values;
+        rainForecastData.perMinuteTimes = interp.times;
+    }
 
-// ======================================================================
-// Minute Interpolation + ETA für BrightSky
-// ======================================================================
+    // Start & Ende des Regens
+    if (rainForecastData.perMinute.length > 0) {
+        const startIdx = rainForecastData.perMinute.findIndex(v => v > 0);
 
-function buildMinuteForecastBrightSky(rain) {
-    if (rain.results.length < 1) return;
+        if (startIdx !== -1) {
+            let endIdx = startIdx;
+            for (let i = startIdx; i < rainForecastData.perMinute.length; i++) {
+                if (rainForecastData.perMinute[i] > 0) endIdx = i;
+                else break;
+            }
 
-    const startTime = rain.times[0];
-    const results = rain.results;
-
-    const minuteValues = [];
-    const minuteTimes = [];
-
-    for (let m = 0; m <= 60; m++) {
-        const pos = m;
-        const segIndex = Math.floor(pos / 5);
-
-        let value = 0;
-        if (segIndex >= results.length - 1) {
-            value = results[results.length - 1];
-        } else {
-            const left = results[segIndex];
-            const right = results[segIndex + 1];
-            const frac = (pos - segIndex * 5) / 5;
-            value = left + (right - left) * frac;
+            rainForecastData.startRain = rainForecastData.perMinuteTimes[startIdx];
+            rainForecastData.endRain = rainForecastData.perMinuteTimes[endIdx];
+            rainForecastData.duration = endIdx - startIdx + 1;
         }
-
-        minuteValues.push(value);
-        minuteTimes.push(new Date(startTime.getTime() + pos * 60000));
     }
 
-    rain.perMinute = minuteValues;
-    rain.perMinuteTimes = minuteTimes;
-
-    const now = new Date();
-    const filtered = minuteTimes.map((t, i) => ({ t, v: minuteValues[i] }));
-    const startIdx = filtered.findIndex(x => x.v > 0);
-
-    if (startIdx !== -1) {
-        let endIdx = startIdx;
-        for (let i = startIdx; i < filtered.length; i++) {
-            if (filtered[i].v > 0) endIdx = i; else break;
-        }
-
-        rain.startRain = filtered[startIdx].t;
-        rain.endRain = filtered[endIdx].t;
-        rain.rainDurationMinutes = endIdx - startIdx + 1;
-        rain.rainInMinutes = Math.max(0, Math.round((filtered[startIdx].t - now) / 60000));
-    }
+    return rainForecastData;
 }
