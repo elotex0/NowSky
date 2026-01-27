@@ -145,8 +145,10 @@ async function getFromBrightSky(lat, lon) {
         const timestamp = new Date(item.timestamp);
 
         if (timestamp <= now) {
+            // Merke dir das letzte Radarbild in der Vergangenheit
             lastPast = item;
         } else {
+            // Beim ersten Zukunftsbild: Vergangenheit mitnehmen (falls vorhanden)
             if (lastPast) {
                 const valPast = lastPast.precipitation_5?.[0]?.[0] || 0;
                 const mmhPast = (valPast / 100) * 12;
@@ -155,7 +157,7 @@ async function getFromBrightSky(lat, lon) {
                 lastPast = null;
             }
 
-        const val = item.precipitation_5?.[0]?.[0] || 0;
+            const val = item.precipitation_5?.[0]?.[0] || 0;
             const mmh = (val / 100) * 12;
             rainForecastData.results.push(mmh);
             rainForecastData.times.push(timestamp);
@@ -170,9 +172,14 @@ async function getFromBrightSky(lat, lon) {
         rainForecastData.times.push(new Date(lastPast.timestamp));
     }
 
-    // Wenn nichts → zurückgeben
+    // Wenn nach allem immer noch nichts → leeres Ergebnis zurückgeben
     if (rainForecastData.results.length === 0) return rainForecastData;
-    
+
+    // Per-Minute-Interpolation anwenden, analog zu Maps
+    buildPerMinuteForecast(rainForecastData, now);
+
+    return rainForecastData;
+}
 
 // ======================================================================
 // Per-Minute Interpolation (für Maps + BrightSky identisch)
