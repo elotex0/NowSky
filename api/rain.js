@@ -139,25 +139,40 @@ async function getFromBrightSky(lat, lon) {
     if (!data.radar || data.radar.length === 0) throw new Error("BrightSky keine Radardaten");
 
     const now = new Date();
-    const timeList = [];
-    const results = [];
+    let lastPast = null;
 
-    // Mappe BrightSky Daten in gleiche Struktur wie Maps
-    for (let i = 0; i < Math.min(13, data.radar.length); i++) {
-        const item = data.radar[i];
+    for (let item of data.radar) {
         const timestamp = new Date(item.timestamp);
-        timeList.push(timestamp);
+
+        if (timestamp <= now) {
+            lastPast = item;
+        } else {
+            if (lastPast) {
+                const valPast = lastPast.precipitation_5?.[0]?.[0] || 0;
+                const mmhPast = (valPast / 100) * 12;
+                rainForecastData.results.push(mmhPast);
+                rainForecastData.times.push(new Date(lastPast.timestamp));
+                lastPast = null;
+            }
+
         const val = item.precipitation_5?.[0]?.[0] || 0;
-        results.push(Math.max(0, val / 100 * 12));
+            const mmh = (val / 100) * 12;
+            rainForecastData.results.push(mmh);
+            rainForecastData.times.push(timestamp);
+        }
     }
 
-    rainForecastData.results = results;
-    rainForecastData.times = timeList;
+    // Falls alles Vergangenheit war
+    if (rainForecastData.results.length === 0 && lastPast) {
+        const valPast = lastPast.precipitation_5?.[0]?.[0] || 0;
+        const mmhPast = (valPast / 100) * 12;
+        rainForecastData.results.push(mmhPast);
+        rainForecastData.times.push(new Date(lastPast.timestamp));
+    }
 
-    buildPerMinuteForecast(rainForecastData, now);
-
-    return rainForecastData;
-}
+    // Wenn nichts → zurückgeben
+    if (rainForecastData.results.length === 0) return rainForecastData;
+    
 
 // ======================================================================
 // Per-Minute Interpolation (für Maps + BrightSky identisch)
