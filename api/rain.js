@@ -163,21 +163,18 @@ async function getFromBrightSky(lat, lon) {
 // Per-Minute Interpolation (für Maps + BrightSky identisch)
 // ======================================================================
 
-function buildPerMinuteForecast(rain) {
+function buildPerMinuteForecast(rain, startTime) {
+    const realNow = new Date();
+    const offsetSeconds = (realNow.getMinutes() % 5) * 60 + realNow.getSeconds();
+    const offsetMinutes = offsetSeconds / 60;
+
     const results = rain.results;
     const times = rain.times;
-
     const minuteValues = [];
     const minuteTimes = [];
 
-    // Offset in Minuten: falls der erste Timestamp nicht exakt auf 5-Minuten-Takt
-    const firstTime = times[0];
-    const now = new Date();
-    const offsetSeconds = Math.max(0, Math.floor((now - firstTime) / 1000)); 
-    const offsetMinutes = offsetSeconds / 60;
-
     for (let m = 0; m <= 60; m++) {
-        const pos = m; // einfach ab rain.times[0] starten
+        const pos = offsetMinutes + m;
         const segIndex = Math.floor(pos / 5);
         let value = 0;
 
@@ -189,7 +186,7 @@ function buildPerMinuteForecast(rain) {
         }
 
         minuteValues.push(value);
-        minuteTimes.push(new Date(firstTime.getTime() + pos * 60000));
+        minuteTimes.push(new Date(times[0].getTime() + pos * 60000));
     }
 
     rain.perMinute = minuteValues;
