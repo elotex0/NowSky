@@ -131,7 +131,7 @@ async function getFromBrightSky(lat, lon) {
         perMinuteTimes: []
     };
 
-    const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lon}&distance=1&format=plain`;
+    const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lon}&distance=1&format=plain&tz=Europe/Berlin`;
     const res = await fetch(url);
     if (!res.ok) throw new Error("BrightSky fetch failed");
 
@@ -142,14 +142,11 @@ async function getFromBrightSky(lat, lon) {
     const timeList = [];
     const results = [];
 
-    // Mappe BrightSky Daten in gleiche Struktur wie Maps + deutsche Zeit
+    // Mappe BrightSky Daten in gleiche Struktur wie Maps
     for (let i = 0; i < Math.min(13, data.radar.length); i++) {
         const item = data.radar[i];
-        const timestampUTC = new Date(item.timestamp); // UTC
-        const timestampDE = new Date(timestampUTC.getTime() + getGermanyOffset(timestampUTC) * 60000); // MEZ/MESZ
-
-        timeList.push(timestampDE);
-
+        const timestamp = new Date(item.timestamp);
+        timeList.push(timestamp);
         const val = item.precipitation_5?.[0]?.[0] || 0;
         results.push(Math.max(0, val / 100 * 12));
     }
@@ -160,18 +157,6 @@ async function getFromBrightSky(lat, lon) {
     buildPerMinuteForecast(rainForecastData, now);
 
     return rainForecastData;
-}
-
-// ======================================================================
-// Helper: deutsche Zeit für Date (MEZ/MESZ)
-// ======================================================================
-function getGermanyOffset(date) {
-    // MEZ = UTC+1, MESZ = UTC+2 (Sommerzeit)
-    const jan = new Date(date.getFullYear(), 0, 1);
-    const jul = new Date(date.getFullYear(), 6, 1);
-    const stdTimezoneOffset = Math.max(jan.getTimezoneOffset(), jul.getTimezoneOffset()); // Standard (Winter)
-    const currentOffset = date.getTimezoneOffset();
-    return stdTimezoneOffset - currentOffset; // Differenz in Minuten → 60 für Winter, 120 für Sommer
 }
 
 // ======================================================================
