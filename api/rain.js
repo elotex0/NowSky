@@ -71,7 +71,7 @@ async function getFromMaps(lat, lon) {
     }
 
     const urls = [
-        { url: "https://maps.dwd.de/geoserver/dwd/wms", layer: "dwd:Niederschlagsradar", queryLayer: "dwd:Niederschlagsradar" }
+        { url: "https://maps.dwd1.de/geoserver/dwd/wms", layer: "dwd:Niederschlagsradar", queryLayer: "dwd:Niederschlagsradar" }
     ];
 
     let data = null;
