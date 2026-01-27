@@ -131,7 +131,7 @@ async function getFromBrightSky(lat, lon) {
         perMinuteTimes: []
     };
 
-    const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lon}&distance=1&format=plain`;
+    const url = `https://api.brightsky.dev/radar?lat=${lat}&lon=${lon}&distance=1&format=plain&tz=Europe/Berlin`;
     const res = await fetch(url);
     if (!res.ok) throw new Error("BrightSky fetch failed");
 
