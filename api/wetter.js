@@ -1,85 +1,43 @@
-import OpenAI from "openai";
-
-// --- KONFIGURATION ---
-const DEEPSEEK_API_KEY = "sk-afa22e62d48c4a5f9330da4f6d6a017c"; 
-// ---------------------
-
-const deepseek = new OpenAI({
-  baseURL: 'https://api.deepseek.com',
-  apiKey: DEEPSEEK_API_KEY
-});
-
-// Hilfsfunktion für Wetter-Codes (WMO Standard)
-const getWetterBeschreibung = (code) => {
-  const codes = {
-    0: "klarer Himmel", 1: "hauptsächlich klar", 2: "teils bewölkt", 3: "bedeckt",
-    45: "Nebel", 48: "Raureifnebel", 51: "leichter Nieselregen", 61: "leichter Regen",
-    71: "leichter Schneefall", 80: "Regenschauer", 95: "Gewitter"
-  };
-  return codes[code] || "wechselhaft";
-};
-
 export default async function handler(req, res) {
-  // --- CORS HEADER ---
-  res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Erlaubt Aufrufe von allen Domains
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
-  );
-
-  // Falls ein "Preflight" Request (OPTIONS) kommt, direkt antworten
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
+  // CORS Header
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { lat, lon } = req.query;
+  const DEEPSEEK_API_KEY = "sk-afa22e62d48c4a5f9330da4f6d6a017c"; // Dein Key
 
-  if (!lat || !lon) {
-    return res.status(400).json({ error: "Parameter fehlen (lat & lon benötigt)." });
-  }
+  if (!lat || !lon) return res.status(400).json({ error: "lat/lon fehlen" });
 
   try {
-    // 1. Wetterdaten abrufen
-    const response = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`
-    );
-    const data = await response.json();
-    const current = data.current_weather;
+    // 1. Wetterdaten
+    const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
+    const weatherData = await weatherRes.json();
+    const current = weatherData.current_weather;
 
-    // 2. Wetter-Code übersetzen für besseres KI-Verständnis
-    const zustand = getWetterBeschreibung(current.weathercode);
-
-    // 3. DeepSeek Prompt
-    const prompt = `
-      Aktuelles Wetter an Position (${lat}, ${lon}):
-      - Temperatur: ${current.temperature}°C
-      - Wind: ${current.windspeed} km/h
-      - Zustand: ${zustand}
-      
-      Schreibe einen kurzen Wetterbericht (3-4 Sätze). 
-      Erwähne die Temperatur und ob man eine Jacke braucht.
-    `;
-
-    const completion = await deepseek.chat.completions.create({
-      messages: [
-        { role: "system", content: "Du bist ein präziser Wetter-Experte." },
-        { role: "user", content: prompt }
-      ],
-      model: "deepseek-chat",
+    // 2. DeepSeek via fetch (keine Library nötig!)
+    const aiRes = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: "Du bist ein Wetter-Experte." },
+          { role: "user", content: `Wetter: ${current.temperature}°C, Wind: ${current.windspeed}km/h. Schreib 3-4 Sätze dazu.` }
+        ]
+      })
     });
 
-    const bericht = completion.choices[0].message.content;
+    const aiData = await aiRes.json();
+    const bericht = aiData.choices[0].message.content;
 
-    // 4. Antwort senden
-    res.status(200).json({
-      success: true,
-      bericht: bericht
-    });
+    res.status(200).json({ bericht });
 
   } catch (error) {
-    res.status(500).json({ error: "API Fehler", details: error.message });
+    res.status(500).json({ error: error.message });
   }
 }
