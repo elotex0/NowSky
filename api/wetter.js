@@ -1,60 +1,68 @@
 import OpenAI from "openai";
 
-const DEEPSEEK_API_KEY = "sk-afa22e62d48c4a5f9330da4f6d6a017c"; 
+// --- KONFIGURATION ---
+const GEMINI_API_KEY = "AIzaSyAsa1XPlK6075ghGYIIXFGFMzo1DEJ9jmc"; 
+// ---------------------
 
-const deepseek = new OpenAI({
-  baseURL: 'https://api.deepseek.com',
-  apiKey: DEEPSEEK_API_KEY,
+// Gemini lässt sich über die OpenAI-Library ansteuern!
+const ai = new OpenAI({
+  apiKey: GEMINI_API_KEY,
+  baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/"
 });
 
 export default async function handler(req, res) {
+  // CORS Header
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { lat, lon } = req.query;
 
+  if (!lat || !lon) {
+    return res.status(400).json({ error: "Digga, lat und lon fehlen in der URL!" });
+  }
+
   try {
-    // 1. Wetterdaten holen
-    const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
+    // 1. Wetterdaten von Open-Meteo holen
+    const weatherRes = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`
+    );
     const weatherData = await weatherRes.json();
-    
-    if (!weatherData.current_weather) {
-      return res.status(400).json({ error: "Keine Wetterdaten für diese Koordinaten gefunden." });
-    }
+    const current = weatherData.current_weather;
 
-    const temp = weatherData.current_weather.temperature;
+    if (!current) throw new Error("Wetter-API liefert keine Daten.");
 
-    // 2. DeepSeek Aufruf mit detailliertem Logging
-    const completion = await deepseek.chat.completions.create({
+    // 2. Bericht mit Gemini generieren
+    const completion = await ai.chat.completions.create({
+      model: "gemini-1.5-flash", // Kostenloses, schnelles Modell
       messages: [
-        { role: "system", content: "Gib nur einen kurzen Wetterbericht aus." },
-        { role: "user", content: `Es sind ${temp} Grad. Schreib 3 Sätze.` }
-      ],
-      model: "deepseek-chat",
+        { 
+          role: "system", 
+          content: "Du bist ein cooler Wetter-Assistent. Antworte immer auf Deutsch in 3-4 Sätzen." 
+        },
+        { 
+          role: "user", 
+          content: `Hier sind Daten für Koordinaten ${lat}, ${lon}: Temperatur ${current.temperature}°C, Wind ${current.windspeed} km/h. Schreib einen kurzen Bericht.` 
+        }
+      ]
     });
-
-    // --- DEBUGGING LOGIK ---
-    console.log("DeepSeek Antwort:", JSON.stringify(completion));
-
-    if (!completion || !completion.choices || !completion.choices[0]) {
-      return res.status(500).json({ 
-        error: "DeepSeek hat keine 'choices' geliefert",
-        debug: completion // Das zeigt dir im Browser, was wirklich ankam
-      });
-    }
 
     const bericht = completion.choices[0].message.content;
 
-    res.status(200).json({ success: true, bericht });
+    // 3. Antwort senden
+    res.status(200).json({
+      success: true,
+      bericht: bericht,
+      temp: current.temperature
+    });
 
   } catch (error) {
-    // Wenn hier ein Fehler landet, ist es meistens ein API-Error (401, 402, 429)
+    console.error(error);
     res.status(500).json({ 
-      error: "API oder Netzwerk-Fehler", 
-      message: error.message,
-      stack: error.stack // Zeigt genau, wo es im Code knallt
+      error: "Fehler", 
+      message: error.message 
     });
   }
 }
