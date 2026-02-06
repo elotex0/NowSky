@@ -4,8 +4,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const GEMINI_API_KEY = "DEIN_NEUER_KEY_HIER"; // Nutze einen frischen Key!
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
-// Wir nutzen Gemini 3 Flash (Standard in 2026)
-const model = genAI.getGenerativeModel({ model: "gemini-3-flash" });
+
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
