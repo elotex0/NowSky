@@ -1,78 +1,60 @@
 import OpenAI from "openai";
 
-// --- KONFIGURATION ---
 const DEEPSEEK_API_KEY = "sk-afa22e62d48c4a5f9330da4f6d6a017c"; 
 
 const deepseek = new OpenAI({
   baseURL: 'https://api.deepseek.com',
   apiKey: DEEPSEEK_API_KEY,
-  // Verhindert Fehler in manchen Umgebungen
-  maxRetries: 2,
 });
 
-const getWetterBeschreibung = (code) => {
-  const codes = {
-    0: "klarer Himmel", 1: "hauptsächlich klar", 2: "teils bewölkt", 3: "bedeckt",
-    45: "Nebel", 48: "Raureifnebel", 51: "leichter Nieselregen", 61: "leichter Regen",
-    71: "leichter Schneefall", 80: "Regenschauer", 95: "Gewitter"
-  };
-  return codes[code] || "wechselhaft";
-};
-
 export default async function handler(req, res) {
-  // CORS Header
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { lat, lon } = req.query;
-  if (!lat || !lon) return res.status(400).json({ error: "lat/lon fehlen" });
 
   try {
-    // 1. Wetterdaten abrufen
-    const response = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`
-    );
-    const data = await response.json();
+    // 1. Wetterdaten holen
+    const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
+    const weatherData = await weatherRes.json();
     
-    if (!data.current_weather) {
-      return res.status(500).json({ error: "Keine Wetterdaten von Open-Meteo erhalten" });
+    if (!weatherData.current_weather) {
+      return res.status(400).json({ error: "Keine Wetterdaten für diese Koordinaten gefunden." });
     }
 
-    const current = data.current_weather;
-    const zustand = getWetterBeschreibung(current.weathercode);
+    const temp = weatherData.current_weather.temperature;
 
-    // 2. DeepSeek API Aufruf mit Absicherung
+    // 2. DeepSeek Aufruf mit detailliertem Logging
     const completion = await deepseek.chat.completions.create({
       messages: [
-        { role: "system", content: "Du bist ein präziser Wetter-Experte." },
-        { role: "user", content: `Wetter in Bürstadt/Umgebung (${lat}, ${lon}): ${current.temperature}°C, Wind: ${current.windspeed}km/h, ${zustand}. Schreib 3-4 Sätze.` }
+        { role: "system", content: "Gib nur einen kurzen Wetterbericht aus." },
+        { role: "user", content: `Es sind ${temp} Grad. Schreib 3 Sätze.` }
       ],
       model: "deepseek-chat",
-    }).catch(err => {
-      console.error("DeepSeek Error:", err);
-      return null;
     });
 
-    // 3. Prüfen ob die KI geantwortet hat
-    if (!completion || !completion.choices || completion.choices.length === 0) {
-      return res.status(200).json({ 
-        success: true, 
-        bericht: `Aktuell sind es ${current.temperature}°C mit ${zustand}. (KI-Bericht gerade nicht verfügbar).`,
-        hinweis: "Prüfe dein DeepSeek Guthaben oder den API-Key!"
+    // --- DEBUGGING LOGIK ---
+    console.log("DeepSeek Antwort:", JSON.stringify(completion));
+
+    if (!completion || !completion.choices || !completion.choices[0]) {
+      return res.status(500).json({ 
+        error: "DeepSeek hat keine 'choices' geliefert",
+        debug: completion // Das zeigt dir im Browser, was wirklich ankam
       });
     }
 
     const bericht = completion.choices[0].message.content;
 
-    res.status(200).json({
-      success: true,
-      bericht: bericht
-    });
+    res.status(200).json({ success: true, bericht });
 
   } catch (error) {
-    res.status(500).json({ error: "Server Fehler", details: error.message });
+    // Wenn hier ein Fehler landet, ist es meistens ein API-Error (401, 402, 429)
+    res.status(500).json({ 
+      error: "API oder Netzwerk-Fehler", 
+      message: error.message,
+      stack: error.stack // Zeigt genau, wo es im Code knallt
+    });
   }
 }
