@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // --- KONFIGURATION ---
-const GEMINI_API_KEY = "DEIN_NEUER_KEY"; 
+const GEMINI_API_KEY = "AIzaSyAsa1XPlK6075ghGYIIXFGFMzo1DEJ9jmc"; 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 // Wir nutzen 'gemini-1.5-flash' ohne Pfad-Präfix
