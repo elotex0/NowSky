@@ -1,103 +1,85 @@
-export default async function handler(req, res) {
-  // CORS Header
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+import OpenAI from "openai";
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
+// --- KONFIGURATION ---
+const DEEPSEEK_API_KEY = "sk-afa22e62d48c4a5f9330da4f6d6a017c"; 
+// ---------------------
+
+const deepseek = new OpenAI({
+  baseURL: 'https://api.deepseek.com',
+  apiKey: DEEPSEEK_API_KEY
+});
+
+// Hilfsfunktion für Wetter-Codes (WMO Standard)
+const getWetterBeschreibung = (code) => {
+  const codes = {
+    0: "klarer Himmel", 1: "hauptsächlich klar", 2: "teils bewölkt", 3: "bedeckt",
+    45: "Nebel", 48: "Raureifnebel", 51: "leichter Nieselregen", 61: "leichter Regen",
+    71: "leichter Schneefall", 80: "Regenschauer", 95: "Gewitter"
+  };
+  return codes[code] || "wechselhaft";
+};
+
+export default async function handler(req, res) {
+  // --- CORS HEADER ---
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*'); // Erlaubt Aufrufe von allen Domains
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
+
+  // Falls ein "Preflight" Request (OPTIONS) kommt, direkt antworten
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
   }
 
   const { lat, lon } = req.query;
-  const date = new Date().toISOString().split('T')[0];
 
   if (!lat || !lon) {
-    return res.status(400).json({ error: "lat und lon sind erforderlich" });
+    return res.status(400).json({ error: "Parameter fehlen (lat & lon benötigt)." });
   }
 
-  const url = `https://api.brightsky.dev/weather?lat=${lat}&lon=${lon}&date=${date}`;
-
   try {
-    const response = await fetch(url);
-    const json = await response.json();
+    // 1. Wetterdaten abrufen
+    const response = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`
+    );
+    const data = await response.json();
+    const current = data.current_weather;
 
-    const weatherArray = json.weather;
-    const sources = json.sources;
+    // 2. Wetter-Code übersetzen für besseres KI-Verständnis
+    const zustand = getWetterBeschreibung(current.weathercode);
 
-    if (!weatherArray || weatherArray.length === 0) {
-      return res.status(404).json({ error: "Keine Wetterdaten gefunden" });
-    }
+    // 3. DeepSeek Prompt
+    const prompt = `
+      Aktuelles Wetter an Position (${lat}, ${lon}):
+      - Temperatur: ${current.temperature}°C
+      - Wind: ${current.windspeed} km/h
+      - Zustand: ${zustand}
+      
+      Schreibe einen kurzen Wetterbericht (3-4 Sätze). 
+      Erwähne die Temperatur und ob man eine Jacke braucht.
+    `;
 
-    // Hauptstation ermitteln (über den ersten Eintrag)
-    const mainSourceId = weatherArray[0].source_id;
-    const station = sources.find(s => s.id === mainSourceId);
-
-    // Helfer: lineare Interpolation
-    function lerp(v0, v1, t) {
-      return v0 + (v1 - v0) * t;
-    }
-
-    // Stündliche Daten vorbereiten
-    const raw = weatherArray.map(w => ({
-      timestamp: new Date(w.timestamp),
-      temperature: w.temperature,
-      wind_speed: w.wind_speed,
-      wind_gust_speed: w.wind_gust_speed,
-      precipitation: w.precipitation,
-      relative_humidity: w.relative_humidity,
-      visibility: w.visibility,
-      pressure_msl: w.pressure_msl,
-      condition: w.condition,
-      icon: w.icon
-    }));
-
-    // 5-Minuten Interpolation
-    const interpolated = [];
-
-    for (let i = 0; i < raw.length - 1; i++) {
-      const a = raw[i];
-      const b = raw[i + 1];
-
-      // Original-Stundenpunkt
-      interpolated.push({
-        ...a,
-        timestamp: a.timestamp.toISOString()
-      });
-
-      for (let m = 5; m < 60; m += 5) {
-        const t = m / 60;
-        const time = new Date(a.timestamp.getTime() + m * 60000);
-
-        interpolated.push({
-          timestamp: time.toISOString(),
-          temperature: lerp(a.temperature, b.temperature, t),
-          wind_speed: lerp(a.wind_speed, b.wind_speed, t),
-          wind_gust_speed: lerp(a.wind_gust_speed, b.wind_gust_speed, t),
-          precipitation: lerp(a.precipitation, b.precipitation, t),
-          relative_humidity: lerp(a.relative_humidity, b.relative_humidity, t),
-          visibility: lerp(a.visibility, b.visibility, t),
-          pressure_msl: lerp(a.pressure_msl, b.pressure_msl, t),
-          condition: a.condition,  // kategorisch → nicht interpolieren
-          icon: a.icon
-        });
-      }
-    }
-
-    // letzten Punkt übernehmen
-    const last = raw[raw.length - 1];
-    interpolated.push({
-      ...last,
-      timestamp: last.timestamp.toISOString()
+    const completion = await deepseek.chat.completions.create({
+      messages: [
+        { role: "system", content: "Du bist ein präziser Wetter-Experte." },
+        { role: "user", content: prompt }
+      ],
+      model: "deepseek-chat",
     });
 
-    // Response ausgeben
-    return res.status(200).json({
-      station,
-      data: interpolated
+    const bericht = completion.choices[0].message.content;
+
+    // 4. Antwort senden
+    res.status(200).json({
+      success: true,
+      bericht: bericht
     });
 
-  } catch (err) {
-    console.error("API Error:", err);
-    return res.status(500).json({ error: "Fehler beim Abrufen der Daten" });
+  } catch (error) {
+    res.status(500).json({ error: "API Fehler", details: error.message });
   }
 }
