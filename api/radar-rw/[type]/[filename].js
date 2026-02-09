@@ -27,7 +27,7 @@ export default async function handler(req) {
     const [api, prefix, type, filename] = parts;
     console.log("Parsed path parts:", { api, prefix, type, filename });
 
-    if (!time || !type || !filename) {
+    if (!type || !filename) {
       console.log("Missing path parameters");
       return new Response(
         JSON.stringify({ error: "Missing path parameters", parts }),
