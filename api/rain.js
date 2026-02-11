@@ -93,7 +93,9 @@ async function getFromMaps(lat, lon) {
             url.searchParams.set("Y", "0");
             url.searchParams.set("TIME", timeList.join(","));
 
-            const res = await fetch(url.toString());
+            const res = await fetch(url.toString(), { 
+                signal: AbortSignal.timeout(3000) // 3 Sekunden Timeout
+            });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             data = await res.json();
             break;
