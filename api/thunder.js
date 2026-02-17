@@ -72,7 +72,7 @@ async function checkThunderstorm(lat, lon) {
 
     // Prüfe auf GEWITTER (case-insensitive)
     const hasThunderstorm = data.features.some(f =>
-        f.properties?.EC_GROUP?.toUpperCase() === "Gewitter"
+    f.properties?.EC_GROUP === "Gewitter"
     );
 
     return hasThunderstorm;
