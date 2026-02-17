@@ -16,28 +16,27 @@ export default async function handler(req, res) {
     }
 
     try {
-        const thunderstorm = await checkThunderstorm(
-            parseFloat(lat),
-            parseFloat(lon)
-        );
+        const result = await checkThunderstorm(parseFloat(lat), parseFloat(lon));
 
         res.status(200).json({
             lat: parseFloat(lat),
             lon: parseFloat(lon),
-            thunderstorm
+            thunderstorm: result.thunderstorm,
+            severity: result.severity // null wenn kein Gewitter
         });
     } catch (err) {
         console.error(err);
         res.status(200).json({
             lat: parseFloat(lat),
             lon: parseFloat(lon),
-            thunderstorm: false
+            thunderstorm: false,
+            severity: null
         });
     }
 }
 
 async function checkThunderstorm(lat, lon) {
-    const delta = 0.05; // etwas größerer Radius
+    const delta = 0.05; // größerer Radius
     const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
 
     const url = new URL("https://maps.dwd.de/geoserver/dwd/wms");
@@ -66,14 +65,27 @@ async function checkThunderstorm(lat, lon) {
     const data = await response.json();
 
     if (!data.features || data.features.length === 0) {
-        return false;
+        return { thunderstorm: false, severity: null };
     }
 
+    // Filter auf Gewitter
+    const thunderFeatures = data.features.filter(f => f.properties?.EC_GROUP === "Gewitter");
 
-    // Prüfe auf GEWITTER (case-insensitive)
-    const hasThunderstorm = data.features.some(f =>
-    f.properties?.EC_GROUP === "Gewitter"
-    );
+    if (thunderFeatures.length === 0) {
+        return { thunderstorm: false, severity: null };
+    }
 
-    return hasThunderstorm;
+    // Bestimme stärkste SEVERITY
+    const severityOrder = ["minor", "moderate", "severe", "extrem"];
+    let maxSeverityIndex = -1;
+
+    for (const f of thunderFeatures) {
+        const sev = f.properties?.SEVERITY?.toLowerCase();
+        const idx = severityOrder.indexOf(sev);
+        if (idx > maxSeverityIndex) maxSeverityIndex = idx;
+    }
+
+    const strongestSeverity = maxSeverityIndex >= 0 ? severityOrder[maxSeverityIndex] : null;
+
+    return { thunderstorm: true, severity: strongestSeverity };
 }
