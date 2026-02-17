@@ -36,9 +36,7 @@ export default async function handler(req, res) {
     }
 }
 
-
 async function checkThunderstorm(lat, lon) {
-
     const delta = 0.05;
     const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
 
@@ -48,81 +46,71 @@ async function checkThunderstorm(lat, lon) {
     ];
 
     const controller = new AbortController();
-    const globalTimeout = setTimeout(() => controller.abort(), 6000);
+    const timeoutMs = 6000;
 
-    const requests = servers.map(baseUrl => {
+    for (const baseUrl of servers) {
+        try {
+            const url = new URL(baseUrl);
+            url.searchParams.set("SERVICE", "WMS");
+            url.searchParams.set("VERSION", "1.1.1");
+            url.searchParams.set("REQUEST", "GetFeatureInfo");
+            url.searchParams.set("LAYERS", "dwd:Autowarn_Analyse");
+            url.searchParams.set("QUERY_LAYERS", "dwd:Autowarn_Analyse");
+            url.searchParams.set("BBOX", bbox);
+            url.searchParams.set("FEATURE_COUNT", "50");
+            url.searchParams.set("HEIGHT", "101");
+            url.searchParams.set("WIDTH", "101");
+            url.searchParams.set("INFO_FORMAT", "application/json");
+            url.searchParams.set("SRS", "EPSG:4326");
+            url.searchParams.set("X", "50");
+            url.searchParams.set("Y", "50");
 
-        const url = new URL(baseUrl);
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-        url.searchParams.set("SERVICE", "WMS");
-        url.searchParams.set("VERSION", "1.1.1");
-        url.searchParams.set("REQUEST", "GetFeatureInfo");
-        url.searchParams.set("LAYERS", "dwd:Autowarn_Analyse");
-        url.searchParams.set("QUERY_LAYERS", "dwd:Autowarn_Analyse");
-        url.searchParams.set("BBOX", bbox);
-        url.searchParams.set("FEATURE_COUNT", "50");
-        url.searchParams.set("HEIGHT", "101");
-        url.searchParams.set("WIDTH", "101");
-        url.searchParams.set("INFO_FORMAT", "application/json");
-        url.searchParams.set("SRS", "EPSG:4326");
-        url.searchParams.set("X", "50");
-        url.searchParams.set("Y", "50");
+            const response = await fetch(url.toString(), { signal: controller.signal });
+            clearTimeout(timeout);
 
-        return fetch(url.toString(), {
-            signal: controller.signal
-        })
-        .then(res => {
-            if (!res.ok) {
-                throw new Error(`HTTP ${res.status} from ${baseUrl}`);
+            // HTTP-Fehler => nächster Server
+            if (!response.ok) {
+                console.warn(`Server ${baseUrl} returned HTTP ${response.status}, switching to next server.`);
+                continue;
             }
-            return res.json();
-        });
-    });
 
-    try {
+            const data = await response.json();
 
-        // Schnellster erfolgreicher Server gewinnt
-        const data = await Promise.race(requests);
-
-        clearTimeout(globalTimeout);
-        controller.abort(); // stoppt den langsameren Request
-
-        if (!data.features || data.features.length === 0) {
-            return { thunderstorm: false, severity: null };
-        }
-
-        const thunderFeatures = data.features.filter(
-            f => f.properties?.EC_GROUP === "Gewitter"
-        );
-
-        if (thunderFeatures.length === 0) {
-            return { thunderstorm: false, severity: null };
-        }
-
-        const severityOrder = ["minor", "moderate", "severe", "extrem"];
-        let maxSeverityIndex = -1;
-
-        for (const f of thunderFeatures) {
-            const sev = f.properties?.SEVERITY?.toLowerCase();
-            const idx = severityOrder.indexOf(sev);
-            if (idx > maxSeverityIndex) {
-                maxSeverityIndex = idx;
+            if (!data.features || data.features.length === 0) {
+                return { thunderstorm: false, severity: null };
             }
+
+            const thunderFeatures = data.features.filter(
+                f => f.properties?.EC_GROUP === "Gewitter"
+            );
+
+            if (thunderFeatures.length === 0) {
+                return { thunderstorm: false, severity: null };
+            }
+
+            const severityOrder = ["minor", "moderate", "severe", "extrem"];
+            let maxSeverityIndex = -1;
+
+            for (const f of thunderFeatures) {
+                const sev = f.properties?.SEVERITY?.toLowerCase();
+                const idx = severityOrder.indexOf(sev);
+                if (idx > maxSeverityIndex) maxSeverityIndex = idx;
+            }
+
+            return {
+                thunderstorm: true,
+                severity: maxSeverityIndex >= 0 ? severityOrder[maxSeverityIndex] : null
+            };
+
+        } catch (err) {
+            console.warn(`Server ${baseUrl} failed:`, err.message);
+            // Fehler => nächster Server
+            continue;
         }
-
-        const strongestSeverity =
-            maxSeverityIndex >= 0 ? severityOrder[maxSeverityIndex] : null;
-
-        return {
-            thunderstorm: true,
-            severity: strongestSeverity
-        };
-
-    } catch (err) {
-
-        clearTimeout(globalTimeout);
-        controller.abort();
-
-        throw err;
     }
+
+    // Wenn beide Server fehlschlagen
+    return { thunderstorm: false, severity: null };
 }
