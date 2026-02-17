@@ -11,35 +11,36 @@ export default async function handler(req, res) {
     const { lat, lon } = req.query;
 
     if (!lat || !lon) {
-        res.status(400).json(false);
+        res.status(400).json({ error: 'lat and lon required' });
         return;
     }
 
     try {
-        const result = await checkThunderstorm(
+        const thunderstorm = await checkThunderstorm(
             parseFloat(lat),
             parseFloat(lon)
         );
 
-        res.status(200).json(result); // ← gibt nur true oder false zurück
+        res.status(200).json({
+            lat: parseFloat(lat),
+            lon: parseFloat(lon),
+            thunderstorm
+        });
     } catch (err) {
         console.error(err);
-        res.status(200).json(false); // bei Fehler einfach false
+        res.status(200).json({
+            lat: parseFloat(lat),
+            lon: parseFloat(lon),
+            thunderstorm: false
+        });
     }
 }
 
-
-// ======================================================================
-// Prüft Autowarn_Analyse auf GEWITTER
-// ======================================================================
-
 async function checkThunderstorm(lat, lon) {
-
-    const delta = 0.02; // größerer Radius für Polygon
+    const delta = 0.05; // etwas größerer Radius
     const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
 
     const url = new URL("https://maps.dwd.de/geoserver/dwd/wms");
-
     url.searchParams.set("SERVICE", "WMS");
     url.searchParams.set("VERSION", "1.1.1");
     url.searchParams.set("REQUEST", "GetFeatureInfo");
@@ -68,9 +69,10 @@ async function checkThunderstorm(lat, lon) {
         return false;
     }
 
-    // 🔥 Nur EC_GROUP === "GEWITTER"
+
+    // Prüfe auf GEWITTER (case-insensitive)
     const hasThunderstorm = data.features.some(f =>
-        f.properties?.EC_GROUP === "GEWITTER"
+        f.properties?.EC_GROUP?.toUpperCase() === "Gewitter"
     );
 
     return hasThunderstorm;
