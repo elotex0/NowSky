@@ -3,12 +3,8 @@ export const config = {
 };
 
 export default async function handler(request) {
-  // CORS Preflight
   if (request.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 200,
-      headers: corsHeaders(),
-    });
+    return new Response(null, { status: 200, headers: corsHeaders() });
   }
 
   const { searchParams } = new URL(request.url);
@@ -21,130 +17,77 @@ export default async function handler(request) {
 
   try {
     const result = await checkThunderstorm(lat, lon);
-
-    return jsonResponse({
-      lat,
-      lon,
-      thunderstorm: result.thunderstorm,
-      severity: result.severity
-    });
-
+    return jsonResponse({ lat, lon, thunderstorm: result.thunderstorm, severity: result.severity });
   } catch (err) {
     console.error("Both DWD servers failed:", err);
-
-    return jsonResponse({
-      lat,
-      lon,
-      thunderstorm: false,
-      severity: null
-    });
+    return jsonResponse({ lat, lon, thunderstorm: false, severity: null });
   }
 }
 
-/* ------------------------------------------------ */
-/* ---------------- CORE LOGIC -------------------- */
-/* ------------------------------------------------ */
+/* ---------------- CORE LOGIC ---------------- */
 
 async function checkThunderstorm(lat, lon) {
-  const delta = 0.05;
-  const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
+  const delta = 0.03; // kleines BBOX um den Punkt
+  const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta},EPSG:4326`;
 
   const servers = [
-    "https://maps.dwd.de/geoserver/dwd/wms",      // Primary
-    "https://brz-maps.dwd.de/geoserver/dwd/wms"   // Backup
+    "https://maps.dwd.de/geoserver/dwd/ows",     // Primary
+    "https://brz-maps.dwd.de/geoserver/dwd/ows" // Backup
   ];
-
-  const timeoutMs = 2500;
 
   for (const baseUrl of servers) {
     try {
-      const response = await fetchWithTimeout(baseUrl, bbox, timeoutMs);
+      const data = await fetchWFSFeature(baseUrl, bbox);
+      if (!data?.features?.length) continue;
 
-      const data = await response.json();
-
-      if (!data.features || data.features.length === 0) {
-        return { thunderstorm: false, severity: null };
-      }
-
-      const thunderFeatures = data.features.filter(
-        f => f.properties?.EC_GROUP === "Gewitter"
-      );
-
-      if (thunderFeatures.length === 0) {
-        return { thunderstorm: false, severity: null };
-      }
+      // nur Gewitter-Features
+      const thunder = data.features.filter(f => f.properties?.EC_GROUP === "Gewitter");
+      if (!thunder.length) continue;
 
       const severityOrder = ["minor", "moderate", "severe", "extrem"];
-      let maxSeverityIndex = -1;
-
-      for (const f of thunderFeatures) {
-        const sev = f.properties?.SEVERITY?.toLowerCase();
-        const idx = severityOrder.indexOf(sev);
-        if (idx > maxSeverityIndex) maxSeverityIndex = idx;
+      let max = -1;
+      for (const f of thunder) {
+        const idx = severityOrder.indexOf(f.properties?.SEVERITY?.toLowerCase());
+        if (idx > max) max = idx;
       }
 
-      return {
-        thunderstorm: true,
-        severity: maxSeverityIndex >= 0 ? severityOrder[maxSeverityIndex] : null
-      };
-
+      return { thunderstorm: true, severity: max >= 0 ? severityOrder[max] : null };
     } catch (err) {
       console.warn(`Server failed (${baseUrl}):`, err.message);
-      // → nächster Server
       continue;
     }
   }
 
-  // Beide Server fehlgeschlagen
   throw new Error("All servers failed");
 }
 
-/* ------------------------------------------------ */
-/* ---------------- FETCH HELPER ------------------ */
-/* ------------------------------------------------ */
+/* ---------------- FETCH HELPER ---------------- */
 
-async function fetchWithTimeout(baseUrl, bbox, timeoutMs) {
+async function fetchWFSFeature(baseUrl, bbox) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), 3000);
 
   const url = new URL(baseUrl);
-  url.searchParams.set("SERVICE", "WMS");
-  url.searchParams.set("VERSION", "1.1.1");
-  url.searchParams.set("REQUEST", "GetFeatureInfo");
-  url.searchParams.set("LAYERS", "dwd:Autowarn_Analyse");
-  url.searchParams.set("QUERY_LAYERS", "dwd:Autowarn_Analyse");
+  url.searchParams.set("SERVICE", "WFS");
+  url.searchParams.set("VERSION", "2.0.0");
+  url.searchParams.set("REQUEST", "GetFeature");
+  url.searchParams.set("TYPENAMES", "dwd:Autowarn_Analyse");
+  url.searchParams.set("OUTPUTFORMAT", "application/json");
+  url.searchParams.set("SRSNAME", "EPSG:4326");
   url.searchParams.set("BBOX", bbox);
-  url.searchParams.set("FEATURE_COUNT", "50");
-  url.searchParams.set("HEIGHT", "101");
-  url.searchParams.set("WIDTH", "101");
-  url.searchParams.set("INFO_FORMAT", "application/json");
-  url.searchParams.set("SRS", "EPSG:4326");
-  url.searchParams.set("X", "50");
-  url.searchParams.set("Y", "50");
 
   try {
-    const response = await fetch(url.toString(), {
-      signal: controller.signal,
-      cache: "no-store"
-    });
-
+    const res = await fetch(url.toString(), { signal: controller.signal, cache: "no-store" });
     clearTimeout(timeout);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    return response;
-
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
   } catch (err) {
     clearTimeout(timeout);
     throw err;
   }
 }
 
-/* ------------------------------------------------ */
-/* ---------------- UTILITIES --------------------- */
-/* ------------------------------------------------ */
+/* ---------------- UTILITIES ------------------ */
 
 function corsHeaders() {
   return {
