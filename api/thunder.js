@@ -46,7 +46,7 @@ export default async function handler(request) {
 /* ------------------------------------------------ */
 
 async function checkThunderstorm(lat, lon) {
-  const delta = 0.05;
+  const delta = 0.01;
   const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
 
   const servers = [
