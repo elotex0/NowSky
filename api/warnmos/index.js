@@ -46,6 +46,8 @@ export default async function handler(req, res) {
 
       // Index des ersten Zeitschritts >= aktuelle Zeit
       const berlinHourTime = new Date(berlinTime);
+      berlinHourTime.setMinutes(0, 0, 0); // Minuten und Sekunden auf 0 setzen
+
       const startIndex = timestepsDates.findIndex(d => d >= berlinHourTime);
 
       const filteredTimesteps = startIndex >= 0 
