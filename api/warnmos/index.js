@@ -6,7 +6,7 @@ export default async function handler(req, res) {
     res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     
-    const r2Url = "https://pub-958abe05f2fd44968b5f27d0270702b5.r2.dev/icon-ruc/metadata.json";
+    const r2Url = "https://pub-991b1ac7b84d4857be26c8f469c184f3.r2.dev/warnmos/metadata.json";
 
     const headers = {};
     const accessKey = process.env.R2_ACCESS_KEY_ID;
