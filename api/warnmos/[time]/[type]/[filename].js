@@ -1,88 +1,84 @@
+export const config = { runtime: "edge" };
 
-export default async function handler(req, res) {
+export default async function handler(req) {
+  const { method } = req;
+  // --- CORS Preflight ---
+  if (method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Max-Age": "86400"
+      }
+    });
+  }
   try {
-    // CORS Header setzen
-    res.setHeader("Access-Control-Allow-Origin", "*"); // "" = alle Domains erlauben
-    res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     
-    const r2Url = "https://pub-991b1ac7b84d4857be26c8f469c184f3.r2.dev/warnmos/metadata.json";
+    const { pathname, href } = new URL(req.url);
 
-    const headers = {};
+    // Debug: komplette Anfrage
+    console.log("Full request URL:", href);
+    console.log("Pathname:", pathname);
+
+    const parts = pathname.split("/").filter(Boolean);
+
+    // Erwartet: ["api", "icon-d2", "<time>", "<type>", "<filename>"]
+    const [api, prefix, time, type, filename] = parts;
+    console.log("Parsed path parts:", { api, prefix, time, type, filename });
+
+    if (!time || !type || !filename) {
+      console.log("Missing path parameters");
+      return new Response(
+        JSON.stringify({ error: "Missing path parameters", parts }),
+        { 
+          status: 400,
+          headers: { "Access-Control-Allow-Origin": "*" }
+        }
+      );
+    }
+
+    // R2 Key
+    const key = `${prefix}/${time}/${type}/${filename}`;
+    console.log("R2 Key:", key);
+
+    // R2 URL
+    const r2Url = `https://pub-991b1ac7b84d4857be26c8f469c184f3.r2.dev/${key}`;
+    console.log("Fetching R2 URL:", r2Url);
+
+    // Basic Auth Header
     const accessKey = process.env.R2_ACCESS_KEY_ID;
     const secretKey = process.env.R2_SECRET_ACCESS_KEY;
-    if (accessKey && secretKey) {
-      headers["Authorization"] = `Basic ${Buffer.from(`${accessKey}:${secretKey}`).toString("base64")}`;
+    const headers = new Headers();
+    const credentials = Buffer.from(`${accessKey}:${secretKey}`, "utf-8").toString("base64");
+    headers.set("Authorization", `Basic ${credentials}`);
+
+    // Fetch von R2
+    const res = await fetch(r2Url, { headers });
+    console.log("R2 Response status:", res.status);
+
+    if (!res.ok) {
+      console.log("Image not found at R2");
+      return new Response(
+        JSON.stringify({ error: "Image not found", status: res.status }),
+        { status: 404 }
+      );
     }
 
-    const r2Res = await fetch(r2Url, { headers });
-    if (!r2Res.ok) {
-      return res.status(404).json({ error: "metadata.json not found", status: r2Res.status });
-    }
+    const arrayBuffer = await res.arrayBuffer();
+    console.log("Fetched image successfully, size:", arrayBuffer.byteLength);
 
-    const json = await r2Res.json();
-
-    // Aktuelle Zeit in Deutschland (Sommer-/Winterzeit automatisch)
-    const now = new Date();
-    const berlinTime = new Date(
-      now.toLocaleString("en-US", { timeZone: "Europe/Berlin" })
-    );
-
-    const filteredVarTypes = {};
-
-    for (const key of json.var_types) {
-      const timesteps = json.timesteps[key];
-      if (!timesteps || timesteps.length === 0) continue;
-
-      // Zeitschritte in Date-Objekte parsen
-      const timestepsDates = timesteps.map(t => {
-        const [dateStr, hourStr] = t.split("_");
-        const year = parseInt(dateStr.slice(0, 4));
-        const month = parseInt(dateStr.slice(4, 6)) - 1; // JS Monate 0-11
-        const day = parseInt(dateStr.slice(6, 8));
-        const hour = parseInt(hourStr.slice(0, 2));
-        return new Date(year, month, day, hour);
-      });
-
-      // Index des ersten Zeitschritts >= aktuelle Zeit
-      const berlinHourTime = new Date(berlinTime);
-      const startIndex = timestepsDates.findIndex(d => d >= berlinHourTime);
-
-      const filteredTimesteps = startIndex >= 0 
-        ? timesteps.slice(startIndex)
-        : timesteps; // fallback falls alles in der Vergangenheit
-
-      filteredVarTypes[key] = {
-        num_steps: filteredTimesteps.length,
-        timesteps: filteredTimesteps
-      };
-    }
-
-    // === NEU: generated_at in deutscher Zeit ===
-    let generatedAtDE = null;
-    if (json.generated_at) {
-      const utcDate = new Date(json.generated_at);
-      generatedAtDE = new Date(utcDate.toLocaleString("en-US", { timeZone: "Europe/Berlin" }));
-    }
-    
-
-    const filteredJson = {
-      run: json.run,
-      date: json.date,
-      generated_at: generatedAtDE
-        ? generatedAtDE.toISOString().replace("T", " ").replace("Z", "")
-        : null,
-      var_types: filteredVarTypes
-    };
-
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-    res.setHeader("Pragma", "no-cache");
-    res.setHeader("Expires", "0");
-    return res.status(200).json(filteredJson);
+    return new Response(arrayBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=0, s-maxage=10800, stale-while-revalidate=0",
+      },
+    });
 
   } catch (err) {
-    console.error("Error fetching metadata.json:", err);
-    return res.status(500).json({ error: err.message });
+    console.log("Unexpected error:", err.message);
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
   }
 }
