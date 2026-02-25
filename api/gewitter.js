@@ -40,7 +40,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation,visibility&forecast_days=14&timezone=auto`;
+                    `precipitation,visibility&forecast_days=14&models=best_match&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
