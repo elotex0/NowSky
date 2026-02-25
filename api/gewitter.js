@@ -40,7 +40,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation,visibility&forecast_days=1&timezone=auto`;
+                    `precipitation,visibility&forecast_days=14&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -132,9 +132,43 @@ export default async function handler(req, res) {
                 };
             });
 
+        // Tage gruppieren und maximale Wahrscheinlichkeit pro Tag berechnen
+        const daysMap = new Map();
+        
+        hours.forEach(h => {
+            const [datePart] = h.time.split('T');
+            const [year, month, day] = datePart.split('-').map(Number);
+            
+            // Nur zukünftige Tage (ab morgen)
+            if (datePart > currentDateStr) {
+                const probability = calculateProbability(h);
+                
+                if (!daysMap.has(datePart)) {
+                    daysMap.set(datePart, {
+                        date: datePart,
+                        maxProbability: probability,
+                        probabilities: [probability]
+                    });
+                } else {
+                    const dayData = daysMap.get(datePart);
+                    dayData.maxProbability = Math.max(dayData.maxProbability, probability);
+                    dayData.probabilities.push(probability);
+                }
+            }
+        });
+
+        // Tage sortieren und formatieren
+        const nextDays = Array.from(daysMap.values())
+            .sort((a, b) => a.date.localeCompare(b.date))
+            .map(day => ({
+                date: day.date,
+                probability: day.maxProbability
+            }));
+
         return res.status(200).json({
             timezone: timezone,
-            hours: next6Hours
+            hours: next6Hours,
+            days: nextDays
         });
 
     } catch (error) {
