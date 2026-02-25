@@ -275,6 +275,11 @@ function calculateProbability(hour) {
     if (dew > 15 && temp2m > 15) score += 5;
     if (relHum2m > 60 && temp2m > 20) score += 5;
     if (precipProb > 60 && temp2m > 12) score += 5;
+    if (precipAcc > 0.5 && cape > 500) score += 3;
+    if (precipAcc > 2 && cape > 800) score += 5;
+    if (precipAcc > 5 && cape > 1200) score += 8;
+    // Viel Regen aber kaum CAPE = eher Dauerregen → Gewitter unwahrscheinlicher
+    if (precipAcc > 3 && cape < 400) score -= 5;
     if (dirChange > 90) score += 3;
     if (pblHeight > 1500 && temp2m > 15) score += 2;
     if (cloudSum > 80) score -= 5;
