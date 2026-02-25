@@ -139,8 +139,8 @@ export default async function handler(req, res) {
             const [datePart] = h.time.split('T');
             const [year, month, day] = datePart.split('-').map(Number);
             
-            // Nur zukünftige Tage (ab morgen)
-            if (datePart > currentDateStr) {
+            // Heutige + 13 Tage
+            if (datePart >= currentDateStr) {
                 const probability = calculateProbability(h);
                 
                 if (!daysMap.has(datePart)) {
