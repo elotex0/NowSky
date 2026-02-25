@@ -119,7 +119,7 @@ export default async function handler(req, res) {
                 }
                 return datePart > currentDateStr;
             })
-            .slice(0, 6)
+            .slice(0, 24)
             .map(hour => {
                 const probability = calculateProbability(hour);
                 return {
