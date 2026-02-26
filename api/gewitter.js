@@ -39,7 +39,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation,visibility&forecast_days=14&models=best_match&timezone=auto`;
+                    `precipitation&forecast_days=14&models=best_match&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -88,7 +88,6 @@ export default async function handler(req, res) {
             pblHeight: data.hourly.boundary_layer_height?.[i] ?? 0,
             directRadiation: data.hourly.direct_radiation?.[i] ?? 0,
             precipAcc: data.hourly.precipitation?.[i] ?? 0,
-            visibility: data.hourly.visibility?.[i] ?? 0
         }));
 
         // Aktuelle Zeit in der Zeitzone des Ortes berechnen
@@ -219,54 +218,8 @@ function calcShear(hour) {
     return Math.hypot(ws300 - ws1000, 0);
 }
 
-function calcEHI(hour) {
-    const cape = hour.cape ?? 0;
-    const srh = calcSRH(hour);
-    const ehi = (cape * srh) / 160000;
-    return Math.round(ehi * 100) / 100; // Auf 2 Dezimalstellen gerundet
-}
 
-function calcKIndex(hour) {
-    const temp500 = hour.temp500 ?? 0;
-    const temp850 = hour.temp850 ?? 0;
-    const temp700 = hour.temp700 ?? 0;
-    const dew850 = hour.dew850 ?? 0;
-    const dew700 = hour.dew700 ?? 0;
-    return temp850 - temp500 + dew850 - (temp700 - dew700);
-}
 
-function calcShowalter(hour) {
-    const temp500 = hour.temp500 ?? 0;
-    const temp850 = hour.temp850 ?? 0;
-    return temp500 - (temp850 - 9.8 * 1.5);
-}
-
-function calcLapse(hour) {
-    const temp500 = hour.temp500 ?? 0;
-    const temp850 = hour.temp850 ?? 0;
-    return (temp850 - temp500) / 5.5;
-}
-
-function calcLiftedIndex(hour) {
-    const showalter = calcShowalter(hour);
-    return hour.liftedIndex ?? showalter;
-}
-
-function calcPBLHeight(hour) {
-    return hour.pblHeight ?? 0;
-}
-
-function calcDirectRadiation(hour) {
-    return hour.directRadiation ?? 0;
-}
-
-function calcPrecipAcc(hour) {
-    return hour.precipAcc ?? 0;
-}
-
-function calcVisibility(hour) {
-    return hour.visibility ?? 0;
-}
 
 function calcIndices(hour) {
     const temp500 = hour.temp500 ?? 0;
@@ -300,7 +253,6 @@ function calculateProbability(hour) {
     const temp2m = hour.temperature ?? 0;
     const relHum2m = calcRelHum(temp2m, dew);
     const precipAcc = hour.precipAcc ?? 0;
-    const visibility = hour.visibility ?? 0;
 
     // Winterfilter: Bei sehr niedrigen Temperaturen ist Gewitter praktisch unmöglich
     if (temp2m < 0) return 0;
@@ -322,11 +274,20 @@ function calculateProbability(hour) {
     let score = 0;
 
     // Höhere Schwellenwerte für relevante Gewitterindikatoren
-    if (cape > 2000) score += 30; else if (cape > 1500) score += 20; else if (cape > 1000) score += 12; else if (cape > 500) score += 5;
-    if (cin > 200) score -= 15; else if (cin > 100) score -= 10; else if (cin > 50) score -= 5;
-    if (kIndex > 35) score += 15; else if (kIndex > 30) score += 10; else if (kIndex > 25) score += 5;
+    if (cape > 1800) score += 28; else if (cape > 1300) score += 20; else if (cape > 800) score += 12; else if (cape > 400) score += 5;
+    if (cin > 150) score -= 12; else if (cin > 75) score -= 6;
+    if (kIndex > 35) score += 8; else if (kIndex > 30) score += 5; else if (kIndex > 25) score += 3;
     if (liftedIndex < -6) score += 15; else if (liftedIndex < -4) score += 10; else if (liftedIndex < -2) score += 5;
-    if (shear > 25) score += 10; else if (shear > 15) score += 5;
+    
+    // Showalter Index: Negativ = instabil, sehr negativ = stark instabil
+    if (showalter < -4) score += 8; else if (showalter < -2) score += 5; else if (showalter < 0) score += 2;
+    
+    // Lapse Rate (Temperaturabnahme mit Höhe): Steilere Lapse Rates = stärkere Instabilität
+    // > 7 °C/km = sehr instabil, > 6.5 °C/km = instabil (trocken-adiabatisch)
+    if (lapse > 7.5) score += 6; else if (lapse > 7.0) score += 4; else if (lapse > 6.5) score += 2;
+    if (lapse < 5.0 && cape < 1000) score -= 3; // Sehr flache Lapse Rate bei niedrigem CAPE = stabil
+    
+    if (shear > 22) score += 12; else if (shear > 14) score += 6;
     if (srh > 250) score += 10; else if (srh > 150) score += 5;
     
     // EHI (Energy Helicity Index): Kombiniert CAPE und SRH für bessere Vorhersage schwerer Gewitter
@@ -346,8 +307,7 @@ function calculateProbability(hour) {
     if (precipAcc > 3 && cape < 400) score -= 5;
     if (dirChange > 90) score += 3;
     if (pblHeight > 1500 && temp2m > 15) score += 2;
-    if (cloudSum > 80) score -= 5;
-    if (visibility < 8000 && temp2m > 10) score += 3;
+    if (cloudSum > 90 && cape < 1000) score -= 4;
 
     // rh500 (relative Luftfeuchtigkeit auf 500 hPa): Niedrige Werte begünstigen stärkere Gewitter
     // Trockene Luft in der mittleren Troposphäre verstärkt Verdunstungskühlung
@@ -361,7 +321,7 @@ function calculateProbability(hour) {
     if (directRadiation > 600 && temp2m > 15 && cape > 500) score += 5; // Sehr hohe Strahlung bei günstigen Bedingungen
     else if (directRadiation > 400 && temp2m > 12 && cape > 300) score += 3; // Hohe Strahlung
     else if (directRadiation > 200 && temp2m > 10) score += 1; // Moderate Strahlung
-    if (directRadiation < 50 && temp2m > 15 && cape < 1500) score -= 4; // Sehr niedrige Strahlung (Nacht) reduziert Gewitterwahrscheinlichkeit
+    if (directRadiation < 50 && cape < 800) score -= 6; // Sehr niedrige Strahlung (Nacht) reduziert Gewitterwahrscheinlichkeit
 
     // windSpeed10m (Windgeschwindigkeit in 10m Höhe): Moderate Winde sind günstig
     // Zu starke Winde können Konvektion behindern, zu schwache deuten auf Stagnation
