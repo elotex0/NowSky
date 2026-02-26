@@ -34,7 +34,6 @@ export default async function handler(req, res) {
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
                     `&hourly=wind_gusts_10m,wind_speed_10m,temperature_2m,dew_point_2m,` +
                     `cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability,` +
-                    `uv_index,` +
                     `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
@@ -65,7 +64,6 @@ export default async function handler(req, res) {
             cloudMid: data.hourly.cloud_cover_mid?.[i] ?? 0,
             cloudHigh: data.hourly.cloud_cover_high?.[i] ?? 0,
             precip: data.hourly.precipitation_probability?.[i] ?? 0,
-            uv: data.hourly.uv_index?.[i] ?? 0,
             wind: data.hourly.wind_speed_10m?.[i] ?? 0,
             gust: data.hourly.wind_gusts_10m?.[i] ?? 0,
             windDir1000: data.hourly.wind_direction_1000hPa?.[i] ?? 0,
@@ -128,7 +126,16 @@ export default async function handler(req, res) {
                     temperature: hour.temperature,
                     cape: hour.cape,
                     shear: calcShear(hour),
-                    srh: calcSRH(hour)
+                    srh: calcSRH(hour),
+                    ehi: calcEHI(hour),
+                    kIndex: calcKIndex(hour),
+                    showalter: calcShowalter(hour),
+                    lapse: calcLapse(hour),
+                    liftedIndex: calcLiftedIndex(hour),
+                    pblHeight: calcPBLHeight(hour),
+                    directRadiation: calcDirectRadiation(hour),
+                    precipAcc: calcPrecipAcc(hour),
+                    visibility: calcVisibility(hour)
                 };
             });
 
@@ -246,7 +253,6 @@ function calculateProbability(hour) {
         angleDiff(hour.windDir500 ?? 0, hour.windDir300 ?? 0);
     const rh500 = hour.rh500 ?? 0;
     const directRadiation = hour.directRadiation ?? 0;
-    const uvIndex = hour.uv ?? 0;
     const cloudSum = (hour.cloudLow ?? 0) + (hour.cloudMid ?? 0) + (hour.cloudHigh ?? 0);
     const windSpeed10m = hour.wind ?? 0;
     const windGust10m = hour.gust ?? 0;
@@ -272,9 +278,17 @@ function calculateProbability(hour) {
     if (liftedIndex < -6) score += 15; else if (liftedIndex < -4) score += 10; else if (liftedIndex < -2) score += 5;
     if (shear > 25) score += 10; else if (shear > 15) score += 5;
     if (srh > 250) score += 10; else if (srh > 150) score += 5;
+    
+    // EHI (Energy Helicity Index): Kombiniert CAPE und SRH für bessere Vorhersage schwerer Gewitter
+    // EHI = (CAPE × SRH) / 160000
+    const ehi = (cape * srh) / 160000;
+    if (ehi > 2) score += 8; // Sehr hoher EHI = hohes Risiko für schwere Gewitter
+    else if (ehi > 1) score += 5; // Hoher EHI = erhöhtes Risiko für schwere Gewitter
+    
     if (dew > 15 && temp2m > 15) score += 5;
     if (relHum2m > 60 && temp2m > 20) score += 5;
     if (precipProb > 60 && temp2m > 12) score += 5;
+    if (precipAcc > 1 && cloudSum > 70 && cape > 700) score += 4;
     if (precipAcc > 0.5 && cape > 500) score += 3;
     if (precipAcc > 2 && cape > 800) score += 5;
     if (precipAcc > 5 && cape > 1200) score += 8;
@@ -284,6 +298,32 @@ function calculateProbability(hour) {
     if (pblHeight > 1500 && temp2m > 15) score += 2;
     if (cloudSum > 80) score -= 5;
     if (visibility < 8000 && temp2m > 10) score += 3;
+
+    // rh500 (relative Luftfeuchtigkeit auf 500 hPa): Niedrige Werte begünstigen stärkere Gewitter
+    // Trockene Luft in der mittleren Troposphäre verstärkt Verdunstungskühlung
+    if (rh500 < 30 && cape > 1000) score += 6; // Sehr trockene mittlere Troposphäre bei hohem CAPE
+    else if (rh500 < 40 && cape > 800) score += 4; // Trockene mittlere Troposphäre
+    else if (rh500 < 50 && cape > 600) score += 2; // Mäßig trockene mittlere Troposphäre
+    if (rh500 > 80 && cape < 1000) score -= 3; // Sehr feuchte mittlere Troposphäre bei niedrigem CAPE = weniger günstig
+
+    // directRadiation (direkte Sonnenstrahlung in W/m²): Erwärmt Oberfläche und erhöht Instabilität
+    // Hohe Strahlung tagsüber begünstigt Konvektion
+    if (directRadiation > 600 && temp2m > 15 && cape > 500) score += 5; // Sehr hohe Strahlung bei günstigen Bedingungen
+    else if (directRadiation > 400 && temp2m > 12 && cape > 300) score += 3; // Hohe Strahlung
+    else if (directRadiation > 200 && temp2m > 10) score += 1; // Moderate Strahlung
+    if (directRadiation < 50 && temp2m > 15 && cape < 1500) score -= 4; // Sehr niedrige Strahlung (Nacht) reduziert Gewitterwahrscheinlichkeit
+
+    // windSpeed10m (Windgeschwindigkeit in 10m Höhe): Moderate Winde sind günstig
+    // Zu starke Winde können Konvektion behindern, zu schwache deuten auf Stagnation
+    if (windSpeed10m >= 5 && windSpeed10m <= 15 && temp2m > 12) score += 2; // Optimale Windgeschwindigkeit für Feuchtigkeitstransport
+    if (windSpeed10m > 20 && cape < 2000) score -= 3; // Sehr starke Winde können Konvektion behindern
+    if (windSpeed10m < 2 && temp2m > 15 && cape < 1500) score -= 2; // Sehr schwache Winde können auf Stagnation hinweisen
+
+    // windGust10m (Windböen in 10m Höhe): Große Böen können auf Gewitteraktivität oder starke Konvektion hinweisen
+    const gustDifference = windGust10m - windSpeed10m;
+    if (gustDifference > 10 && cape > 800 && temp2m > 12) score += 4; // Große Böen bei günstigen Bedingungen = starke Turbulenzen/Konvektion
+    else if (gustDifference > 7 && cape > 500) score += 2; // Moderate Böen
+    if (windGust10m > 20 && cape > 1000 && temp2m > 15) score += 3; // Sehr starke Böen bei hohem CAPE = mögliche Gewitteraktivität
 
     // Zusätzliche Reduktion bei niedrigen Temperaturen (10-15°C)
     if (temp2m < 15) score = Math.round(score * 0.6);
