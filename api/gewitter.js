@@ -228,6 +228,55 @@ function calcShear(hour) {
     return Math.hypot(ws300 - ws1000, 0);
 }
 
+function calcEHI(hour) {
+    const cape = hour.cape ?? 0;
+    const srh = calcSRH(hour);
+    const ehi = (cape * srh) / 160000;
+    return Math.round(ehi * 100) / 100; // Auf 2 Dezimalstellen gerundet
+}
+
+function calcKIndex(hour) {
+    const temp500 = hour.temp500 ?? 0;
+    const temp850 = hour.temp850 ?? 0;
+    const temp700 = hour.temp700 ?? 0;
+    const dew850 = hour.dew850 ?? 0;
+    const dew700 = hour.dew700 ?? 0;
+    return temp850 - temp500 + dew850 - (temp700 - dew700);
+}
+
+function calcShowalter(hour) {
+    const temp500 = hour.temp500 ?? 0;
+    const temp850 = hour.temp850 ?? 0;
+    return temp500 - (temp850 - 9.8 * 1.5);
+}
+
+function calcLapse(hour) {
+    const temp500 = hour.temp500 ?? 0;
+    const temp850 = hour.temp850 ?? 0;
+    return (temp850 - temp500) / 5.5;
+}
+
+function calcLiftedIndex(hour) {
+    const showalter = calcShowalter(hour);
+    return hour.liftedIndex ?? showalter;
+}
+
+function calcPBLHeight(hour) {
+    return hour.pblHeight ?? 0;
+}
+
+function calcDirectRadiation(hour) {
+    return hour.directRadiation ?? 0;
+}
+
+function calcPrecipAcc(hour) {
+    return hour.precipAcc ?? 0;
+}
+
+function calcVisibility(hour) {
+    return hour.visibility ?? 0;
+}
+
 function calcIndices(hour) {
     const temp500 = hour.temp500 ?? 0;
     const temp850 = hour.temp850 ?? 0;
