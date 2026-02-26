@@ -126,16 +126,7 @@ export default async function handler(req, res) {
                     temperature: hour.temperature,
                     cape: hour.cape,
                     shear: calcShear(hour),
-                    srh: calcSRH(hour),
-                    ehi: calcEHI(hour),
-                    kIndex: calcKIndex(hour),
-                    showalter: calcShowalter(hour),
-                    lapse: calcLapse(hour),
-                    liftedIndex: calcLiftedIndex(hour),
-                    pblHeight: calcPBLHeight(hour),
-                    directRadiation: calcDirectRadiation(hour),
-                    precipAcc: calcPrecipAcc(hour),
-                    visibility: calcVisibility(hour)
+                    srh: calcSRH(hour)
                 };
             });
 
@@ -316,6 +307,16 @@ function calculateProbability(hour) {
     if (temp2m < 5) return Math.min(5, Math.round(cape / 200));
     if (temp2m < 10) {
         if (cape < 1500) return 0;
+    }
+
+    // Filter für harmlose Labilität ohne Niederschlag: Wenn KEIN Niederschlagssignal vorhanden ist
+    // UND keine hohe Instabilität, dann ist Gewitter sehr unwahrscheinlich
+    const hasNoPrecipitation = precipAcc <= 0.1 && precipProb < 20;
+    const hasLowInstability = cape < 800 && liftedIndex > -2;
+    
+    if (hasNoPrecipitation && hasLowInstability) {
+        // Harmlose Labilität ohne Niederschlag = sehr unwahrscheinlich für Gewitter
+        return 0;
     }
 
     let score = 0;
