@@ -246,13 +246,37 @@ function calcRelHum(temp, dew) {
 }
 
 function calcSRH(hour) {
+    // SRH = Integral des Kreuzprodukts (V_storm - V_wind) x dV/dz dz
+    // Storm-Motion nach Bunkers-Methode approximieren
     const ws = [hour.wind_speed_1000hPa ?? 0, hour.wind_speed_850hPa ?? 0, hour.wind_speed_700hPa ?? 0].map(v => v / 3.6);
     const wd = [hour.windDir1000 ?? 0, hour.windDir850 ?? 0, hour.windDir700 ?? 0];
     const winds = ws.map((s, i) => windToUV(s, wd[i]));
 
-    let sr = (winds[0].u * (winds[1].v - winds[0].v) - winds[0].v * (winds[1].u - winds[0].u)) * 1.5;
-    sr += (winds[1].u * (winds[2].v - winds[1].v) - winds[1].v * (winds[2].u - winds[1].u)) * 1.5;
-    return Math.round(Math.abs(sr) * 10) / 10;
+    // Mean Wind 1000-700 hPa (grobe Approximation des Strömungsmittelpunkts)
+    const meanU = (winds[0].u + winds[1].u + winds[2].u) / 3;
+    const meanV = (winds[0].v + winds[1].v + winds[2].v) / 3;
+
+    // Wind-Shear-Vektor (1000→700 hPa) für Bunkers-Abweichung
+    const shearU = winds[2].u - winds[0].u;
+    const shearV = winds[2].v - winds[0].v;
+    const shearMag = Math.hypot(shearU, shearV) || 1;
+
+    // Bunkers Right-Mover: 7.5 m/s rechts des Shear-Vektors
+    const devMag = 7.5;
+    const stormU = meanU + devMag * (shearV / shearMag);
+    const stormV = meanV - devMag * (shearU / shearMag);
+
+    // SRH = Summe der Kreuzprodukte (storm-relative winds) über die Schicht
+    let srh = 0;
+    for (let i = 0; i < winds.length - 1; i++) {
+        const u1 = winds[i].u - stormU;
+        const v1 = winds[i].v - stormV;
+        const u2 = winds[i + 1].u - stormU;
+        const v2 = winds[i + 1].v - stormV;
+        srh += u1 * v2 - u2 * v1;
+    }
+
+    return Math.round(Math.abs(srh) * 10) / 10;
 }
 
 function calcShear(hour) {
