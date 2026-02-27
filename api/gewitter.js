@@ -220,13 +220,70 @@ export default async function handler(req, res) {
 // Hilfsfunktionen
 function getRegion(lat, lon) {
     // Europa: ca. 35°N - 70°N, -10°W - 40°E
-    // USA: ca. 25°N - 50°N, -125°W - -65°W
     if (lat >= 35 && lat <= 70 && lon >= -10 && lon <= 40) {
         return 'europe';
-    } else if (lat >= 25 && lat <= 50 && lon >= -125 && lon <= -65) {
+    }
+    // USA: ca. 25°N - 50°N, -125°W - -65°W
+    if (lat >= 25 && lat <= 50 && lon >= -125 && lon <= -65) {
         return 'usa';
     }
-    // Standard: Europa (für andere Regionen)
+    // Kanada: ca. 42°N - 70°N, -140°W - -50°W
+    if (lat >= 42 && lat <= 70 && lon >= -140 && lon <= -50) {
+        return 'canada';
+    }
+    // Mittelamerika/Karibik: ca. 10°N - 25°N, -120°W - -60°W
+    if (lat >= 10 && lat <= 25 && lon >= -120 && lon <= -60) {
+        return 'central_america';
+    }
+    // Südamerika - Brasilien/Argentinien: ca. 5°N - 35°S, -80°W - -30°W
+    if (lat >= -35 && lat <= 5 && lon >= -80 && lon <= -30) {
+        return 'south_america';
+    }
+    // Südamerika - Anden: ca. 5°N - 20°S, -80°W - -65°W
+    if (lat >= -20 && lat <= 5 && lon >= -80 && lon <= -65) {
+        return 'south_america';
+    }
+    // Afrika - Südafrika: ca. 22°S - 35°S, 15°E - 35°E
+    if (lat >= -35 && lat <= -22 && lon >= 15 && lon <= 35) {
+        return 'south_africa';
+    }
+    // Afrika - Zentralafrika: ca. 5°S - 15°N, 10°W - 40°E
+    if (lat >= -5 && lat <= 15 && lon >= -10 && lon <= 40) {
+        return 'central_africa';
+    }
+    // Afrika - Nordafrika: ca. 10°N - 35°N, -20°W - 40°E
+    if (lat >= 10 && lat <= 35 && lon >= -20 && lon <= 40) {
+        return 'north_africa';
+    }
+    // Asien - Südasien (Indien, Pakistan, Bangladesch): ca. 5°N - 35°N, 60°E - 100°E
+    if (lat >= 5 && lat <= 35 && lon >= 60 && lon <= 100) {
+        return 'south_asia';
+    }
+    // Asien - Ostasien (China, Japan, Korea): ca. 20°N - 50°N, 100°E - 145°E
+    if (lat >= 20 && lat <= 50 && lon >= 100 && lon <= 145) {
+        return 'east_asia';
+    }
+    // Asien - Südostasien: ca. 5°S - 25°N, 90°E - 145°E
+    if (lat >= -5 && lat <= 25 && lon >= 90 && lon <= 145) {
+        return 'southeast_asia';
+    }
+    // Australien: ca. 10°S - 45°S, 110°E - 155°E
+    if (lat >= -45 && lat <= -10 && lon >= 110 && lon <= 155) {
+        return 'australia';
+    }
+    // Neuseeland: ca. 34°S - 47°S, 165°E - 180°E und -180°W - -175°W
+    if (lat >= -47 && lat <= -34 && ((lon >= 165 && lon <= 180) || (lon >= -180 && lon <= -175))) {
+        return 'new_zealand';
+    }
+    // Russland/Zentralasien: ca. 40°N - 70°N, 40°E - 180°E
+    if (lat >= 40 && lat <= 70 && lon >= 40 && lon <= 180) {
+        return 'russia_central_asia';
+    }
+    // Naher Osten: ca. 12°N - 40°N, 25°E - 60°E
+    if (lat >= 12 && lat <= 40 && lon >= 25 && lon <= 60) {
+        return 'middle_east';
+    }
+    // Standard: Europa (für unbekannte Regionen)
     return 'europe';
 }
 
@@ -317,26 +374,42 @@ function calcIndices(hour) {
     };
 }
 
+// Regionsspezifische Parameter für SCP/STP
+function getRegionParams(region) {
+    const params = {
+        'usa': { minCAPE: 100, minShear: 8, minSRH: 50, normCAPE: 1000, normShear: 12, normSRH: 50 },
+        'canada': { minCAPE: 100, minShear: 7, minSRH: 45, normCAPE: 900, normShear: 11, normSRH: 45 },
+        'central_america': { minCAPE: 150, minShear: 6, minSRH: 40, normCAPE: 1200, normShear: 10, normSRH: 50 },
+        'south_america': { minCAPE: 150, minShear: 8, minSRH: 50, normCAPE: 1200, normShear: 12, normSRH: 50 },
+        'south_africa': { minCAPE: 200, minShear: 10, minSRH: 60, normCAPE: 1500, normShear: 14, normSRH: 60 },
+        'central_africa': { minCAPE: 200, minShear: 5, minSRH: 30, normCAPE: 1500, normShear: 8, normSRH: 40 },
+        'north_africa': { minCAPE: 150, minShear: 6, minSRH: 40, normCAPE: 1000, normShear: 10, normSRH: 40 },
+        'south_asia': { minCAPE: 200, minShear: 6, minSRH: 40, normCAPE: 1500, normShear: 10, normSRH: 50 },
+        'east_asia': { minCAPE: 150, minShear: 8, minSRH: 50, normCAPE: 1200, normShear: 12, normSRH: 50 },
+        'southeast_asia': { minCAPE: 200, minShear: 5, minSRH: 35, normCAPE: 1500, normShear: 8, normSRH: 45 },
+        'australia': { minCAPE: 150, minShear: 8, minSRH: 50, normCAPE: 1200, normShear: 12, normSRH: 50 },
+        'new_zealand': { minCAPE: 100, minShear: 6, minSRH: 40, normCAPE: 800, normShear: 10, normSRH: 40 },
+        'russia_central_asia': { minCAPE: 100, minShear: 6, minSRH: 40, normCAPE: 800, normShear: 10, normSRH: 40 },
+        'middle_east': { minCAPE: 150, minShear: 6, minSRH: 40, normCAPE: 1000, normShear: 10, normSRH: 40 },
+        'europe': { minCAPE: 100, minShear: 6, minSRH: 40, normCAPE: 800, normShear: 10, normSRH: 40 }
+    };
+    return params[region] || params['europe'];
+}
+
 function calcSCP(cape, shear, srh, cin, region = 'europe') {
     // SCP nach Thompson et al. (2004): SCP = (MUCAPE/1000) * (EBWD/12) * (ESRH/50)
     // EBWD = Effective Bulk Wind Difference, ESRH = Effective SRH
     // CIN-Term: Negative Werte reduzieren SCP, nicht linearer Abzug
-    if (region === 'usa') {
-        if (cape < 100 || shear < 8 || srh < 50) return 0;
-        const capeTerm = cape / 1000;                          // Normierung: 1000 J/kg = 1
-        const shearTerm = Math.min(shear / 12, 1.5);          // Cap bei 1.5, Standard: 12 m/s
-        const srhTerm = Math.min(srh / 50, 4.0);              // Normierung: 50 m²/s² = 1
-        const cinTerm = cin < 40 ? 1.0 : Math.max(0.1, 1 - (cin - 40) / 200);
-        return Math.max(0, capeTerm * shearTerm * srhTerm * cinTerm);
-    } else {
-        // Europa: Gleiche Physik, angepasste Klimatologie (ESTOFEX-Studien)
-        if (cape < 100 || shear < 6 || srh < 40) return 0;
-        const capeTerm = cape / 800;                           // Europa: niedrigere Normierung
-        const shearTerm = Math.min(shear / 10, 1.5);
-        const srhTerm = Math.min(srh / 40, 4.0);
-        const cinTerm = cin < 40 ? 1.0 : Math.max(0.1, 1 - (cin - 40) / 200);
-        return Math.max(0, capeTerm * shearTerm * srhTerm * cinTerm);
-    }
+    const p = getRegionParams(region);
+    
+    if (cape < p.minCAPE || shear < p.minShear || srh < p.minSRH) return 0;
+    
+    const capeTerm = cape / p.normCAPE;
+    const shearTerm = Math.min(shear / p.normShear, 1.5);
+    const srhTerm = Math.min(srh / p.normSRH, 4.0);
+    const cinTerm = cin < 40 ? 1.0 : Math.max(0.1, 1 - (cin - 40) / 200);
+    
+    return Math.max(0, capeTerm * shearTerm * srhTerm * cinTerm);
 }
 
 // DCAPE (Downdraft CAPE) nach Gilmore & Wicker (1998)
@@ -371,11 +444,28 @@ function calcDCAPE(hour) {
 
 // STP (Significant Tornado Parameter) - regionsspezifisch
 function calcSTP(cape, srh, shear, liftedIndex, cin, region = 'europe', temp2m = null, dew2m = null) {
-    if (region === 'usa') {
-        if (cape < 300 || srh < 80 || shear < 10) return 0;
-    } else {
-        if (cape < 100 || srh < 40 || shear < 6) return 0;
-    }
+    // STP-Thresholds regionsspezifisch
+    const stpThresholds = {
+        'usa': { minCAPE: 300, minSRH: 80, minShear: 10, normCAPE: 1500, normSRH: 150, normShear: 12 },
+        'canada': { minCAPE: 200, minSRH: 70, minShear: 9, normCAPE: 1200, normSRH: 130, normShear: 11 },
+        'central_america': { minCAPE: 200, minSRH: 50, minShear: 8, normCAPE: 1200, normSRH: 100, normShear: 10 },
+        'south_america': { minCAPE: 250, minSRH: 70, minShear: 10, normCAPE: 1400, normSRH: 130, normShear: 12 },
+        'south_africa': { minCAPE: 300, minSRH: 90, minShear: 12, normCAPE: 1600, normSRH: 160, normShear: 14 },
+        'central_africa': { minCAPE: 200, minSRH: 40, minShear: 6, normCAPE: 1200, normSRH: 80, normShear: 8 },
+        'north_africa': { minCAPE: 200, minSRH: 50, minShear: 8, normCAPE: 1200, normSRH: 100, normShear: 10 },
+        'south_asia': { minCAPE: 250, minSRH: 60, minShear: 8, normCAPE: 1400, normSRH: 120, normShear: 10 },
+        'east_asia': { minCAPE: 200, minSRH: 70, minShear: 10, normCAPE: 1300, normSRH: 130, normShear: 12 },
+        'southeast_asia': { minCAPE: 200, minSRH: 50, minShear: 6, normCAPE: 1300, normSRH: 100, normShear: 8 },
+        'australia': { minCAPE: 250, minSRH: 80, minShear: 10, normCAPE: 1400, normSRH: 140, normShear: 12 },
+        'new_zealand': { minCAPE: 150, minSRH: 50, minShear: 7, normCAPE: 1000, normSRH: 100, normShear: 9 },
+        'russia_central_asia': { minCAPE: 150, minSRH: 50, minShear: 7, normCAPE: 1000, normSRH: 100, normShear: 9 },
+        'middle_east': { minCAPE: 200, minSRH: 50, minShear: 8, normCAPE: 1200, normSRH: 100, normShear: 10 },
+        'europe': { minCAPE: 100, minSRH: 40, minShear: 6, normCAPE: 1000, normSRH: 100, normShear: 10 }
+    };
+    
+    const t = stpThresholds[region] || stpThresholds['europe'];
+    
+    if (cape < t.minCAPE || srh < t.minSRH || shear < t.minShear) return 0;
 
     // LCL-Höhe nach Bolton (1980): LCL (m) ≈ 125 * (T - Td)
     // < 1000m = optimal für Tornados, > 2000m = sehr ungünstig
@@ -394,13 +484,9 @@ function calcSTP(cape, srh, shear, liftedIndex, cin, region = 'europe', temp2m =
                 : 0.2;
     }
 
-    const normCAPE  = region === 'usa' ? 1500 : 1000;
-    const normSRH   = region === 'usa' ? 150  : 100;
-    const normShear = region === 'usa' ? 12   : 10;
-
-    const capeTerm  = Math.min(cape / normCAPE, 3.0);
-    const srhTerm   = Math.min(srh / normSRH, 3.0);
-    const shearTerm = shear >= normShear ? 1.0 : shear / normShear;
+    const capeTerm  = Math.min(cape / t.normCAPE, 3.0);
+    const srhTerm   = Math.min(srh / t.normSRH, 3.0);
+    const shearTerm = shear >= t.normShear ? 1.0 : shear / t.normShear;
     const cinTerm   = cin < 25 ? 1.0 : Math.max(0.1, 1 - (cin - 25) / 175);
 
     return Math.max(0, capeTerm * srhTerm * shearTerm * lclTerm * cinTerm);
@@ -433,6 +519,118 @@ function getEnsembleProb(ensemble, param, threshold, direction = 'above') {
     return mean > threshold ? 0.7 : 0.3;
 }
 
+// Regionsspezifische Parameter für Wahrscheinlichkeitsberechnung
+function getProbabilityParams(region) {
+    const params = {
+        'usa': {
+            minTemp: 10, minTempWithCAPE: 15, minCAPE: 500, minCAPEWithPrecip: 200,
+            capeThresholds: [2500, 2000, 1500, 1000, 800, 600, 500],
+            capeScores: [30, 25, 20, 14, 10, 6, 3],
+            minTempReduction: 15, tempReductionFactor: 0.5,
+            minTempReduction2: 18, tempReductionFactor2: 0.7
+        },
+        'canada': {
+            minTemp: 8, minTempWithCAPE: 12, minCAPE: 400, minCAPEWithPrecip: 150,
+            capeThresholds: [2000, 1500, 1200, 800, 600, 500, 400],
+            capeScores: [25, 20, 16, 12, 8, 5, 3],
+            minTempReduction: 12, tempReductionFactor: 0.5,
+            minTempReduction2: 15, tempReductionFactor2: 0.7
+        },
+        'central_america': {
+            minTemp: 15, minTempWithCAPE: 20, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
+            capeScores: [28, 22, 18, 14, 10, 6, 3],
+            minTempReduction: 18, tempReductionFactor: 0.6,
+            minTempReduction2: 22, tempReductionFactor2: 0.8
+        },
+        'south_america': {
+            minTemp: 12, minTempWithCAPE: 18, minCAPE: 400, minCAPEWithPrecip: 200,
+            capeThresholds: [2500, 2000, 1500, 1200, 1000, 800, 600],
+            capeScores: [30, 25, 20, 16, 12, 8, 5],
+            minTempReduction: 15, tempReductionFactor: 0.5,
+            minTempReduction2: 20, tempReductionFactor2: 0.7
+        },
+        'south_africa': {
+            minTemp: 12, minTempWithCAPE: 18, minCAPE: 500, minCAPEWithPrecip: 250,
+            capeThresholds: [2500, 2000, 1800, 1500, 1200, 1000, 800],
+            capeScores: [32, 27, 23, 20, 15, 10, 6],
+            minTempReduction: 15, tempReductionFactor: 0.5,
+            minTempReduction2: 20, tempReductionFactor2: 0.7
+        },
+        'central_africa': {
+            minTemp: 20, minTempWithCAPE: 25, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
+            capeScores: [28, 22, 18, 14, 10, 6, 3],
+            minTempReduction: 22, tempReductionFactor: 0.6,
+            minTempReduction2: 25, tempReductionFactor2: 0.8
+        },
+        'north_africa': {
+            minTemp: 15, minTempWithCAPE: 20, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
+            capeScores: [28, 22, 18, 14, 10, 6, 3],
+            minTempReduction: 18, tempReductionFactor: 0.5,
+            minTempReduction2: 22, tempReductionFactor2: 0.7
+        },
+        'south_asia': {
+            minTemp: 20, minTempWithCAPE: 25, minCAPE: 400, minCAPEWithPrecip: 200,
+            capeThresholds: [2500, 2000, 1800, 1500, 1200, 1000, 800],
+            capeScores: [30, 25, 22, 18, 14, 10, 6],
+            minTempReduction: 22, tempReductionFactor: 0.5,
+            minTempReduction2: 27, tempReductionFactor2: 0.7
+        },
+        'east_asia': {
+            minTemp: 10, minTempWithCAPE: 15, minCAPE: 400, minCAPEWithPrecip: 200,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 500],
+            capeScores: [28, 22, 18, 14, 10, 6, 4],
+            minTempReduction: 12, tempReductionFactor: 0.5,
+            minTempReduction2: 18, tempReductionFactor2: 0.7
+        },
+        'southeast_asia': {
+            minTemp: 22, minTempWithCAPE: 27, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
+            capeScores: [28, 22, 18, 14, 10, 6, 3],
+            minTempReduction: 24, tempReductionFactor: 0.6,
+            minTempReduction2: 28, tempReductionFactor2: 0.8
+        },
+        'australia': {
+            minTemp: 12, minTempWithCAPE: 18, minCAPE: 400, minCAPEWithPrecip: 200,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 500],
+            capeScores: [28, 22, 18, 14, 10, 6, 4],
+            minTempReduction: 15, tempReductionFactor: 0.5,
+            minTempReduction2: 20, tempReductionFactor2: 0.7
+        },
+        'new_zealand': {
+            minTemp: 8, minTempWithCAPE: 12, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [1500, 1200, 1000, 800, 600, 500, 400],
+            capeScores: [25, 20, 16, 12, 8, 5, 3],
+            minTempReduction: 10, tempReductionFactor: 0.5,
+            minTempReduction2: 14, tempReductionFactor2: 0.7
+        },
+        'russia_central_asia': {
+            minTemp: 5, minTempWithCAPE: 10, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [1500, 1200, 1000, 800, 600, 500, 400],
+            capeScores: [25, 20, 16, 12, 8, 5, 3],
+            minTempReduction: 8, tempReductionFactor: 0.5,
+            minTempReduction2: 12, tempReductionFactor2: 0.7
+        },
+        'middle_east': {
+            minTemp: 12, minTempWithCAPE: 18, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
+            capeScores: [28, 22, 18, 14, 10, 6, 3],
+            minTempReduction: 15, tempReductionFactor: 0.5,
+            minTempReduction2: 20, tempReductionFactor2: 0.7
+        },
+        'europe': {
+            minTemp: 5, minTempWithCAPE: 10, minCAPE: 200, minCAPEWithPrecip: 100,
+            capeThresholds: [1500, 1200, 800, 500, 400, 300, 200],
+            capeScores: [25, 20, 14, 8, 6, 4, 2],
+            minTempReduction: 12, tempReductionFactor: 0.5,
+            minTempReduction2: 15, tempReductionFactor2: 0.7
+        }
+    };
+    return params[region] || params['europe'];
+}
+
 // Hauptfunktion für Wahrscheinlichkeitsberechnung (optimiert und kompakt)
 function calculateProbability(hour, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
@@ -443,17 +641,10 @@ function calculateProbability(hour, region = 'europe') {
     const precipProb = hour.precip ?? 0;
     
     // Regionsspezifische Filter für Fehlalarme
-    if (region === 'usa') {
-        // USA: Höhere Thresholds
-        if (temp2m < 10) return 0; // Zu kalt für Gewitter
-        if (temp2m < 15 && cape < 1500) return 0; // Kalt und keine hohe Instabilität
-        if (cape < 500 && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
-    } else {
-        // Europa: Niedrigere Thresholds
-        if (temp2m < 5) return 0; // Zu kalt für Gewitter
-        if (temp2m < 10 && cape < 1000) return 0; // Kalt und keine hohe Instabilität
-        if (cape < 200 && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
-    }
+    const p = getProbabilityParams(region);
+    if (temp2m < p.minTemp) return 0; // Zu kalt für Gewitter
+    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
+    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
     
     // Berechne Indizes
     const shear = calcShear(hour);
@@ -471,23 +662,11 @@ function calculateProbability(hour, region = 'europe') {
     let score = 0;
     
     // CAPE-Bewertung (regionsspezifisch)
-    if (region === 'usa') {
-        if (cape >= 2500) score += 30;
-        else if (cape >= 2000) score += 25;
-        else if (cape >= 1500) score += 20;
-        else if (cape >= 1000) score += 14;
-        else if (cape >= 800) score += 10;
-        else if (cape >= 600) score += 6;
-        else if (cape >= 500) score += 3;
-    } else {
-        // Europa: Niedrigere Thresholds
-        if (cape >= 1500) score += 25;
-        else if (cape >= 1200) score += 20;
-        else if (cape >= 800) score += 14;
-        else if (cape >= 500) score += 8;
-        else if (cape >= 400) score += 6;
-        else if (cape >= 300) score += 4;
-        else if (cape >= 200) score += 2;
+    for (let i = 0; i < p.capeThresholds.length; i++) {
+        if (cape >= p.capeThresholds[i]) {
+            score += p.capeScores[i];
+            break;
+        }
     }
     
     // CIN-Penalty (stärker gewichtet)
@@ -496,7 +675,11 @@ function calculateProbability(hour, region = 'europe') {
     else if (cin > 50) score -= 4;
     
     // Kombinierte Indizes (regionsspezifisch)
-    if (region === 'usa') {
+    // Regionen mit hohen Thresholds: usa, south_africa, south_america, australia
+    const highThresholdRegions = ['usa', 'south_africa', 'south_america', 'australia'];
+    const isHighThreshold = highThresholdRegions.includes(region);
+    
+    if (isHighThreshold) {
         if (scp > 3) score += 25;
         else if (scp > 2) score += 20;
         else if (scp > 1.5) score += 14;
@@ -512,7 +695,7 @@ function calculateProbability(hour, region = 'europe') {
         else if (ehi > 1.5) score += 8;
         else if (ehi > 1) score += 4;
     } else {
-        // Europa: Niedrigere Thresholds
+        // Niedrigere Thresholds für andere Regionen
         if (scp > 2) score += 20;
         else if (scp > 1.5) score += 16;
         else if (scp > 1) score += 10;
@@ -523,16 +706,19 @@ function calculateProbability(hour, region = 'europe') {
         else if (stp > 0.5) score += 7;
         else if (stp > 0.3) score += 3;
         
-        // EHI-Schwellen nach Hart & Korotky (1991), Europa-klimatologisch angepasst
-        if (ehi >= 2.0) score += 12;      // Signifikante Tornados möglich
-        else if (ehi >= 1.0) score += 8;  // Superzellen möglich
-        else if (ehi >= 0.5) score += 4;  // Organisierte Konvektion möglich
-        else if (ehi >= 0.3) score += 2;  // Europa: auch niedrige EHI relevant
+        // EHI-Schwellen nach Hart & Korotky (1991), klimatologisch angepasst
+        if (ehi >= 2.0) score += 12;
+        else if (ehi >= 1.0) score += 8;
+        else if (ehi >= 0.5) score += 4;
+        else if (ehi >= 0.3) score += 2;
     }
     
     // Shear und SRH (regionsspezifisch)
-    if (region === 'usa') {
-        if (cape >= 800) {
+    const highCAPEThreshold = isHighThreshold ? 800 : 500;
+    const lowCAPEThreshold = isHighThreshold ? 500 : 200;
+    
+    if (cape >= highCAPEThreshold) {
+        if (isHighThreshold) {
             if (shear >= 25) score += 12;
             else if (shear >= 20) score += 10;
             else if (shear >= 15) score += 7;
@@ -542,16 +728,7 @@ function calculateProbability(hour, region = 'europe') {
             else if (srh >= 200) score += 8;
             else if (srh >= 150) score += 6;
             else if (srh >= 120) score += 4;
-        } else if (cape >= 500) {
-            if (shear >= 20) score += 5;
-            else if (shear >= 15) score += 3;
-            
-            if (srh >= 200) score += 4;
-            else if (srh >= 150) score += 2;
-        }
-    } else {
-        // Europa: Niedrigere Thresholds
-        if (cape >= 500) {
+        } else {
             if (shear >= 20) score += 10;
             else if (shear >= 15) score += 7;
             else if (shear >= 10) score += 4;
@@ -561,8 +738,15 @@ function calculateProbability(hour, region = 'europe') {
             else if (srh >= 150) score += 6;
             else if (srh >= 120) score += 4;
             else if (srh >= 80) score += 2;
-        } else if (cape >= 200) {
-            // Europa: Auch bei niedrigem CAPE können Shear/SRH relevant sein
+        }
+    } else if (cape >= lowCAPEThreshold) {
+        if (isHighThreshold) {
+            if (shear >= 20) score += 5;
+            else if (shear >= 15) score += 3;
+            
+            if (srh >= 200) score += 4;
+            else if (srh >= 150) score += 2;
+        } else {
             if (shear >= 15) score += 3;
             else if (shear >= 10) score += 1;
             
@@ -743,7 +927,7 @@ function calculateProbability(hour, region = 'europe') {
     // DCAPE: Downdraft-Potential (Gilmore & Wicker 1998)
     // Hoher DCAPE verstärkt Böen, Hagel, MCS-Aktivität
     const dcape = calcDCAPE(hour);
-    if (region === 'usa') {
+    if (isHighThreshold) {
         if (dcape >= 1000 && cape >= 500) score += 6;
         else if (dcape >= 700 && cape >= 400) score += 4;
         else if (dcape >= 500 && cape >= 300) score += 2;
@@ -756,49 +940,28 @@ function calculateProbability(hour, region = 'europe') {
     // Ensemble-Daten (falls verfügbar, regionsspezifisch)
     if (hour.ensemble) {
         const MIN_PROB = 0.6;
+        const capeThreshold = isHighThreshold ? 800 : 600;
+        const capeMinCAPE = isHighThreshold ? 600 : 400;
         
-        if (region === 'usa') {
-            const capeProb = getEnsembleProb(hour.ensemble, 'cape', 800, 'above');
-            if (capeProb !== null && capeProb >= MIN_PROB) {
-                score += Math.round(10 * capeProb);
-            }
-            
-            const liProb = getEnsembleProb(hour.ensemble, 'lifted_index', -3, 'below');
-            if (liProb !== null && liProb >= MIN_PROB && cape >= 600) {
-                score += Math.round(5 * liProb);
-            }
-            
-            const precipProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
-            if (precipProb !== null && precipProb >= MIN_PROB && cape >= 600) {
-                score += Math.round(4 * precipProb);
-            }
-        } else {
-            // Europa: Niedrigere Thresholds
-            const capeProb = getEnsembleProb(hour.ensemble, 'cape', 600, 'above');
-            if (capeProb !== null && capeProb >= MIN_PROB) {
-                score += Math.round(8 * capeProb);
-            }
-            
-            const liProb = getEnsembleProb(hour.ensemble, 'lifted_index', -3, 'below');
-            if (liProb !== null && liProb >= MIN_PROB && cape >= 400) {
-                score += Math.round(4 * liProb);
-            }
-            
-            const precipProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
-            if (precipProb !== null && precipProb >= MIN_PROB && cape >= 400) {
-                score += Math.round(3 * precipProb);
-            }
+        const capeProb = getEnsembleProb(hour.ensemble, 'cape', capeThreshold, 'above');
+        if (capeProb !== null && capeProb >= MIN_PROB) {
+            score += Math.round((isHighThreshold ? 10 : 8) * capeProb);
+        }
+        
+        const liProb = getEnsembleProb(hour.ensemble, 'lifted_index', -3, 'below');
+        if (liProb !== null && liProb >= MIN_PROB && cape >= capeMinCAPE) {
+            score += Math.round((isHighThreshold ? 5 : 4) * liProb);
+        }
+        
+        const precipProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
+        if (precipProb !== null && precipProb >= MIN_PROB && cape >= capeMinCAPE) {
+            score += Math.round((isHighThreshold ? 4 : 3) * precipProb);
         }
     }
     
     // Temperatur-Reduktion (kälter = weniger wahrscheinlich, regionsspezifisch)
-    if (region === 'usa') {
-        if (temp2m < 15) score = Math.round(score * 0.5);
-        else if (temp2m < 18) score = Math.round(score * 0.7);
-    } else {
-        if (temp2m < 12) score = Math.round(score * 0.5);
-        else if (temp2m < 15) score = Math.round(score * 0.7);
-    }
+    if (temp2m < p.minTempReduction) score = Math.round(score * p.tempReductionFactor);
+    else if (temp2m < p.minTempReduction2) score = Math.round(score * p.tempReductionFactor2);
     
     // Mindestanforderungen für Gewitter (regionsspezifisch)
     if (region === 'usa') {
@@ -826,15 +989,28 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const { liftedIndex } = calcIndices(hour);
     
     // Basis-Filter: Zu kalt oder keine Instabilität = kein Tornado (regionsspezifisch)
-    if (region === 'usa') {
-        if (temp2m < 12) return 0; // Zu kalt
-        if (cape < 500) return 0; // USA: Höhere Schwelle
-        if (cin > 200) return 0; // Zu viel CIN
-    } else {
-        if (temp2m < 8) return 0; // Zu kalt
-        if (cape < 400) return 0; // Europa: Niedrigere Schwelle
-        if (cin > 200) return 0; // Zu viel CIN
-    }
+    const tornadoThresholds = {
+        'usa': { minTemp: 12, minCAPE: 500 },
+        'canada': { minTemp: 10, minCAPE: 400 },
+        'south_africa': { minTemp: 12, minCAPE: 500 },
+        'south_america': { minTemp: 12, minCAPE: 450 },
+        'australia': { minTemp: 12, minCAPE: 450 },
+        'east_asia': { minTemp: 10, minCAPE: 400 },
+        'south_asia': { minTemp: 18, minCAPE: 400 },
+        'southeast_asia': { minTemp: 20, minCAPE: 350 },
+        'central_america': { minTemp: 18, minCAPE: 350 },
+        'north_africa': { minTemp: 15, minCAPE: 350 },
+        'central_africa': { minTemp: 20, minCAPE: 300 },
+        'middle_east': { minTemp: 12, minCAPE: 350 },
+        'new_zealand': { minTemp: 8, minCAPE: 300 },
+        'russia_central_asia': { minTemp: 8, minCAPE: 300 },
+        'europe': { minTemp: 8, minCAPE: 400 }
+    };
+    
+    const t = tornadoThresholds[region] || tornadoThresholds['europe'];
+    if (temp2m < t.minTemp) return 0;
+    if (cape < t.minCAPE) return 0;
+    if (cin > 200) return 0;
     
     // STP berechnen (regionsspezifisch)
     // Veer-with-Height Check: Winds müssen mit der Höhe drehen (backing am Boden → veering oben)
@@ -864,8 +1040,11 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     let score = 0;
     
     // STP ist der Hauptindikator für Tornado-Potential (regionsspezifisch)
-    if (region === 'usa') {
-        if (stp >= 3.0) score = 95; // Sehr hohes Risiko
+    const highThresholdRegions = ['usa', 'south_africa', 'south_america', 'australia'];
+    const isHighThreshold = highThresholdRegions.includes(region);
+    
+    if (isHighThreshold) {
+        if (stp >= 3.0) score = 95;
         else if (stp >= 2.0) score = 85;
         else if (stp >= 1.5) score = 70;
         else if (stp >= 1.0) score = 55;
@@ -874,7 +1053,7 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         else if (stp >= 0.3) score = 12;
         else if (stp > 0) score = 5;
     } else {
-        if (stp >= 2.0) score = 85; // Sehr hohes Risiko (Europa: selten)
+        if (stp >= 2.0) score = 85;
         else if (stp >= 1.5) score = 70;
         else if (stp >= 1.0) score = 55;
         else if (stp >= 0.7) score = 40;
@@ -884,37 +1063,33 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     }
     
     // Zusätzliche Faktoren (regionsspezifisch)
-    if (region === 'usa') {
-        // CAPE + Shear Kombination (USA: höhere Werte)
+    if (isHighThreshold) {
+        // Hohe Thresholds: usa, south_africa, south_america, australia
         if (cape >= 1500 && shear >= 25) score += 10;
         else if (cape >= 1200 && shear >= 20) score += 8;
         else if (cape >= 1000 && shear >= 18) score += 6;
         else if (cape >= 800 && shear >= 15) score += 4;
         
-        // SRH ist wichtig für Tornado-Entwicklung
         if (srh >= 250 && cape >= 1200) score += 8;
         else if (srh >= 200 && cape >= 1000) score += 6;
         else if (srh >= 150 && cape >= 800) score += 4;
         else if (srh >= 120 && cape >= 600) score += 2;
         
-        // Lifted Index
         if (liftedIndex <= -6 && cape >= 1200) score += 6;
         else if (liftedIndex <= -5 && cape >= 1000) score += 5;
         else if (liftedIndex <= -3 && cape >= 800) score += 3;
         
-        // EHI (Energy Helicity Index)
         const ehi = (cape * srh) / 160000;
         if (ehi >= 3.5) score += 10;
         else if (ehi >= 2.5) score += 8;
         else if (ehi >= 1.5) score += 5;
         else if (ehi >= 1.0) score += 3;
         
-        // Reduktionen
         if (cin > 100) score -= 10;
-        if (shear < 12) score -= 15; // USA: höhere Schwelle
-        if (srh < 100) score -= 10; // USA: höhere Schwelle
+        if (shear < 12) score -= 15;
+        if (srh < 100) score -= 10;
     } else {
-        // Europa: Niedrigere Werte
+        // Niedrigere Thresholds für andere Regionen
         if (cape >= 1000 && shear >= 18) score += 8;
         else if (cape >= 800 && shear >= 15) score += 5;
         else if (cape >= 600 && shear >= 12) score += 3;
@@ -931,35 +1106,61 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         else if (ehi >= 1.5) score += 5;
         else if (ehi >= 1.0) score += 3;
         
-        // Reduktionen
         if (cin > 100) score -= 10;
         if (shear < 10) score -= 15;
         if (srh < 80) score -= 10;
     }
     
     // Temperatur-Reduktion (regionsspezifisch)
-    if (region === 'usa') {
-        if (temp2m < 15) score = Math.round(score * 0.6);
-        else if (temp2m < 18) score = Math.round(score * 0.8);
-    } else {
-        if (temp2m < 12) score = Math.round(score * 0.6);
-        else if (temp2m < 15) score = Math.round(score * 0.8);
-    }
+    const tempReductionParams = {
+        'usa': { threshold1: 15, factor1: 0.6, threshold2: 18, factor2: 0.8 },
+        'canada': { threshold1: 12, factor1: 0.6, threshold2: 15, factor2: 0.8 },
+        'south_africa': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
+        'south_america': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
+        'australia': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
+        'east_asia': { threshold1: 12, factor1: 0.6, threshold2: 18, factor2: 0.8 },
+        'south_asia': { threshold1: 22, factor1: 0.6, threshold2: 27, factor2: 0.8 },
+        'southeast_asia': { threshold1: 24, factor1: 0.6, threshold2: 28, factor2: 0.8 },
+        'central_america': { threshold1: 20, factor1: 0.6, threshold2: 24, factor2: 0.8 },
+        'north_africa': { threshold1: 18, factor1: 0.6, threshold2: 22, factor2: 0.8 },
+        'central_africa': { threshold1: 22, factor1: 0.6, threshold2: 26, factor2: 0.8 },
+        'middle_east': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
+        'new_zealand': { threshold1: 10, factor1: 0.6, threshold2: 14, factor2: 0.8 },
+        'russia_central_asia': { threshold1: 10, factor1: 0.6, threshold2: 14, factor2: 0.8 },
+        'europe': { threshold1: 12, factor1: 0.6, threshold2: 15, factor2: 0.8 }
+    };
+    
+    const tr = tempReductionParams[region] || tempReductionParams['europe'];
+    if (temp2m < tr.threshold1) score = Math.round(score * tr.factor1);
+    else if (temp2m < tr.threshold2) score = Math.round(score * tr.factor2);
 
     // Finale Plausibilitätsprüfung: STP < 0.1 trotz score > 0 = physikalisch inkonsistent
     // Passiert wenn Einzelfaktoren (EHI, CAPE+Shear) score pushen aber STP versagt
     if (stp < 0.1 && score > 10) score = Math.min(score, 8);
 
     // Minimalanforderungen – nur noch für Grenzfälle die STP-Filter passiert haben
-    if (region === 'usa') {
-        if (cape < 500 && score > 15) score = Math.round(score * 0.6);
-        if (shear < 10 && score > 10) score = Math.round(score * 0.5);
-        if (srh < 80 && score > 10) score = Math.round(score * 0.6);
-    } else {
-        if (cape < 400 && score > 15) score = Math.round(score * 0.6);
-        if (shear < 8 && score > 10) score = Math.round(score * 0.5);
-        if (srh < 60 && score > 10) score = Math.round(score * 0.6);
-    }
+    const minReqs = {
+        'usa': { minCAPE: 500, minShear: 10, minSRH: 80 },
+        'canada': { minCAPE: 400, minShear: 9, minSRH: 70 },
+        'south_africa': { minCAPE: 500, minShear: 12, minSRH: 90 },
+        'south_america': { minCAPE: 450, minShear: 10, minSRH: 70 },
+        'australia': { minCAPE: 450, minShear: 10, minSRH: 80 },
+        'east_asia': { minCAPE: 400, minShear: 10, minSRH: 70 },
+        'south_asia': { minCAPE: 400, minShear: 8, minSRH: 60 },
+        'southeast_asia': { minCAPE: 350, minShear: 6, minSRH: 50 },
+        'central_america': { minCAPE: 350, minShear: 8, minSRH: 50 },
+        'north_africa': { minCAPE: 350, minShear: 8, minSRH: 50 },
+        'central_africa': { minCAPE: 300, minShear: 6, minSRH: 40 },
+        'middle_east': { minCAPE: 350, minShear: 8, minSRH: 50 },
+        'new_zealand': { minCAPE: 300, minShear: 7, minSRH: 50 },
+        'russia_central_asia': { minCAPE: 300, minShear: 7, minSRH: 50 },
+        'europe': { minCAPE: 400, minShear: 8, minSRH: 60 }
+    };
+    
+    const mr = minReqs[region] || minReqs['europe'];
+    if (cape < mr.minCAPE && score > 15) score = Math.round(score * 0.6);
+    if (shear < mr.minShear && score > 10) score = Math.round(score * 0.5);
+    if (srh < mr.minSRH && score > 10) score = Math.round(score * 0.6);
     
     return Math.min(100, Math.max(0, Math.round(score)));
 }
