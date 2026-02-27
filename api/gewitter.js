@@ -326,9 +326,22 @@ function calcSRH(hour) {
 }
 
 function calcShear(hour) {
-    const ws300 = (hour.wind_speed_300hPa ?? 0) / 3.6;
-    const ws1000 = (hour.wind_speed_1000hPa ?? 0) / 3.6;
-    return Math.hypot(ws300 - ws1000, 0);
+    // Shear ist ein Vektor (Richtung + Stärke), daher UV-Komponenten verwenden
+    const ws300 = (hour.wind_speed_300hPa ?? 0) / 3.6; // m/s
+    const ws1000 = (hour.wind_speed_1000hPa ?? 0) / 3.6; // m/s
+    const wd300 = hour.windDir300 ?? 0;
+    const wd1000 = hour.windDir1000 ?? 0;
+    
+    // UV-Komponenten für beide Höhenlevel berechnen
+    const w300 = windToUV(ws300, wd300);
+    const w1000 = windToUV(ws1000, wd1000);
+    
+    // Wind Shear = Differenz der Windvektoren
+    const shearU = w300.u - w1000.u;
+    const shearV = w300.v - w1000.v;
+    
+    // Magnitude des Shear-Vektors (m/s)
+    return Math.hypot(shearU, shearV);
 }
 
 
@@ -381,8 +394,8 @@ function calcIndices(hour) {
     return { kIndex, showalter, lapse, liftedIndex };
 }
 
-// Berechnet die Wahrscheinlichkeit, dass ein Threshold erreicht wird, basierend auf Ensemble-Daten
-// Gibt einen Wert zwischen 0 und 1 zurück (0 = kein Ensemble-Mitglied erreicht Threshold, 1 = alle erreichen Threshold)
+// Monte-Carlo Sampling für statistisch korrekte Wahrscheinlichkeitsberechnung
+// Generiert zufällige Werte basierend auf min/mean/max und zählt wie viele den Threshold erreichen
 function calculateEnsembleThresholdProbability(ensemble, param, thresholdValue, direction = 'above', minProbability = 0.5) {
     if (!ensemble) return null;
     
@@ -393,74 +406,63 @@ function calculateEnsembleThresholdProbability(ensemble, param, thresholdValue, 
     // Wenn keine Daten verfügbar sind
     if (mean === null || mean === undefined) return null;
     
+    // Edge Cases: Alle oder keine erreichen Threshold
     if (direction === 'above') {
-        // Prüfe wie viele Ensemble-Mitglieder über dem Threshold liegen
         if (min !== null && min !== undefined && min > thresholdValue) {
-            // Alle Ensemble-Mitglieder sind über dem Threshold
-            return 1.0;
+            return 1.0; // Alle über Threshold
         }
         if (max !== null && max !== undefined && max < thresholdValue) {
-            // Kein Ensemble-Mitglied ist über dem Threshold
-            return 0.0;
+            return 0.0; // Keine über Threshold
         }
-        
-        // Threshold liegt zwischen min und max
-        // Schätze die Wahrscheinlichkeit basierend auf der Position des Thresholds
-        // Annahme: Normalverteilung, Mean ist Median (50. Perzentil)
-        if (min !== null && min !== undefined && max !== null && max !== undefined) {
-            const range = max - min;
-            if (range === 0) {
-                // Keine Variation, alle Werte sind gleich
-                return mean > thresholdValue ? 1.0 : 0.0;
-            }
-            
-            // Lineare Interpolation: Wenn Threshold näher an min, weniger Mitglieder erreichen ihn
-            // Wenn Threshold näher an max, mehr Mitglieder erreichen ihn
-            // Wenn Threshold bei mean (50%), dann ~50% der Mitglieder erreichen ihn
-            const position = (thresholdValue - min) / range;
-            
-            // Korrigiere basierend auf mean (wenn mean > threshold, dann mehr als 50%)
-            if (mean > thresholdValue) {
-                // Mean ist über Threshold, also mehr als 50% erreichen ihn
-                const meanPosition = (mean - min) / range;
-                // Schätze: Wenn mean bei 70% der Range ist und threshold bei 50%, dann ~70% erreichen ihn
-                return Math.min(1.0, 0.5 + (meanPosition - position) * 1.5);
-            } else {
-                // Mean ist unter Threshold, also weniger als 50% erreichen ihn
-                const meanPosition = (mean - min) / range;
-                return Math.max(0.0, 0.5 - (position - meanPosition) * 1.5);
-            }
-        }
-        
-        // Fallback: Nur mean verfügbar
-        return mean > thresholdValue ? 0.7 : 0.3;
     } else {
-        // Prüfe wie viele Ensemble-Mitglieder unter dem Threshold liegen
         if (max !== null && max !== undefined && max < thresholdValue) {
             return 1.0; // Alle unter Threshold
         }
         if (min !== null && min !== undefined && min > thresholdValue) {
             return 0.0; // Keine unter Threshold
         }
+    }
+    
+    // Monte-Carlo Sampling: Generiere zufällige Werte basierend auf Verteilung
+    if (min !== null && min !== undefined && max !== null && max !== undefined && mean !== null) {
+        const MONTE_CARLO_SAMPLES = 1000; // Anzahl der Samples für statistische Genauigkeit
+        let countAbove = 0;
+        let countBelow = 0;
         
-        // Threshold liegt zwischen min und max
-        if (min !== null && min !== undefined && max !== null && max !== undefined) {
-            const range = max - min;
-            if (range === 0) {
-                return mean < thresholdValue ? 1.0 : 0.0;
-            }
+        // Schätze Standardabweichung aus min/mean/max
+        // Annahme: 95% der Werte liegen zwischen min und max (ca. 2 Standardabweichungen)
+        const estimatedStd = (max - min) / 4; // Grobe Schätzung
+        
+        // Generiere Samples basierend auf Normalverteilung
+        for (let i = 0; i < MONTE_CARLO_SAMPLES; i++) {
+            // Box-Muller Transformation für Normalverteilung
+            const u1 = Math.random();
+            const u2 = Math.random();
+            const z0 = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+            const sample = mean + z0 * estimatedStd;
             
-            const position = (thresholdValue - min) / range;
+            // Clamp auf min/max Bereich (truncated normal distribution)
+            const clampedSample = Math.max(min, Math.min(max, sample));
             
-            if (mean < thresholdValue) {
-                const meanPosition = (mean - min) / range;
-                return Math.min(1.0, 0.5 + (position - meanPosition) * 1.5);
+            if (direction === 'above') {
+                if (clampedSample > thresholdValue) countAbove++;
             } else {
-                const meanPosition = (mean - min) / range;
-                return Math.max(0.0, 0.5 - (meanPosition - position) * 1.5);
+                if (clampedSample < thresholdValue) countBelow++;
             }
         }
         
+        // Wahrscheinlichkeit = Anteil der Samples, die den Threshold erreichen
+        if (direction === 'above') {
+            return countAbove / MONTE_CARLO_SAMPLES;
+        } else {
+            return countBelow / MONTE_CARLO_SAMPLES;
+        }
+    }
+    
+    // Fallback: Wenn nur mean verfügbar ist, verwende einfache Heuristik
+    if (direction === 'above') {
+        return mean > thresholdValue ? 0.7 : 0.3;
+    } else {
         return mean < thresholdValue ? 0.7 : 0.3;
     }
 }
