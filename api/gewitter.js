@@ -154,14 +154,19 @@ export default async function handler(req, res) {
                 return datePart > currentDateStr || (datePart === currentDateStr && hour >= currentHour);
             })
             .slice(0, 24)
-            .map(hour => ({
-                timestamp: hour.time,
-                probability: calculateProbability(hour),
-                temperature: hour.temperature,
-                cape: hour.cape,
-                shear: calcShear(hour),
-                srh: calcSRH(hour)
-            }));
+            .map(hour => {
+                const shear = calcShear(hour);
+                const srh = calcSRH(hour);
+                return {
+                    timestamp: hour.time,
+                    probability: calculateProbability(hour),
+                    tornadoProbability: calculateTornadoProbability(hour, shear, srh),
+                    temperature: hour.temperature,
+                    cape: hour.cape,
+                    shear: shear,
+                    srh: srh
+                };
+            });
 
         // Tage gruppieren
         const daysMap = new Map();
@@ -169,17 +174,30 @@ export default async function handler(req, res) {
             const [datePart] = h.time.split('T');
             if (datePart >= currentDateStr) {
                 const probability = calculateProbability(h);
+                const shear = calcShear(h);
+                const srh = calcSRH(h);
+                const tornadoProb = calculateTornadoProbability(h, shear, srh);
                 if (!daysMap.has(datePart)) {
-                    daysMap.set(datePart, { date: datePart, maxProbability: probability });
+                    daysMap.set(datePart, { 
+                        date: datePart, 
+                        maxProbability: probability,
+                        maxTornadoProbability: tornadoProb
+                    });
                 } else {
-                    daysMap.get(datePart).maxProbability = Math.max(daysMap.get(datePart).maxProbability, probability);
+                    const dayData = daysMap.get(datePart);
+                    dayData.maxProbability = Math.max(dayData.maxProbability, probability);
+                    dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
                 }
             }
         });
 
         const nextDays = Array.from(daysMap.values())
             .sort((a, b) => a.date.localeCompare(b.date))
-            .map(day => ({ date: day.date, probability: day.maxProbability }));
+            .map(day => ({ 
+                date: day.date, 
+                probability: day.maxProbability,
+                tornadoProbability: day.maxTornadoProbability
+            }));
 
         return res.status(200).json({
             timezone: timezone,
@@ -245,18 +263,20 @@ function calcIndices(hour) {
     };
 }
 
-// SCP (Supercell Composite Parameter) - bewährter Index für Superzellen
+// SCP (Supercell Composite Parameter) - angepasst für Europa/Deutschland
 function calcSCP(cape, shear, srh, cin) {
-    if (cape < 1000 || shear < 10 || srh < 100 || cin > 250) return 0;
-    return (cape / 1000) * (shear / 20) * (srh / 100) * (1 - Math.min(cin / 250, 1));
+    // Niedrigere Thresholds für Europa
+    if (cape < 600 || shear < 8 || srh < 80 || cin > 200) return 0;
+    return (cape / 800) * (shear / 15) * (srh / 120) * (1 - Math.min(cin / 200, 1));
 }
 
-// STP (Significant Tornado Parameter) - für schwere Gewitter/Tornados
+// STP (Significant Tornado Parameter) - angepasst für Europa/Deutschland
 function calcSTP(cape, srh, shear, liftedIndex, cin) {
-    if (cape < 100 || srh < 50 || shear < 10) return 0;
-    const effectiveShear = Math.min(shear / 20, 1.5);
-    const effectiveSRH = Math.min(srh / 150, 1.5);
-    const effectiveCAPE = Math.min(cape / 2000, 1.5);
+    // Niedrigere Thresholds für Europa
+    if (cape < 100 || srh < 40 || shear < 8) return 0;
+    const effectiveShear = Math.min(shear / 15, 1.5);
+    const effectiveSRH = Math.min(srh / 120, 1.5);
+    const effectiveCAPE = Math.min(cape / 1500, 1.5); // Europa: 1500 statt 2000
     const liFactor = liftedIndex < -2 ? 1.2 : liftedIndex < 0 ? 1.0 : 0.8;
     const cinFactor = cin < 50 ? 1.0 : cin < 100 ? 0.8 : 0.6;
     return effectiveCAPE * effectiveSRH * effectiveShear * liFactor * cinFactor;
@@ -313,10 +333,10 @@ function calculateProbability(hour) {
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
     
-    // Strikte Filter für Fehlalarme
+    // Strikte Filter für Fehlalarme (angepasst für Europa/Deutschland)
     if (temp2m < 5) return 0; // Zu kalt für Gewitter
-    if (temp2m < 10 && cape < 1500) return 0; // Kalt und keine hohe Instabilität
-    if (cape < 500 && precipAcc < 0.5 && precipProb < 30) return 0; // Keine Instabilität und kein Niederschlag
+    if (temp2m < 10 && cape < 1000) return 0; // Kalt und keine hohe Instabilität (Europa: niedriger)
+    if (cape < 300 && precipAcc < 0.5 && precipProb < 30) return 0; // Keine Instabilität und kein Niederschlag
     
     // Berechne Indizes
     const shear = calcShear(hour);
@@ -330,46 +350,52 @@ function calculateProbability(hour) {
     const scp = calcSCP(cape, shear, srh, cin);
     const stp = calcSTP(cape, srh, shear, liftedIndex, cin);
     
-    // Basis-Score basierend auf kombinierten Indizes (reduziert Fehlalarme)
+    // Basis-Score basierend auf kombinierten Indizes (angepasst für Europa)
     let score = 0;
     
-    // CAPE-Bewertung (höhere Thresholds)
-    if (cape >= 2000) score += 25;
-    else if (cape >= 1500) score += 18;
-    else if (cape >= 1000) score += 12;
-    else if (cape >= 600) score += 6;
+    // CAPE-Bewertung (angepasst für Europa/Deutschland - niedrigere Thresholds)
+    if (cape >= 1500) score += 25; // Europa: 1500 statt 2000
+    else if (cape >= 1200) score += 20; // Europa: 1200 statt 1500
+    else if (cape >= 800) score += 14; // Europa: 800 statt 1000
+    else if (cape >= 500) score += 8; // Europa: 500 statt 600
+    else if (cape >= 300) score += 4; // Europa: niedrigere Schwelle
     
     // CIN-Penalty (stärker gewichtet)
     if (cin > 200) score -= 15;
     else if (cin > 100) score -= 8;
     else if (cin > 50) score -= 4;
     
-    // Kombinierte Indizes (höhere Gewichtung, reduziert Fehlalarme)
-    if (scp > 3) score += 20; // Sehr hohes Superzellen-Potential
-    else if (scp > 2) score += 14;
-    else if (scp > 1) score += 8;
+    // Kombinierte Indizes (angepasst für Europa - niedrigere Thresholds)
+    if (scp > 2) score += 20; // Europa: 2 statt 3
+    else if (scp > 1.5) score += 16; // Europa: 1.5 statt 2
+    else if (scp > 1) score += 10; // Europa: 1 statt 1
+    else if (scp > 0.5) score += 5; // Europa: niedrigere Schwelle
     
-    if (stp > 2) score += 15; // Sehr hohes Tornado-Potential
-    else if (stp > 1) score += 10;
-    else if (stp > 0.5) score += 5;
+    if (stp > 1.5) score += 15; // Europa: 1.5 statt 2
+    else if (stp > 1) score += 12; // Europa: 1 statt 1
+    else if (stp > 0.5) score += 7; // Europa: 0.5 statt 0.5
+    else if (stp > 0.3) score += 3; // Europa: niedrigere Schwelle
     
-    if (ehi > 3) score += 12;
-    else if (ehi > 2) score += 8;
-    else if (ehi > 1) score += 4;
+    if (ehi > 2) score += 12; // Europa: 2 statt 3
+    else if (ehi > 1.5) score += 9; // Europa: 1.5 statt 2
+    else if (ehi > 1) score += 6; // Europa: 1 statt 1
+    else if (ehi > 0.5) score += 3; // Europa: niedrigere Schwelle
     
-    // Shear und SRH (nur bei ausreichendem CAPE relevant)
-    if (cape >= 800) {
-        if (shear >= 25) score += 10;
-        else if (shear >= 18) score += 6;
-        else if (shear >= 12) score += 3;
+    // Shear und SRH (angepasst für Europa - niedrigere Thresholds)
+    if (cape >= 500) { // Europa: 500 statt 800
+        if (shear >= 20) score += 10; // Europa: 20 statt 25
+        else if (shear >= 15) score += 7; // Europa: 15 statt 18
+        else if (shear >= 10) score += 4; // Europa: 10 statt 12
+        else if (shear >= 8) score += 2; // Europa: niedrigere Schwelle
         
-        if (srh >= 300) score += 8;
-        else if (srh >= 200) score += 5;
-        else if (srh >= 150) score += 3;
+        if (srh >= 200) score += 8; // Europa: 200 statt 300
+        else if (srh >= 150) score += 6; // Europa: 150 statt 200
+        else if (srh >= 120) score += 4; // Europa: 120 statt 150
+        else if (srh >= 80) score += 2; // Europa: niedrigere Schwelle
     }
     
-    // Lifted Index (nur bei ausreichendem CAPE)
-    if (cape >= 600) {
+    // Lifted Index (angepasst für Europa)
+    if (cape >= 400) { // Europa: 400 statt 600
         if (liftedIndex <= -6) score += 10;
         else if (liftedIndex <= -4) score += 6;
         else if (liftedIndex <= -2) score += 3;
@@ -379,69 +405,69 @@ function calculateProbability(hour) {
     if (lapse >= 7.5) score += 5;
     else if (lapse >= 7.0) score += 3;
     else if (lapse >= 6.5) score += 1;
-    if (lapse < 5.0 && cape < 1000) score -= 4;
+    if (lapse < 5.0 && cape < 800) score -= 4; // Europa: 800 statt 1000
     
     // K-Index
     if (kIndex >= 35) score += 6;
     else if (kIndex >= 30) score += 4;
     else if (kIndex >= 25) score += 2;
     
-    // Feuchtigkeit und Temperatur (nur bei ausreichendem CAPE)
-    if (cape >= 600) {
-        if (dew >= 18 && temp2m >= 18) score += 4;
-        else if (dew >= 15 && temp2m >= 15) score += 2;
+    // Feuchtigkeit und Temperatur (angepasst für Europa)
+    if (cape >= 400) { // Europa: 400 statt 600
+        if (dew >= 16 && temp2m >= 16) score += 4; // Europa: niedrigere Werte
+        else if (dew >= 13 && temp2m >= 13) score += 2; // Europa: niedrigere Werte
         
-        if (relHum2m >= 70 && temp2m >= 20) score += 3;
+        if (relHum2m >= 65 && temp2m >= 18) score += 3; // Europa: niedrigere Werte
     }
     
-    // Niederschlag (nur mit CAPE relevant)
-    if (cape >= 600) {
-        if (precipAcc >= 3 && cape >= 1000) score += 6;
-        else if (precipAcc >= 1.5 && cape >= 800) score += 4;
-        else if (precipAcc >= 0.5 && cape >= 600) score += 2;
+    // Niederschlag (angepasst für Europa)
+    if (cape >= 400) { // Europa: 400 statt 600
+        if (precipAcc >= 2.5 && cape >= 800) score += 6; // Europa: niedrigere Werte
+        else if (precipAcc >= 1.2 && cape >= 600) score += 4; // Europa: niedrigere Werte
+        else if (precipAcc >= 0.5 && cape >= 400) score += 2;
         
-        if (precipProb >= 70 && cape >= 800) score += 4;
-        else if (precipProb >= 50 && cape >= 600) score += 2;
+        if (precipProb >= 65 && cape >= 600) score += 4; // Europa: niedrigere Werte
+        else if (precipProb >= 45 && cape >= 400) score += 2; // Europa: niedrigere Werte
     }
     
     // Dauerregen-Filter (viel Regen, wenig CAPE = kein Gewitter)
-    if (precipAcc > 2 && cape < 500) score -= 8;
+    if (precipAcc > 2 && cape < 400) score -= 8; // Europa: 400 statt 500
     
     // Relative Feuchte 500hPa (trockene mittlere Troposphäre begünstigt)
-    if (hour.rh500 < 35 && cape >= 1000) score += 5;
-    else if (hour.rh500 < 45 && cape >= 800) score += 3;
-    else if (hour.rh500 > 85 && cape < 1000) score -= 4;
+    if (hour.rh500 < 35 && cape >= 800) score += 5; // Europa: 800 statt 1000
+    else if (hour.rh500 < 45 && cape >= 600) score += 3; // Europa: 600 statt 800
+    else if (hour.rh500 > 85 && cape < 800) score -= 4; // Europa: 800 statt 1000
     
     // Strahlung (tagsüber wichtig)
-    if (hour.directRadiation >= 500 && temp2m >= 15 && cape >= 600) score += 4;
-    else if (hour.directRadiation >= 300 && temp2m >= 12 && cape >= 400) score += 2;
-    else if (hour.directRadiation < 50 && cape < 1000) score -= 6; // Nacht
+    if (hour.directRadiation >= 500 && temp2m >= 15 && cape >= 500) score += 4; // Europa: 500 statt 600
+    else if (hour.directRadiation >= 300 && temp2m >= 12 && cape >= 300) score += 2; // Europa: 300 statt 400
+    else if (hour.directRadiation < 50 && cape < 800) score -= 6; // Europa: 800 statt 1000
     
     // Wind (moderate Winde optimal)
     if (hour.wind >= 5 && hour.wind <= 15 && temp2m >= 12) score += 2;
-    if (hour.wind > 25 && cape < 2000) score -= 4; // Zu stark
+    if (hour.wind > 25 && cape < 1500) score -= 4; // Europa: 1500 statt 2000
     
     // Böen (können auf Gewitteraktivität hinweisen)
     const gustDiff = hour.gust - hour.wind;
-    if (gustDiff > 12 && cape >= 1000 && temp2m >= 12) score += 4;
-    else if (gustDiff > 8 && cape >= 800) score += 2;
+    if (gustDiff > 12 && cape >= 800 && temp2m >= 12) score += 4; // Europa: 800 statt 1000
+    else if (gustDiff > 8 && cape >= 600) score += 2; // Europa: 600 statt 800
     
     // Ensemble-Daten (falls verfügbar)
     if (hour.ensemble) {
         const MIN_PROB = 0.6; // Höhere Schwelle für Ensemble
         
-        const capeProb = getEnsembleProb(hour.ensemble, 'cape', 800, 'above');
+        const capeProb = getEnsembleProb(hour.ensemble, 'cape', 600, 'above'); // Europa: 600 statt 800
         if (capeProb !== null && capeProb >= MIN_PROB) {
             score += Math.round(8 * capeProb);
         }
         
         const liProb = getEnsembleProb(hour.ensemble, 'lifted_index', -3, 'below');
-        if (liProb !== null && liProb >= MIN_PROB && cape >= 600) {
+        if (liProb !== null && liProb >= MIN_PROB && cape >= 400) { // Europa: 400 statt 600
             score += Math.round(4 * liProb);
         }
         
         const precipProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
-        if (precipProb !== null && precipProb >= MIN_PROB && cape >= 600) {
+        if (precipProb !== null && precipProb >= MIN_PROB && cape >= 400) { // Europa: 400 statt 600
             score += Math.round(3 * precipProb);
         }
     }
@@ -450,9 +476,74 @@ function calculateProbability(hour) {
     if (temp2m < 12) score = Math.round(score * 0.5);
     else if (temp2m < 15) score = Math.round(score * 0.7);
     
-    // Mindestanforderungen für Gewitter (reduziert Fehlalarme)
-    if (score > 0 && cape < 400) score = Math.max(0, score - 10); // Zu wenig CAPE
-    if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15); // Zu viel CIN
+    // Mindestanforderungen für Gewitter (angepasst für Europa)
+    if (score > 0 && cape < 300) score = Math.max(0, score - 10); // Europa: 300 statt 400
+    if (score > 0 && cin > 150 && cape < 1200) score = Math.max(0, score - 15); // Europa: 1200 statt 1500
+    
+    return Math.min(100, Math.max(0, Math.round(score)));
+}
+
+// Tornado-Wahrscheinlichkeitsberechnung (angepasst für Europa/Deutschland)
+function calculateTornadoProbability(hour, shear, srh) {
+    const temp2m = hour.temperature ?? 0;
+    const cape = Math.max(0, hour.cape ?? 0);
+    const cin = Math.abs(hour.cin ?? 0);
+    const { liftedIndex } = calcIndices(hour);
+    
+    // Basis-Filter: Zu kalt oder keine Instabilität = kein Tornado
+    if (temp2m < 8) return 0; // Zu kalt
+    if (cape < 400) return 0; // Europa: 400 statt 500 - zu wenig Instabilität
+    if (cin > 200) return 0; // Zu viel CIN
+    
+    // STP berechnen (angepasst für Europa)
+    const stp = calcSTP(cape, srh, shear, liftedIndex, cin);
+    
+    // Basis-Score für Tornado-Wahrscheinlichkeit
+    let score = 0;
+    
+    // STP ist der Hauptindikator für Tornado-Potential
+    if (stp >= 2.0) score = 85; // Sehr hohes Risiko (Europa: selten)
+    else if (stp >= 1.5) score = 70; // Hohes Risiko
+    else if (stp >= 1.0) score = 55; // Erhöhtes Risiko
+    else if (stp >= 0.7) score = 40; // Mäßiges Risiko
+    else if (stp >= 0.5) score = 25; // Niedriges Risiko
+    else if (stp >= 0.3) score = 12; // Sehr niedriges Risiko
+    else if (stp > 0) score = 5; // Minimales Risiko
+    
+    // Zusätzliche Faktoren für Europa
+    // CAPE + Shear Kombination
+    if (cape >= 1000 && shear >= 18) score += 8; // Europa: niedrigere Werte
+    else if (cape >= 800 && shear >= 15) score += 5;
+    else if (cape >= 600 && shear >= 12) score += 3;
+    
+    // SRH ist wichtig für Tornado-Entwicklung
+    if (srh >= 200 && cape >= 800) score += 6; // Europa: niedrigere Werte
+    else if (srh >= 150 && cape >= 600) score += 4;
+    else if (srh >= 120 && cape >= 500) score += 2;
+    
+    // Lifted Index (sehr negativ = instabil)
+    if (liftedIndex <= -5 && cape >= 800) score += 5;
+    else if (liftedIndex <= -3 && cape >= 600) score += 3;
+    
+    // EHI (Energy Helicity Index)
+    const ehi = (cape * srh) / 160000;
+    if (ehi >= 2.5) score += 8; // Europa: niedrigere Werte
+    else if (ehi >= 1.5) score += 5;
+    else if (ehi >= 1.0) score += 3;
+    
+    // Reduktionen
+    if (cin > 100) score -= 10; // Hohe CIN reduziert Tornado-Risiko
+    if (shear < 10) score -= 15; // Zu wenig Shear = kein Tornado
+    if (srh < 80) score -= 10; // Zu wenig SRH = kein Tornado
+    
+    // Temperatur-Reduktion
+    if (temp2m < 12) score = Math.round(score * 0.6);
+    else if (temp2m < 15) score = Math.round(score * 0.8);
+    
+    // Mindestanforderungen (reduziert Fehlalarme)
+    if (score > 0 && cape < 400) score = Math.max(0, score - 20);
+    if (score > 0 && shear < 8) score = Math.max(0, score - 25);
+    if (score > 0 && srh < 60) score = Math.max(0, score - 20);
     
     return Math.min(100, Math.max(0, Math.round(score)));
 }
