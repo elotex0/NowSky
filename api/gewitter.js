@@ -42,7 +42,7 @@ export default async function handler(req, res) {
                     `precipitation&forecast_days=14&models=best_match&timezone=auto`;
 
         // Ensemble-Daten von Open-Meteo abrufen
-        const ensembleUrl = `https://api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}` +
+        const ensembleUrl = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}` +
                     `&hourly=wind_gusts_10m,wind_speed_10m,temperature_2m,dew_point_2m,` +
                     `cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability,` +
                     `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
@@ -274,52 +274,8 @@ export default async function handler(req, res) {
                 probability: day.maxProbability
             }));
 
-        // Deutsche Beschriftungen für alle Parameter
-        const labels = {
-            // Oberflächenvariablen
-            temperature_2m: 'Temperatur (°C)',
-            dew_point_2m: 'Taupunkt (°C)',
-            precipitation_probability: 'Niederschlagswahrscheinlichkeit (%)',
-            precipitation: 'Niederschlag gesamt (mm)',
-            wind_speed_10m: 'Windgeschwindigkeit in 10 m (m/s oder km/h)',
-            wind_gusts_10m: 'Windböen (m/s oder km/h)',
-            cloud_cover_low: 'Wolkenbedeckung niedrig (%)',
-            cloud_cover_mid: 'Wolkenbedeckung mittel (%)',
-            cloud_cover_high: 'Wolkenbedeckung hoch (%)',
-            direct_radiation: 'direkte Sonneneinstrahlung (W/m²)',
-            boundary_layer_height: 'Höhe der Grenzschicht (m)',
-            
-            // Höhenlagen (500 hPa – 1000 hPa)
-            temperature_500hPa: 'Temperatur in der Höhe 500 hPa (°C)',
-            temperature_700hPa: 'Temperatur in der Höhe 700 hPa (°C)',
-            temperature_850hPa: 'Temperatur in der Höhe 850 hPa (°C)',
-            dew_point_700hPa: 'Taupunkt in der Höhe 700 hPa (°C)',
-            dew_point_850hPa: 'Taupunkt in der Höhe 850 hPa (°C)',
-            wind_speed_300hPa: 'Windgeschwindigkeit auf 300 hPa (m/s oder km/h)',
-            wind_speed_500hPa: 'Windgeschwindigkeit auf 500 hPa (m/s oder km/h)',
-            wind_speed_700hPa: 'Windgeschwindigkeit auf 700 hPa (m/s oder km/h)',
-            wind_speed_850hPa: 'Windgeschwindigkeit auf 850 hPa (m/s oder km/h)',
-            wind_speed_1000hPa: 'Windgeschwindigkeit auf 1000 hPa (m/s oder km/h)',
-            wind_direction_300hPa: 'Windrichtung auf 300 hPa (°)',
-            wind_direction_500hPa: 'Windrichtung auf 500 hPa (°)',
-            wind_direction_700hPa: 'Windrichtung auf 700 hPa (°)',
-            wind_direction_850hPa: 'Windrichtung auf 850 hPa (°)',
-            wind_direction_1000hPa: 'Windrichtung auf 1000 hPa (°)',
-            relative_humidity_500hPa: 'relative Feuchte auf 500 hPa (%)',
-            
-            // Konvektions-Indizes
-            cape: 'Convective Available Potential Energy (J/kg)',
-            convective_inhibition: 'CIN (J/kg)',
-            lifted_index: 'LI (°C)',
-            srh: 'Storm-Relative Helicity',
-            showalter: 'Showalter Index',
-            kIndex: 'K-Index',
-        };
-
         return res.status(200).json({
             timezone: timezone,
-            labels: labels,
-            thresholds: THRESHOLDS,
             hours: next6Hours,
             days: nextDays,
             hasEnsemble: hasEnsemble
