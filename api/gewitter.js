@@ -280,11 +280,24 @@ function calcSRH(hour) {
 }
 
 function calcShear(hour) {
-    const ws300 = (hour.wind_speed_300hPa ?? 0) / 3.6;
+    // 0-6 km Bulk Wind Shear: Standardschicht für Superzell-Parameter
+    // Approximation: 1000 hPa ≈ 0 km, 500 hPa ≈ 5.5 km, 300 hPa ≈ 9 km (zu hoch)
+    // Besser: 1000→500 hPa als Proxy für 0-6 km Shear (meteorologischer Standard)
+    const ws500 = (hour.wind_speed_500hPa ?? 0) / 3.6;
     const ws1000 = (hour.wind_speed_1000hPa ?? 0) / 3.6;
-    const w300 = windToUV(ws300, hour.windDir300 ?? 0);
+    const w500 = windToUV(ws500, hour.windDir500 ?? 0);
     const w1000 = windToUV(ws1000, hour.windDir1000 ?? 0);
-    return Math.hypot(w300.u - w1000.u, w300.v - w1000.v);
+
+    const bulkShear = Math.hypot(w500.u - w1000.u, w500.v - w1000.v);
+
+    // Effective Shear: Nur relevant wenn untere Troposphäre ausreichend CAPE hat
+    // Penalisiere sehr schwachen Shear unter 850 hPa (0-1 km Shear für Tornados)
+    const ws850 = (hour.wind_speed_850hPa ?? 0) / 3.6;
+    const w850 = windToUV(ws850, hour.windDir850 ?? 0);
+    const lowLevelShear = Math.hypot(w850.u - w1000.u, w850.v - w1000.v);
+
+    // Kombinierter Shear-Index: 0-6 km dominant, 0-1 km als Gewichtungsfaktor
+    return Math.round((bulkShear * 0.75 + lowLevelShear * 0.25) * 10) / 10;
 }
 
 // Verbesserte meteorologische Indizes
@@ -303,40 +316,63 @@ function calcIndices(hour) {
     };
 }
 
-// SCP (Supercell Composite Parameter) - regionsspezifisch
 function calcSCP(cape, shear, srh, cin, region = 'europe') {
+    // SCP nach Thompson et al. (2004): SCP = (MUCAPE/1000) * (EBWD/12) * (ESRH/50)
+    // EBWD = Effective Bulk Wind Difference, ESRH = Effective SRH
+    // CIN-Term: Negative Werte reduzieren SCP, nicht linearer Abzug
     if (region === 'usa') {
-        // USA: Höhere Thresholds
-        if (cape < 500 || shear < 10 || srh < 100 || cin > 200) return 0;
-        return (cape / 1000) * (shear / 15) * (srh / 150) * (1 - Math.min(cin / 200, 1));
+        if (cape < 100 || shear < 8 || srh < 50) return 0;
+        const capeTerm = cape / 1000;                          // Normierung: 1000 J/kg = 1
+        const shearTerm = Math.min(shear / 12, 1.5);          // Cap bei 1.5, Standard: 12 m/s
+        const srhTerm = Math.min(srh / 50, 4.0);              // Normierung: 50 m²/s² = 1
+        const cinTerm = cin < 40 ? 1.0 : Math.max(0.1, 1 - (cin - 40) / 200);
+        return Math.max(0, capeTerm * shearTerm * srhTerm * cinTerm);
     } else {
-        // Europa: Niedrigere Thresholds - auch bei niedrigem CAPE möglich
-        if (cape < 200 || shear < 6 || srh < 60 || cin > 250) return 0;
-        return (cape / 600) * (shear / 12) * (srh / 100) * (1 - Math.min(cin / 250, 1));
+        // Europa: Gleiche Physik, angepasste Klimatologie (ESTOFEX-Studien)
+        if (cape < 100 || shear < 6 || srh < 40) return 0;
+        const capeTerm = cape / 800;                           // Europa: niedrigere Normierung
+        const shearTerm = Math.min(shear / 10, 1.5);
+        const srhTerm = Math.min(srh / 40, 4.0);
+        const cinTerm = cin < 40 ? 1.0 : Math.max(0.1, 1 - (cin - 40) / 200);
+        return Math.max(0, capeTerm * shearTerm * srhTerm * cinTerm);
     }
 }
 
 // STP (Significant Tornado Parameter) - regionsspezifisch
-function calcSTP(cape, srh, shear, liftedIndex, cin, region = 'europe') {
+function calcSTP(cape, srh, shear, liftedIndex, cin, region = 'europe', temp2m = null, dew2m = null) {
     if (region === 'usa') {
-        // USA: Höhere Thresholds
         if (cape < 300 || srh < 80 || shear < 10) return 0;
-        const effectiveShear = Math.min(shear / 15, 1.5);
-        const effectiveSRH = Math.min(srh / 150, 1.5);
-        const effectiveCAPE = Math.min(cape / 1500, 1.5);
-        const liFactor = liftedIndex < -2 ? 1.2 : liftedIndex < 0 ? 1.0 : 0.8;
-        const cinFactor = cin < 50 ? 1.0 : cin < 100 ? 0.8 : 0.6;
-        return effectiveCAPE * effectiveSRH * effectiveShear * liFactor * cinFactor;
     } else {
-        // Europa: Niedrigere Thresholds - auch bei niedrigem CAPE möglich
         if (cape < 100 || srh < 40 || shear < 6) return 0;
-        const effectiveShear = Math.min(shear / 12, 1.5);
-        const effectiveSRH = Math.min(srh / 100, 1.5);
-        const effectiveCAPE = Math.min(cape / 1200, 1.5);
-        const liFactor = liftedIndex < -2 ? 1.2 : liftedIndex < 0 ? 1.0 : 0.8;
-        const cinFactor = cin < 50 ? 1.0 : cin < 100 ? 0.8 : 0.6;
-        return effectiveCAPE * effectiveSRH * effectiveShear * liFactor * cinFactor;
     }
+
+    // LCL-Höhe nach Bolton (1980): LCL (m) ≈ 125 * (T - Td)
+    // < 1000m = optimal für Tornados, > 2000m = sehr ungünstig
+    let lclTerm;
+    if (temp2m !== null && dew2m !== null) {
+        const lclHeight = 125 * (temp2m - dew2m);
+        if (lclHeight < 1000) lclTerm = 1.0;
+        else if (lclHeight < 1500) lclTerm = 1.0 - ((lclHeight - 1000) / 500) * 0.5;
+        else if (lclHeight < 2000) lclTerm = 0.5 - ((lclHeight - 1500) / 500) * 0.4;
+        else lclTerm = 0.1;
+    } else {
+        // Fallback: LI als Proxy wenn T/Td nicht verfügbar
+        lclTerm = liftedIndex <= -4 ? 1.0
+                : liftedIndex <= -2 ? 0.8
+                : liftedIndex <= 0  ? 0.5
+                : 0.2;
+    }
+
+    const normCAPE  = region === 'usa' ? 1500 : 1000;
+    const normSRH   = region === 'usa' ? 150  : 100;
+    const normShear = region === 'usa' ? 12   : 10;
+
+    const capeTerm  = Math.min(cape / normCAPE, 3.0);
+    const srhTerm   = Math.min(srh / normSRH, 3.0);
+    const shearTerm = shear >= normShear ? 1.0 : shear / normShear;
+    const cinTerm   = cin < 25 ? 1.0 : Math.max(0.1, 1 - (cin - 25) / 175);
+
+    return Math.max(0, capeTerm * srhTerm * shearTerm * lclTerm * cinTerm);
 }
 
 // Ensemble-Wahrscheinlichkeit (vereinfacht)
@@ -398,7 +434,7 @@ function calculateProbability(hour, region = 'europe') {
     // Kombinierte Indizes (bewährte meteorologische Parameter)
     const ehi = (cape * srh) / 160000;
     const scp = calcSCP(cape, shear, srh, cin, region);
-    const stp = calcSTP(cape, srh, shear, liftedIndex, cin, region);
+    const stp = calcSTP(cape, srh, shear, liftedIndex, cin, region, temp2m, dew);
     
     // Basis-Score basierend auf kombinierten Indizes (regionsspezifisch)
     let score = 0;
@@ -629,14 +665,26 @@ function calculateProbability(hour, region = 'europe') {
     }
     
     // Strahlung (tagsüber wichtig, regionsspezifisch)
+    const isNight = hour.directRadiation < 20;
+    const isDaytime = hour.directRadiation >= 200;
+
     if (region === 'usa') {
-        if (hour.directRadiation >= 600 && temp2m >= 18 && cape >= 600) score += 5;
-        else if (hour.directRadiation >= 400 && temp2m >= 15 && cape >= 500) score += 3;
-        else if (hour.directRadiation < 50 && cape < 1000) score -= 7;
+        if (isDaytime && temp2m >= 18 && cape >= 600) {
+            if (hour.directRadiation >= 600) score += 5;
+            else if (hour.directRadiation >= 400) score += 3;
+        } else if (isNight) {
+            if (shear < 12 && cape < 1000) score -= 7;
+            if (cape >= 1200 && srh >= 150) score += 2;
+        }
     } else {
-        if (hour.directRadiation >= 500 && temp2m >= 15 && cape >= 500) score += 4;
-        else if (hour.directRadiation >= 300 && temp2m >= 12 && cape >= 300) score += 2;
-        else if (hour.directRadiation < 50 && cape < 800) score -= 6;
+        if (isDaytime && temp2m >= 12 && cape >= 300) {
+            if (hour.directRadiation >= 500) score += 4;
+            else if (hour.directRadiation >= 300) score += 2;
+            else if (hour.directRadiation >= 200) score += 1;
+        } else if (isNight) {
+            if (shear < 10 && cape < 500) score -= 4;
+            if (cape >= 800 && srh >= 100) score += 2;
+        }
     }
     
     // Wind (regionsspezifisch)
@@ -727,6 +775,7 @@ function calculateProbability(hour, region = 'europe') {
 // Tornado-Wahrscheinlichkeitsberechnung (regionsspezifisch)
 function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
+    const dew = hour.dew ?? 0; // für LCL-Berechnung
     const cape = Math.max(0, hour.cape ?? 0);
     const cin = Math.abs(hour.cin ?? 0);
     const { liftedIndex } = calcIndices(hour);
@@ -743,7 +792,28 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     }
     
     // STP berechnen (regionsspezifisch)
-    const stp = calcSTP(cape, srh, shear, liftedIndex, cin, region);
+    // Veer-with-Height Check: Winds müssen mit der Höhe drehen (backing am Boden → veering oben)
+    // Das ist physikalisch notwendig für positive SRH und Mesozyklonentwicklung
+    const dir1000 = hour.windDir1000 ?? 0;
+    const dir850 = hour.windDir850 ?? 0;
+    const dir700 = hour.windDir700 ?? 0;
+
+    function veeringAngle(d1, d2) {
+        let diff = (d2 - d1 + 360) % 360;
+        return diff > 180 ? diff - 360 : diff; // positiv = Veering, negativ = Backing
+    }
+
+    const veer850_1000 = veeringAngle(dir1000, dir850);
+    const veer700_850 = veeringAngle(dir850, dir700);
+    const totalVeering = veer850_1000 + veer700_850;
+
+    let veeringFactor = 1.0;
+    if (totalVeering < -20) veeringFactor = 0.3;
+    else if (totalVeering < 0) veeringFactor = 0.6;
+    else if (totalVeering >= 30) veeringFactor = 1.2;
+    else if (totalVeering >= 15) veeringFactor = 1.1;
+
+    const stp = calcSTP(cape, srh, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
     
     // Basis-Score für Tornado-Wahrscheinlichkeit
     let score = 0;
