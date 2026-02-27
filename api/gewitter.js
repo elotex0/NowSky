@@ -41,9 +41,9 @@ export default async function handler(req, res) {
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
                     `precipitation&forecast_days=14&models=best_match&timezone=auto`;
 
-        // Ensemble-Daten von Open-Meteo abrufen
+        // Ensemble-Daten von Open-Meteo abrufen (mit Percentilen für Wahrscheinlichkeitsberechnung)
         const ensembleUrl = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}` +
-                    `&hourly=wind_gusts_10m,wind_speed_10m,temperature_2m,dew_point_2m,` +
+                    `&hourly=temperature_2m,dew_point_2m,wind_gusts_10m,wind_speed_10m,` +
                     `cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability,` +
                     `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
@@ -381,42 +381,87 @@ function calcIndices(hour) {
     return { kIndex, showalter, lapse, liftedIndex };
 }
 
-// Hilfsfunktion: Prüft ob Ensemble-Werte über/unter Threshold liegen
-function checkEnsembleThreshold(ensemble, param, thresholdKey, direction = 'above', thresholdLevel = 'high') {
-    if (!ensemble || ensemble[`${param}_mean`] === null || ensemble[`${param}_mean`] === undefined) return null;
-    
-    const threshold = THRESHOLDS[thresholdKey];
-    if (!threshold) return null;
-    
-    // Threshold-Wert bestimmen (kann high, medium, low, veryHigh, etc. sein)
-    const thresholdValue = threshold[thresholdLevel];
-    if (thresholdValue === undefined) {
-        // Fallback: versuche andere Level
-        if (threshold.high !== undefined) thresholdValue = threshold.high;
-        else if (threshold.medium !== undefined) thresholdValue = threshold.medium;
-        else if (threshold.low !== undefined) thresholdValue = threshold.low;
-        else return null;
-    }
+// Berechnet die Wahrscheinlichkeit, dass ein Threshold erreicht wird, basierend auf Ensemble-Daten
+// Gibt einen Wert zwischen 0 und 1 zurück (0 = kein Ensemble-Mitglied erreicht Threshold, 1 = alle erreichen Threshold)
+function calculateEnsembleThresholdProbability(ensemble, param, thresholdValue, direction = 'above', minProbability = 0.5) {
+    if (!ensemble) return null;
     
     const mean = ensemble[`${param}_mean`];
     const min = ensemble[`${param}_min`];
     const max = ensemble[`${param}_max`];
     
+    // Wenn keine Daten verfügbar sind
+    if (mean === null || mean === undefined) return null;
+    
     if (direction === 'above') {
         // Prüfe wie viele Ensemble-Mitglieder über dem Threshold liegen
-        // Wenn Min über Threshold: alle über Threshold
-        // Wenn Max unter Threshold: keine über Threshold
-        // Sonst: teilweise über Threshold
-        if (min !== null && min !== undefined && min > thresholdValue) return 1.0; // Alle über Threshold
-        if (max !== null && max !== undefined && max < thresholdValue) return 0.0; // Keine über Threshold
-        if (mean > thresholdValue) return 0.7; // Mittelwert über Threshold
-        return 0.3; // Teilweise über Threshold
+        if (min !== null && min !== undefined && min > thresholdValue) {
+            // Alle Ensemble-Mitglieder sind über dem Threshold
+            return 1.0;
+        }
+        if (max !== null && max !== undefined && max < thresholdValue) {
+            // Kein Ensemble-Mitglied ist über dem Threshold
+            return 0.0;
+        }
+        
+        // Threshold liegt zwischen min und max
+        // Schätze die Wahrscheinlichkeit basierend auf der Position des Thresholds
+        // Annahme: Normalverteilung, Mean ist Median (50. Perzentil)
+        if (min !== null && min !== undefined && max !== null && max !== undefined) {
+            const range = max - min;
+            if (range === 0) {
+                // Keine Variation, alle Werte sind gleich
+                return mean > thresholdValue ? 1.0 : 0.0;
+            }
+            
+            // Lineare Interpolation: Wenn Threshold näher an min, weniger Mitglieder erreichen ihn
+            // Wenn Threshold näher an max, mehr Mitglieder erreichen ihn
+            // Wenn Threshold bei mean (50%), dann ~50% der Mitglieder erreichen ihn
+            const position = (thresholdValue - min) / range;
+            
+            // Korrigiere basierend auf mean (wenn mean > threshold, dann mehr als 50%)
+            if (mean > thresholdValue) {
+                // Mean ist über Threshold, also mehr als 50% erreichen ihn
+                const meanPosition = (mean - min) / range;
+                // Schätze: Wenn mean bei 70% der Range ist und threshold bei 50%, dann ~70% erreichen ihn
+                return Math.min(1.0, 0.5 + (meanPosition - position) * 1.5);
+            } else {
+                // Mean ist unter Threshold, also weniger als 50% erreichen ihn
+                const meanPosition = (mean - min) / range;
+                return Math.max(0.0, 0.5 - (position - meanPosition) * 1.5);
+            }
+        }
+        
+        // Fallback: Nur mean verfügbar
+        return mean > thresholdValue ? 0.7 : 0.3;
     } else {
         // Prüfe wie viele Ensemble-Mitglieder unter dem Threshold liegen
-        if (max !== null && max !== undefined && max < thresholdValue) return 1.0; // Alle unter Threshold
-        if (min !== null && min !== undefined && min > thresholdValue) return 0.0; // Keine unter Threshold
-        if (mean < thresholdValue) return 0.7; // Mittelwert unter Threshold
-        return 0.3; // Teilweise unter Threshold
+        if (max !== null && max !== undefined && max < thresholdValue) {
+            return 1.0; // Alle unter Threshold
+        }
+        if (min !== null && min !== undefined && min > thresholdValue) {
+            return 0.0; // Keine unter Threshold
+        }
+        
+        // Threshold liegt zwischen min und max
+        if (min !== null && min !== undefined && max !== null && max !== undefined) {
+            const range = max - min;
+            if (range === 0) {
+                return mean < thresholdValue ? 1.0 : 0.0;
+            }
+            
+            const position = (thresholdValue - min) / range;
+            
+            if (mean < thresholdValue) {
+                const meanPosition = (mean - min) / range;
+                return Math.min(1.0, 0.5 + (position - meanPosition) * 1.5);
+            } else {
+                const meanPosition = (mean - min) / range;
+                return Math.max(0.0, 0.5 - (meanPosition - position) * 1.5);
+            }
+        }
+        
+        return mean < thresholdValue ? 0.7 : 0.3;
     }
 }
 
@@ -529,109 +574,127 @@ function calculateProbability(hour) {
     if (temp2m < 12) score = Math.round(score * 0.4);
 
     // Ensemble-Daten in die Wahrscheinlichkeit einfließen lassen
+    // Für jeden Parameter wird berechnet, wie wahrscheinlich es ist, dass der Threshold erreicht wird
+    // Nur wenn diese Wahrscheinlichkeit über einem bestimmten Wert liegt (z.B. 0.5 = 50%), fließt es ein
     if (ensemble) {
-        let ensembleBonus = 0;
-        let ensembleMalus = 0;
+        const MIN_ENSEMBLE_PROBABILITY = 0.5; // Mindestwahrscheinlichkeit, dass Threshold erreicht wird (50%)
         
         // CAPE: Hohe Werte begünstigen Gewitter
-        const capeEnsemble = checkEnsembleThreshold(ensemble, 'cape', 'cape', 'above');
-        if (capeEnsemble !== null) {
-            if (ensemble.cape_mean > THRESHOLDS.cape.veryHigh) {
-                ensembleBonus += Math.round(5 * capeEnsemble); // Bis zu +5 Punkte
-            } else if (ensemble.cape_mean > THRESHOLDS.cape.high) {
-                ensembleBonus += Math.round(3 * capeEnsemble); // Bis zu +3 Punkte
-            } else if (ensemble.cape_mean < THRESHOLDS.cape.medium) {
-                ensembleMalus += Math.round(3 * (1 - capeEnsemble)); // Bis zu -3 Punkte
-            }
-        }
+        // Threshold: 400 J/kg (niedrig), 800 J/kg (mittel), 1300 J/kg (hoch), 1800 J/kg (sehr hoch)
+        const capeProb400 = calculateEnsembleThresholdProbability(ensemble, 'cape', THRESHOLDS.cape.low, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const capeProb800 = calculateEnsembleThresholdProbability(ensemble, 'cape', THRESHOLDS.cape.medium, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const capeProb1300 = calculateEnsembleThresholdProbability(ensemble, 'cape', THRESHOLDS.cape.high, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const capeProb1800 = calculateEnsembleThresholdProbability(ensemble, 'cape', THRESHOLDS.cape.veryHigh, 'above', MIN_ENSEMBLE_PROBABILITY);
         
-        // Temperatur: Optimale Werte begünstigen Gewitter
-        if (ensemble.temperature_mean !== null) {
-            if (ensemble.temperature_mean > THRESHOLDS.temperature_2m.optimal && 
-                ensemble.temperature_mean < THRESHOLDS.temperature_2m.high) {
-                ensembleBonus += 2; // Optimale Temperatur
-            } else if (ensemble.temperature_mean < THRESHOLDS.temperature_2m.min) {
-                ensembleMalus += 5; // Zu kalt
-            }
+        if (capeProb1800 !== null && capeProb1800 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(8 * capeProb1800); // Sehr hohes CAPE
+        } else if (capeProb1300 !== null && capeProb1300 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(6 * capeProb1300); // Hohes CAPE
+        } else if (capeProb800 !== null && capeProb800 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(4 * capeProb800); // Mittleres CAPE
+        } else if (capeProb400 !== null && capeProb400 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(2 * capeProb400); // Niedriges CAPE
         }
         
         // Niederschlag: Hohe Werte mit CAPE begünstigen Gewitter
-        const precipEnsemble = checkEnsembleThreshold(ensemble, 'precipitation', 'precipitation', 'above');
-        if (precipEnsemble !== null && ensemble.cape_mean > THRESHOLDS.cape.medium) {
-            if (ensemble.precipitation_mean > THRESHOLDS.precipitation.high) {
-                ensembleBonus += Math.round(4 * precipEnsemble); // Bis zu +4 Punkte
-            } else if (ensemble.precipitation_mean > THRESHOLDS.precipitation.medium) {
-                ensembleBonus += Math.round(2 * precipEnsemble); // Bis zu +2 Punkte
+        // Threshold: 0.5 mm (niedrig), 1 mm (mittel), 2 mm (hoch), 5 mm (sehr hoch)
+        const precipProb05 = calculateEnsembleThresholdProbability(ensemble, 'precipitation', THRESHOLDS.precipitation.low, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const precipProb1 = calculateEnsembleThresholdProbability(ensemble, 'precipitation', THRESHOLDS.precipitation.medium, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const precipProb2 = calculateEnsembleThresholdProbability(ensemble, 'precipitation', THRESHOLDS.precipitation.high, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const precipProb5 = calculateEnsembleThresholdProbability(ensemble, 'precipitation', THRESHOLDS.precipitation.veryHigh, 'above', MIN_ENSEMBLE_PROBABILITY);
+        
+        // Nur wenn CAPE auch vorhanden ist
+        if (capeProb400 !== null && capeProb400 >= MIN_ENSEMBLE_PROBABILITY) {
+            if (precipProb5 !== null && precipProb5 >= MIN_ENSEMBLE_PROBABILITY) {
+                score += Math.round(6 * precipProb5);
+            } else if (precipProb2 !== null && precipProb2 >= MIN_ENSEMBLE_PROBABILITY) {
+                score += Math.round(4 * precipProb2);
+            } else if (precipProb1 !== null && precipProb1 >= MIN_ENSEMBLE_PROBABILITY) {
+                score += Math.round(2 * precipProb1);
+            } else if (precipProb05 !== null && precipProb05 >= MIN_ENSEMBLE_PROBABILITY) {
+                score += Math.round(1 * precipProb05);
             }
         }
         
         // Niederschlagswahrscheinlichkeit: Hohe Werte begünstigen Gewitter
-        if (ensemble.precipitation_probability_mean !== null) {
-            if (ensemble.precipitation_probability_mean > THRESHOLDS.precipitation_probability.high) {
-                ensembleBonus += 3;
-            } else if (ensemble.precipitation_probability_mean > THRESHOLDS.precipitation_probability.medium) {
-                ensembleBonus += 1;
-            }
+        // Threshold: 20% (niedrig), 40% (mittel), 60% (hoch)
+        const precipProbProb20 = calculateEnsembleThresholdProbability(ensemble, 'precipitation_probability', THRESHOLDS.precipitation_probability.low, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const precipProbProb40 = calculateEnsembleThresholdProbability(ensemble, 'precipitation_probability', THRESHOLDS.precipitation_probability.medium, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const precipProbProb60 = calculateEnsembleThresholdProbability(ensemble, 'precipitation_probability', THRESHOLDS.precipitation_probability.high, 'above', MIN_ENSEMBLE_PROBABILITY);
+        
+        if (precipProbProb60 !== null && precipProbProb60 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(4 * precipProbProb60);
+        } else if (precipProbProb40 !== null && precipProbProb40 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(2 * precipProbProb40);
+        } else if (precipProbProb20 !== null && precipProbProb20 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(1 * precipProbProb20);
         }
         
-        // Lifted Index: Niedrige Werte begünstigen Gewitter
-        if (ensemble.lifted_index_mean !== null) {
-            if (ensemble.lifted_index_mean < THRESHOLDS.lifted_index.veryLow) {
-                ensembleBonus += 4;
-            } else if (ensemble.lifted_index_mean < THRESHOLDS.lifted_index.low) {
-                ensembleBonus += 2;
-            } else if (ensemble.lifted_index_mean > THRESHOLDS.lifted_index.high) {
-                ensembleMalus += 3;
-            }
+        // Lifted Index: Niedrige Werte begünstigen Gewitter (unter Threshold)
+        // Threshold: -6°C (sehr niedrig), -4°C (niedrig), -2°C (mittel)
+        const liProbMinus6 = calculateEnsembleThresholdProbability(ensemble, 'lifted_index', THRESHOLDS.lifted_index.veryLow, 'below', MIN_ENSEMBLE_PROBABILITY);
+        const liProbMinus4 = calculateEnsembleThresholdProbability(ensemble, 'lifted_index', THRESHOLDS.lifted_index.low, 'below', MIN_ENSEMBLE_PROBABILITY);
+        const liProbMinus2 = calculateEnsembleThresholdProbability(ensemble, 'lifted_index', THRESHOLDS.lifted_index.medium, 'below', MIN_ENSEMBLE_PROBABILITY);
+        
+        if (liProbMinus6 !== null && liProbMinus6 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(5 * liProbMinus6);
+        } else if (liProbMinus4 !== null && liProbMinus4 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(3 * liProbMinus4);
+        } else if (liProbMinus2 !== null && liProbMinus2 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(2 * liProbMinus2);
         }
         
-        // CIN: Niedrige Werte begünstigen Gewitter
-        if (ensemble.convective_inhibition_mean !== null) {
-            if (ensemble.convective_inhibition_mean > THRESHOLDS.convective_inhibition.high) {
-                ensembleMalus += 5;
-            } else if (ensemble.convective_inhibition_mean > THRESHOLDS.convective_inhibition.medium) {
-                ensembleMalus += 2;
-            }
+        // CIN: Niedrige Werte begünstigen Gewitter (unter Threshold)
+        // Threshold: 0 J/kg (niedrig), 75 J/kg (mittel), 150 J/kg (hoch)
+        const cinProb0 = calculateEnsembleThresholdProbability(ensemble, 'convective_inhibition', THRESHOLDS.convective_inhibition.low, 'below', MIN_ENSEMBLE_PROBABILITY);
+        const cinProb75 = calculateEnsembleThresholdProbability(ensemble, 'convective_inhibition', THRESHOLDS.convective_inhibition.medium, 'below', MIN_ENSEMBLE_PROBABILITY);
+        const cinProb150 = calculateEnsembleThresholdProbability(ensemble, 'convective_inhibition', THRESHOLDS.convective_inhibition.high, 'below', MIN_ENSEMBLE_PROBABILITY);
+        
+        if (cinProb150 !== null && cinProb150 < MIN_ENSEMBLE_PROBABILITY) {
+            // Hohe CIN-Werte reduzieren Wahrscheinlichkeit
+            score -= Math.round(5 * (1 - cinProb150));
+        } else if (cinProb75 !== null && cinProb75 < MIN_ENSEMBLE_PROBABILITY) {
+            score -= Math.round(2 * (1 - cinProb75));
         }
         
         // Direkte Strahlung: Hohe Werte begünstigen Konvektion
-        if (ensemble.direct_radiation_mean !== null) {
-            if (ensemble.direct_radiation_mean > THRESHOLDS.direct_radiation.veryHigh) {
-                ensembleBonus += 3;
-            } else if (ensemble.direct_radiation_mean > THRESHOLDS.direct_radiation.high) {
-                ensembleBonus += 1;
-            } else if (ensemble.direct_radiation_mean < THRESHOLDS.direct_radiation.low && 
-                       ensemble.cape_mean < THRESHOLDS.cape.medium) {
-                ensembleMalus += 3; // Niedrige Strahlung bei niedrigem CAPE
-            }
+        // Threshold: 50 W/m² (niedrig), 200 W/m² (mittel), 400 W/m² (hoch), 600 W/m² (sehr hoch)
+        const radProb600 = calculateEnsembleThresholdProbability(ensemble, 'direct_radiation', THRESHOLDS.direct_radiation.veryHigh, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const radProb400 = calculateEnsembleThresholdProbability(ensemble, 'direct_radiation', THRESHOLDS.direct_radiation.high, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const radProb200 = calculateEnsembleThresholdProbability(ensemble, 'direct_radiation', THRESHOLDS.direct_radiation.medium, 'above', MIN_ENSEMBLE_PROBABILITY);
+        
+        if (radProb600 !== null && radProb600 >= MIN_ENSEMBLE_PROBABILITY && capeProb400 !== null && capeProb400 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(4 * radProb600);
+        } else if (radProb400 !== null && radProb400 >= MIN_ENSEMBLE_PROBABILITY && capeProb400 !== null && capeProb400 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(2 * radProb400);
+        } else if (radProb200 !== null && radProb200 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(1 * radProb200);
         }
         
-        // Relative Feuchte 500hPa: Niedrige Werte begünstigen stärkere Gewitter
-        if (ensemble.relative_humidity_500hPa_mean !== null) {
-            if (ensemble.relative_humidity_500hPa_mean < THRESHOLDS.relative_humidity_500hPa.low && 
-                ensemble.cape_mean > THRESHOLDS.cape.high) {
-                ensembleBonus += 3;
-            } else if (ensemble.relative_humidity_500hPa_mean > THRESHOLDS.relative_humidity_500hPa.high && 
-                       ensemble.cape_mean < THRESHOLDS.cape.high) {
-                ensembleMalus += 2;
-            }
+        // Relative Feuchte 500hPa: Niedrige Werte begünstigen stärkere Gewitter (unter Threshold)
+        // Threshold: 30% (niedrig), 50% (mittel), 80% (hoch)
+        const rh500Prob30 = calculateEnsembleThresholdProbability(ensemble, 'relative_humidity_500hPa', THRESHOLDS.relative_humidity_500hPa.low, 'below', MIN_ENSEMBLE_PROBABILITY);
+        const rh500Prob50 = calculateEnsembleThresholdProbability(ensemble, 'relative_humidity_500hPa', THRESHOLDS.relative_humidity_500hPa.medium, 'below', MIN_ENSEMBLE_PROBABILITY);
+        
+        if (rh500Prob30 !== null && rh500Prob30 >= MIN_ENSEMBLE_PROBABILITY && capeProb800 !== null && capeProb800 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(4 * rh500Prob30);
+        } else if (rh500Prob50 !== null && rh500Prob50 >= MIN_ENSEMBLE_PROBABILITY && capeProb400 !== null && capeProb400 >= MIN_ENSEMBLE_PROBABILITY) {
+            score += Math.round(2 * rh500Prob50);
         }
         
-        // Ensemble-Unsicherheit: Große Spannweite (max - min) reduziert Vertrauen
-        let uncertaintyFactor = 1.0;
-        if (ensemble.cape_min !== null && ensemble.cape_max !== null) {
-            const capeRange = ensemble.cape_max - ensemble.cape_min;
-            if (capeRange > 2000) {
-                uncertaintyFactor = 0.8; // Große Unsicherheit
-            } else if (capeRange > 1000) {
-                uncertaintyFactor = 0.9; // Mittlere Unsicherheit
-            }
-        }
+        // Temperatur: Optimale Werte begünstigen Gewitter
+        // Threshold: 5°C (min), 15°C (optimal), 25°C (hoch)
+        const tempProb5 = calculateEnsembleThresholdProbability(ensemble, 'temperature', THRESHOLDS.temperature_2m.min, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const tempProb15 = calculateEnsembleThresholdProbability(ensemble, 'temperature', THRESHOLDS.temperature_2m.optimal, 'above', MIN_ENSEMBLE_PROBABILITY);
+        const tempProb25 = calculateEnsembleThresholdProbability(ensemble, 'temperature', THRESHOLDS.temperature_2m.high, 'above', MIN_ENSEMBLE_PROBABILITY);
         
-        // Ensemble-Bonus/Malus anwenden
-        score += ensembleBonus;
-        score -= ensembleMalus;
-        score = Math.round(score * uncertaintyFactor);
+        // Zu kalt reduziert Wahrscheinlichkeit
+        if (tempProb5 !== null && tempProb5 < MIN_ENSEMBLE_PROBABILITY) {
+            score -= Math.round(5 * (1 - tempProb5));
+        } else if (tempProb15 !== null && tempProb15 >= MIN_ENSEMBLE_PROBABILITY && tempProb25 !== null && tempProb25 < 0.8) {
+            // Optimale Temperatur (zwischen 15 und 25°C)
+            score += Math.round(3 * tempProb15);
+        }
     }
 
     return Math.min(100, Math.max(0, Math.round(score)));
