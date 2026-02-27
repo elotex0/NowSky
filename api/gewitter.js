@@ -346,21 +346,26 @@ function calcDCAPE(hour) {
     const temp700 = hour.temp700 ?? 0;
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
-    
-    // Feuchtkugeltemperatur 700 hPa approximieren
+    const cape = hour.cape ?? 0;
+
+    // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
+    if (cape < 100 && temp700 > 0) return 0;
+
     const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
-    
-    // DCAPE ≈ g * integral[(T_parcel - T_env)/T_env * dz]
-    // Vereinfachung: lineares Absinken von 700 auf 500 hPa (~2.5 km)
     const tempDiff = wetBulb700 - temp500;
     if (tempDiff <= 0) return 0;
-    
-    // Approximiertes DCAPE in J/kg
-    // Korrekte Approximation: g * dz * (deltaT / T_env)
-    // 700→500 hPa ≈ 2500m Schichtdicke, T_env in Kelvin
-    const T_env_kelvin = (temp700 + 273.15);
-    const dz = 2500; // Meter, 700→500 hPa Schichtdicke
-    const dcape = Math.max(0, (tempDiff / T_env_kelvin) * 9.81 * dz); // 250 = vereinfachter Skalierungsfaktor
+
+    // Physikalisch: DCAPE nur relevant wenn Feuchteparzel wärmer als Umgebung
+    // Trockenheit 700 hPa dämpft DCAPE stark (kein Verdunstungsantrieb)
+    const dewDepression700 = temp700 - dew700;
+    const moistFactor = dewDepression700 > 20 ? 0.2        // sehr trocken = kaum Evaporation
+                      : dewDepression700 > 10 ? 0.5
+                      : dewDepression700 > 5  ? 0.8
+                      : 1.0;
+
+    const T_env_kelvin = temp700 + 273.15;
+    const dz = 2500;
+    const dcape = Math.max(0, (tempDiff / T_env_kelvin) * 9.81 * dz * moistFactor);
     return Math.round(dcape);
 }
 
