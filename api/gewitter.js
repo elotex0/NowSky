@@ -167,7 +167,8 @@ export default async function handler(req, res) {
                     temperature: hour.temperature,
                     cape: hour.cape,
                     shear: shear,
-                    srh: srh
+                    srh: srh,
+                    dcape: calcDCAPE(hour),
                 };
             });
 
@@ -311,7 +312,7 @@ function calcIndices(hour) {
     return {
         kIndex: temp850 - temp500 + dew850 - (temp700 - dew700),
         showalter: temp500 - (temp850 - 9.8 * 1.5),
-        lapse: (temp850 - temp500) / 5.5,
+        lapse: (temp850 - temp500) / 3.5,
         liftedIndex: hour.liftedIndex ?? (temp500 - (temp850 - 9.8 * 1.5))
     };
 }
@@ -336,6 +337,27 @@ function calcSCP(cape, shear, srh, cin, region = 'europe') {
         const cinTerm = cin < 40 ? 1.0 : Math.max(0.1, 1 - (cin - 40) / 200);
         return Math.max(0, capeTerm * shearTerm * srhTerm * cinTerm);
     }
+}
+
+// DCAPE (Downdraft CAPE) nach Gilmore & Wicker (1998)
+// Approximation über 700-500 hPa Schicht
+// Hoher DCAPE → starke Downbursts, Hagel, Sturmböen
+function calcDCAPE(hour) {
+    const temp700 = hour.temp700 ?? 0;
+    const dew700 = hour.dew700 ?? 0;
+    const temp500 = hour.temp500 ?? 0;
+    
+    // Feuchtkugeltemperatur 700 hPa approximieren
+    const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
+    
+    // DCAPE ≈ g * integral[(T_parcel - T_env)/T_env * dz]
+    // Vereinfachung: lineares Absinken von 700 auf 500 hPa (~2.5 km)
+    const tempDiff = wetBulb700 - temp500;
+    if (tempDiff <= 0) return 0;
+    
+    // Approximiertes DCAPE in J/kg
+    const dcape = Math.max(0, tempDiff * 9.81 * 250); // 250 = vereinfachter Skalierungsfaktor
+    return Math.round(dcape);
 }
 
 // STP (Significant Tornado Parameter) - regionsspezifisch
@@ -492,10 +514,11 @@ function calculateProbability(hour, region = 'europe') {
         else if (stp > 0.5) score += 7;
         else if (stp > 0.3) score += 3;
         
-        if (ehi > 2) score += 12;
-        else if (ehi > 1.5) score += 9;
-        else if (ehi > 1) score += 6;
-        else if (ehi > 0.5) score += 3;
+        // EHI-Schwellen nach Hart & Korotky (1991), Europa-klimatologisch angepasst
+        if (ehi >= 2.0) score += 12;      // Signifikante Tornados möglich
+        else if (ehi >= 1.0) score += 8;  // Superzellen möglich
+        else if (ehi >= 0.5) score += 4;  // Organisierte Konvektion möglich
+        else if (ehi >= 0.3) score += 2;  // Europa: auch niedrige EHI relevant
     }
     
     // Shear und SRH (regionsspezifisch)
@@ -707,6 +730,19 @@ function calculateProbability(hour, region = 'europe') {
         if (gustDiff > 12 && cape >= 800 && temp2m >= 12) score += 4;
         else if (gustDiff > 8 && cape >= 600) score += 2;
     }
+
+    // DCAPE: Downdraft-Potential (Gilmore & Wicker 1998)
+    // Hoher DCAPE verstärkt Böen, Hagel, MCS-Aktivität
+    const dcape = calcDCAPE(hour);
+    if (region === 'usa') {
+        if (dcape >= 1000 && cape >= 500) score += 6;
+        else if (dcape >= 700 && cape >= 400) score += 4;
+        else if (dcape >= 500 && cape >= 300) score += 2;
+    } else {
+        if (dcape >= 800 && cape >= 400) score += 5;
+        else if (dcape >= 600 && cape >= 300) score += 3;
+        else if (dcape >= 400 && cape >= 200) score += 1;
+    }
     
     // Ensemble-Daten (falls verfügbar, regionsspezifisch)
     if (hour.ensemble) {
@@ -900,16 +936,20 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         if (temp2m < 12) score = Math.round(score * 0.6);
         else if (temp2m < 15) score = Math.round(score * 0.8);
     }
-    
-    // Mindestanforderungen (regionsspezifisch, reduziert Fehlalarme)
+
+    // Finale Plausibilitätsprüfung: STP < 0.1 trotz score > 0 = physikalisch inkonsistent
+    // Passiert wenn Einzelfaktoren (EHI, CAPE+Shear) score pushen aber STP versagt
+    if (stp < 0.1 && score > 10) score = Math.min(score, 8);
+
+    // Minimalanforderungen – nur noch für Grenzfälle die STP-Filter passiert haben
     if (region === 'usa') {
-        if (score > 0 && cape < 500) score = Math.max(0, score - 20);
-        if (score > 0 && shear < 10) score = Math.max(0, score - 25);
-        if (score > 0 && srh < 80) score = Math.max(0, score - 20);
+        if (cape < 500 && score > 15) score = Math.round(score * 0.6);
+        if (shear < 10 && score > 10) score = Math.round(score * 0.5);
+        if (srh < 80 && score > 10) score = Math.round(score * 0.6);
     } else {
-        if (score > 0 && cape < 400) score = Math.max(0, score - 20);
-        if (score > 0 && shear < 8) score = Math.max(0, score - 25);
-        if (score > 0 && srh < 60) score = Math.max(0, score - 20);
+        if (cape < 400 && score > 15) score = Math.round(score * 0.6);
+        if (shear < 8 && score > 10) score = Math.round(score * 0.5);
+        if (srh < 60 && score > 10) score = Math.round(score * 0.6);
     }
     
     return Math.min(100, Math.max(0, Math.round(score)));
