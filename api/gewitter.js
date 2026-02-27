@@ -356,7 +356,11 @@ function calcDCAPE(hour) {
     if (tempDiff <= 0) return 0;
     
     // Approximiertes DCAPE in J/kg
-    const dcape = Math.max(0, tempDiff * 9.81 * 250); // 250 = vereinfachter Skalierungsfaktor
+    // Korrekte Approximation: g * dz * (deltaT / T_env)
+    // 700→500 hPa ≈ 2500m Schichtdicke, T_env in Kelvin
+    const T_env_kelvin = (temp700 + 273.15);
+    const dz = 2500; // Meter, 700→500 hPa Schichtdicke
+    const dcape = Math.max(0, (tempDiff / T_env_kelvin) * 9.81 * dz); // 250 = vereinfachter Skalierungsfaktor
     return Math.round(dcape);
 }
 
