@@ -247,13 +247,25 @@ function getRegion(lat, lon) {
     if (lat >= -35 && lat <= -22 && lon >= 15 && lon <= 35) {
         return 'south_africa';
     }
-    // Afrika - Zentralafrika: ca. 5°S - 15°N, 10°W - 40°E
-    if (lat >= -5 && lat <= 15 && lon >= -10 && lon <= 40) {
+    // Afrika - Ostafrika (Kenia, Tansania, Äthiopien, Somalia, Uganda): ca. 5°S - 12°N, 30°E - 52°E
+    if (lat >= -5 && lat <= 12 && lon >= 30 && lon <= 52) {
+        return 'east_africa';
+    }
+    // Afrika - Zentralafrika (Kongo, Kamerun, etc.): ca. 5°S - 10°N, 10°W - 30°E
+    if (lat >= -5 && lat <= 10 && lon >= -10 && lon <= 30) {
         return 'central_africa';
     }
-    // Afrika - Nordafrika: ca. 10°N - 35°N, -20°W - 40°E
-    if (lat >= 10 && lat <= 35 && lon >= -20 && lon <= 40) {
+    // Afrika - Westafrika (Nigeria, Ghana, Senegal, etc.): ca. 5°N - 15°N, -20°W - 15°E
+    if (lat >= 5 && lat <= 15 && lon >= -20 && lon <= 15) {
+        return 'west_africa';
+    }
+    // Afrika - Nordafrika (Sahara, Maghreb): ca. 15°N - 35°N, -20°W - 40°E
+    if (lat >= 15 && lat <= 35 && lon >= -20 && lon <= 40) {
         return 'north_africa';
+    }
+    // Madagaskar und umliegende Inseln: ca. 12°S - 25°S, 43°E - 51°E
+    if (lat >= -25 && lat <= -12 && lon >= 43 && lon <= 51) {
+        return 'south_africa'; // Ähnliche Bedingungen wie Südafrika
     }
     // Asien - Südasien (Indien, Pakistan, Bangladesch): ca. 5°N - 35°N, 60°E - 100°E
     if (lat >= 5 && lat <= 35 && lon >= 60 && lon <= 100) {
@@ -382,7 +394,9 @@ function getRegionParams(region) {
         'central_america': { minCAPE: 150, minShear: 6, minSRH: 40, normCAPE: 1200, normShear: 10, normSRH: 50 },
         'south_america': { minCAPE: 150, minShear: 8, minSRH: 50, normCAPE: 1200, normShear: 12, normSRH: 50 },
         'south_africa': { minCAPE: 200, minShear: 10, minSRH: 60, normCAPE: 1500, normShear: 14, normSRH: 60 },
+        'east_africa': { minCAPE: 200, minShear: 6, minSRH: 40, normCAPE: 1400, normShear: 9, normSRH: 50 },
         'central_africa': { minCAPE: 200, minShear: 5, minSRH: 30, normCAPE: 1500, normShear: 8, normSRH: 40 },
+        'west_africa': { minCAPE: 200, minShear: 5, minSRH: 35, normCAPE: 1500, normShear: 8, normSRH: 45 },
         'north_africa': { minCAPE: 150, minShear: 6, minSRH: 40, normCAPE: 1000, normShear: 10, normSRH: 40 },
         'south_asia': { minCAPE: 200, minShear: 6, minSRH: 40, normCAPE: 1500, normShear: 10, normSRH: 50 },
         'east_asia': { minCAPE: 150, minShear: 8, minSRH: 50, normCAPE: 1200, normShear: 12, normSRH: 50 },
@@ -451,7 +465,9 @@ function calcSTP(cape, srh, shear, liftedIndex, cin, region = 'europe', temp2m =
         'central_america': { minCAPE: 200, minSRH: 50, minShear: 8, normCAPE: 1200, normSRH: 100, normShear: 10 },
         'south_america': { minCAPE: 250, minSRH: 70, minShear: 10, normCAPE: 1400, normSRH: 130, normShear: 12 },
         'south_africa': { minCAPE: 300, minSRH: 90, minShear: 12, normCAPE: 1600, normSRH: 160, normShear: 14 },
+        'east_africa': { minCAPE: 200, minSRH: 50, minShear: 7, normCAPE: 1300, normSRH: 100, normShear: 9 },
         'central_africa': { minCAPE: 200, minSRH: 40, minShear: 6, normCAPE: 1200, normSRH: 80, normShear: 8 },
+        'west_africa': { minCAPE: 200, minSRH: 45, minShear: 6, normCAPE: 1300, normSRH: 90, normShear: 8 },
         'north_africa': { minCAPE: 200, minSRH: 50, minShear: 8, normCAPE: 1200, normSRH: 100, normShear: 10 },
         'south_asia': { minCAPE: 250, minSRH: 60, minShear: 8, normCAPE: 1400, normSRH: 120, normShear: 10 },
         'east_asia': { minCAPE: 200, minSRH: 70, minShear: 10, normCAPE: 1300, normSRH: 130, normShear: 12 },
@@ -557,12 +573,26 @@ function getProbabilityParams(region) {
             minTempReduction: 15, tempReductionFactor: 0.5,
             minTempReduction2: 20, tempReductionFactor2: 0.7
         },
+        'east_africa': {
+            minTemp: 18, minTempWithCAPE: 23, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
+            capeScores: [28, 22, 18, 14, 10, 6, 3],
+            minTempReduction: 20, tempReductionFactor: 0.6,
+            minTempReduction2: 24, tempReductionFactor2: 0.8
+        },
         'central_africa': {
             minTemp: 20, minTempWithCAPE: 25, minCAPE: 300, minCAPEWithPrecip: 150,
             capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
             capeScores: [28, 22, 18, 14, 10, 6, 3],
             minTempReduction: 22, tempReductionFactor: 0.6,
             minTempReduction2: 25, tempReductionFactor2: 0.8
+        },
+        'west_africa': {
+            minTemp: 22, minTempWithCAPE: 27, minCAPE: 300, minCAPEWithPrecip: 150,
+            capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
+            capeScores: [28, 22, 18, 14, 10, 6, 3],
+            minTempReduction: 24, tempReductionFactor: 0.6,
+            minTempReduction2: 28, tempReductionFactor2: 0.8
         },
         'north_africa': {
             minTemp: 15, minTempWithCAPE: 20, minCAPE: 300, minCAPEWithPrecip: 150,
@@ -1000,7 +1030,9 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         'southeast_asia': { minTemp: 20, minCAPE: 350 },
         'central_america': { minTemp: 18, minCAPE: 350 },
         'north_africa': { minTemp: 15, minCAPE: 350 },
+        'east_africa': { minTemp: 18, minCAPE: 350 },
         'central_africa': { minTemp: 20, minCAPE: 300 },
+        'west_africa': { minTemp: 22, minCAPE: 300 },
         'middle_east': { minTemp: 12, minCAPE: 350 },
         'new_zealand': { minTemp: 8, minCAPE: 300 },
         'russia_central_asia': { minTemp: 8, minCAPE: 300 },
@@ -1123,7 +1155,9 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         'southeast_asia': { threshold1: 24, factor1: 0.6, threshold2: 28, factor2: 0.8 },
         'central_america': { threshold1: 20, factor1: 0.6, threshold2: 24, factor2: 0.8 },
         'north_africa': { threshold1: 18, factor1: 0.6, threshold2: 22, factor2: 0.8 },
+        'east_africa': { threshold1: 20, factor1: 0.6, threshold2: 24, factor2: 0.8 },
         'central_africa': { threshold1: 22, factor1: 0.6, threshold2: 26, factor2: 0.8 },
+        'west_africa': { threshold1: 24, factor1: 0.6, threshold2: 28, factor2: 0.8 },
         'middle_east': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
         'new_zealand': { threshold1: 10, factor1: 0.6, threshold2: 14, factor2: 0.8 },
         'russia_central_asia': { threshold1: 10, factor1: 0.6, threshold2: 14, factor2: 0.8 },
@@ -1150,7 +1184,9 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         'southeast_asia': { minCAPE: 350, minShear: 6, minSRH: 50 },
         'central_america': { minCAPE: 350, minShear: 8, minSRH: 50 },
         'north_africa': { minCAPE: 350, minShear: 8, minSRH: 50 },
+        'east_africa': { minCAPE: 350, minShear: 7, minSRH: 50 },
         'central_africa': { minCAPE: 300, minShear: 6, minSRH: 40 },
+        'west_africa': { minCAPE: 300, minShear: 6, minSRH: 45 },
         'middle_east': { minCAPE: 350, minShear: 8, minSRH: 50 },
         'new_zealand': { minCAPE: 300, minShear: 7, minSRH: 50 },
         'russia_central_asia': { minCAPE: 300, minShear: 7, minSRH: 50 },
