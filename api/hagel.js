@@ -34,7 +34,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation&forecast_days=16&models=best_match&timezone=auto`;
+                    `precipitation&forecast_days=14&models=best_match&timezone=auto`;
 
         const ensembleUrl = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}` +
                     `&hourly=temperature_2m,dew_point_2m,wind_gusts_10m,wind_speed_10m,` +
@@ -44,7 +44,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation&forecast_days=16&models=best_match&timezone=auto`;
+                    `precipitation&forecast_days=14&models=best_match&timezone=auto`;
 
         const [response, ensembleResponse] = await Promise.all([
             fetch(url),
@@ -162,9 +162,14 @@ export default async function handler(req, res) {
                 const srh = calcSRH(hour);
                 const freezingLevel = calcFreezingLevel(hour);
                 const wmaxshear = calcWMAXSHEAR(hour.cape, shear);
+                const probabilities = calculateHailProbabilities(hour, region, freezingLevel);
                 return {
                     timestamp: hour.time,
-                    probability: calculateHailProbability(hour, region, freezingLevel),
+                    probability_0_1cm: probabilities.size_0_1cm,
+                    probability_0_5cm: probabilities.size_0_5cm,
+                    probability_1cm: probabilities.size_1cm,
+                    probability_2cm: probabilities.size_2cm,
+                    probability_5cm: probabilities.size_5cm,
                     temperature: hour.temperature,
                     cape: hour.cape,
                     shear: shear,
@@ -181,15 +186,23 @@ export default async function handler(req, res) {
             const [datePart] = h.time.split('T');
             if (datePart >= currentDateStr) {
                 const freezingLevel = calcFreezingLevel(h);
-                const probability = calculateHailProbability(h, region, freezingLevel);
+                const probabilities = calculateHailProbabilities(h, region, freezingLevel);
                 if (!daysMap.has(datePart)) {
                     daysMap.set(datePart, { 
                         date: datePart, 
-                        maxProbability: probability
+                        maxProbability_0_1cm: probabilities.size_0_1cm,
+                        maxProbability_0_5cm: probabilities.size_0_5cm,
+                        maxProbability_1cm: probabilities.size_1cm,
+                        maxProbability_2cm: probabilities.size_2cm,
+                        maxProbability_5cm: probabilities.size_5cm
                     });
                 } else {
                     const dayData = daysMap.get(datePart);
-                    dayData.maxProbability = Math.max(dayData.maxProbability, probability);
+                    dayData.maxProbability_0_1cm = Math.max(dayData.maxProbability_0_1cm, probabilities.size_0_1cm);
+                    dayData.maxProbability_0_5cm = Math.max(dayData.maxProbability_0_5cm, probabilities.size_0_5cm);
+                    dayData.maxProbability_1cm = Math.max(dayData.maxProbability_1cm, probabilities.size_1cm);
+                    dayData.maxProbability_2cm = Math.max(dayData.maxProbability_2cm, probabilities.size_2cm);
+                    dayData.maxProbability_5cm = Math.max(dayData.maxProbability_5cm, probabilities.size_5cm);
                 }
             }
         });
@@ -198,7 +211,11 @@ export default async function handler(req, res) {
             .sort((a, b) => a.date.localeCompare(b.date))
             .map(day => ({ 
                 date: day.date, 
-                probability: day.maxProbability
+                probability_0_1cm: day.maxProbability_0_1cm,
+                probability_0_5cm: day.maxProbability_0_5cm,
+                probability_1cm: day.maxProbability_1cm,
+                probability_2cm: day.maxProbability_2cm,
+                probability_5cm: day.maxProbability_5cm
             }));
 
         return res.status(200).json({
@@ -432,8 +449,8 @@ function calcWMAXSHEAR(cape, shear) {
     return Math.round(Math.sqrt(2 * cape) * shear);
 }
 
-// Hagel-Wahrscheinlichkeitsberechnung
-function calculateHailProbability(hour, region = 'europe', freezingLevel) {
+// Hagel-Wahrscheinlichkeitsberechnung für verschiedene Hagelgrößen
+function calculateHailProbabilities(hour, region = 'europe', freezingLevel) {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
     const cape = Math.max(0, hour.cape ?? 0);
@@ -443,9 +460,15 @@ function calculateHailProbability(hour, region = 'europe', freezingLevel) {
     
     // Basis-Filter: Zu kalt oder keine Instabilität = kein Hagel
     const hailParams = getHailParams(region);
-    if (temp2m < hailParams.minTemp) return 0;
-    if (cape < hailParams.minCAPE) return 0;
-    if (cin > 200) return 0;
+    if (temp2m < hailParams.minTemp) {
+        return { size_0_1cm: 0, size_0_5cm: 0, size_1cm: 0, size_2cm: 0, size_5cm: 0 };
+    }
+    if (cape < hailParams.minCAPE) {
+        return { size_0_1cm: 0, size_0_5cm: 0, size_1cm: 0, size_2cm: 0, size_5cm: 0 };
+    }
+    if (cin > 200) {
+        return { size_0_1cm: 0, size_0_5cm: 0, size_1cm: 0, size_2cm: 0, size_5cm: 0 };
+    }
     
     // Berechne Indizes
     const shear = calcShear(hour);
@@ -453,21 +476,80 @@ function calculateHailProbability(hour, region = 'europe', freezingLevel) {
     const wmaxshear = calcWMAXSHEAR(cape, shear);
     const dcape = calcDCAPE(hour);
     const relHum2m = calcRelHum(temp2m, dew);
+    const liftedIndex = hour.liftedIndex ?? 0;
+    const temp500 = hour.temp500 ?? 0;
     
+    // Basis-Score für alle Größen berechnen
+    let baseScore = calculateBaseHailScore(hour, region, freezingLevel, cape, cin, shear, srh, wmaxshear, dcape, temp500, precipAcc, precipProb, liftedIndex, temp2m, hailParams);
+    
+    // Wahrscheinlichkeiten für verschiedene Hagelgrößen berechnen
+    // Größere Hagelkörner benötigen strengere Bedingungen
+    
+    // 0.1cm Hagel (kleinster Hagel, häufigste Größe)
+    let score_0_1cm = baseScore;
+    // Keine zusätzlichen Anforderungen für 0.1cm
+    
+    // 0.5cm Hagel
+    let score_0_5cm = baseScore;
+    if (cape < 400) score_0_5cm *= 0.6;
+    if (shear < 10) score_0_5cm *= 0.5;
+    if (wmaxshear < 300) score_0_5cm *= 0.4;
+    if (freezingLevel > 3000) score_0_5cm *= 0.5;
+    
+    // 1cm Hagel
+    let score_1cm = baseScore;
+    if (cape < 600) score_1cm *= 0.5;
+    if (shear < 12) score_1cm *= 0.4;
+    if (wmaxshear < 500) score_1cm *= 0.3;
+    if (freezingLevel > 2800) score_1cm *= 0.4;
+    if (srh < 100) score_1cm *= 0.6;
+    
+    // 2cm Hagel (großer Hagel)
+    let score_2cm = baseScore;
+    if (cape < 1000) score_2cm *= 0.4;
+    if (shear < 15) score_2cm *= 0.3;
+    if (wmaxshear < 700) score_2cm *= 0.2;
+    if (freezingLevel > 2500) score_2cm *= 0.3;
+    if (srh < 150) score_2cm *= 0.5;
+    if (temp500 > -10) score_2cm *= 0.6;
+    if (hour.rh500 > 60) score_2cm *= 0.5;
+    
+    // 5cm Hagel (sehr großer Hagel, selten)
+    let score_5cm = baseScore;
+    if (cape < 1500) score_5cm *= 0.3;
+    if (shear < 18) score_5cm *= 0.2;
+    if (wmaxshear < 900) score_5cm *= 0.15;
+    if (freezingLevel > 2200) score_5cm *= 0.2;
+    if (srh < 200) score_5cm *= 0.4;
+    if (temp500 > -12) score_5cm *= 0.4;
+    if (hour.rh500 > 50) score_5cm *= 0.4;
+    if (dcape < 700) score_5cm *= 0.5;
+    // Sehr großer Hagel benötigt Superzellen-Bedingungen
+    if (srh < 150 || shear < 20) score_5cm *= 0.3;
+    
+    return {
+        size_0_1cm: Math.min(100, Math.max(0, Math.round(score_0_1cm))),
+        size_0_5cm: Math.min(100, Math.max(0, Math.round(score_0_5cm))),
+        size_1cm: Math.min(100, Math.max(0, Math.round(score_1cm))),
+        size_2cm: Math.min(100, Math.max(0, Math.round(score_2cm))),
+        size_5cm: Math.min(100, Math.max(0, Math.round(score_5cm)))
+    };
+}
+
+// Basis-Score für Hagel berechnen (wird für alle Größen verwendet)
+function calculateBaseHailScore(hour, region, freezingLevel, cape, cin, shear, srh, wmaxshear, dcape, temp500, precipAcc, precipProb, liftedIndex, temp2m, hailParams) {
     // Gefrierpunkt-Höhe ist kritisch für Hagel
-    // Niedrige Gefrierpunkt-Höhe (< 2500m) begünstigt Hagel
-    // Sehr hohe Gefrierpunkt-Höhe (> 4000m) reduziert Hagelwahrscheinlichkeit stark
     let freezingLevelScore = 0;
-    if (freezingLevel < 1500) freezingLevelScore = 20; // Sehr günstig
+    if (freezingLevel < 1500) freezingLevelScore = 20;
     else if (freezingLevel < 2000) freezingLevelScore = 15;
     else if (freezingLevel < 2500) freezingLevelScore = 10;
     else if (freezingLevel < 3000) freezingLevelScore = 5;
     else if (freezingLevel < 3500) freezingLevelScore = 2;
-    else if (freezingLevel >= 4000) freezingLevelScore = -10; // Sehr ungünstig
+    else if (freezingLevel >= 4000) freezingLevelScore = -10;
     
     let score = freezingLevelScore;
     
-    // CAPE-Bewertung (höhere Anforderungen als bei normalen Gewittern)
+    // CAPE-Bewertung
     for (let i = 0; i < hailParams.capeThresholds.length; i++) {
         if (cape >= hailParams.capeThresholds[i]) {
             score += hailParams.capeScores[i];
@@ -476,20 +558,19 @@ function calculateHailProbability(hour, region = 'europe', freezingLevel) {
     }
     
     // WMAXSHEAR ist der beste Prädiktor für Hagel
-    // Taszarek et al. 2020: Schwelle für schweren Hagel > 500 m²/s²
     if (wmaxshear >= 1200) score += 25;
     else if (wmaxshear >= 900) score += 20;
     else if (wmaxshear >= 700) score += 15;
     else if (wmaxshear >= 500) score += 10;
     else if (wmaxshear >= 300) score += 5;
     
-    // Shear ist kritisch für Hagel (stärkere Aufwinde)
+    // Shear ist kritisch für Hagel
     if (shear >= 25) score += 15;
     else if (shear >= 20) score += 12;
     else if (shear >= 15) score += 8;
     else if (shear >= 12) score += 5;
     else if (shear >= 10) score += 2;
-    else if (shear < 8) score -= 10; // Zu wenig Shear = kein Hagel
+    else if (shear < 8) score -= 10;
     
     // SRH unterstützt rotierende Aufwinde (Superzellen)
     if (srh >= 200 && cape >= 800) score += 10;
@@ -503,18 +584,16 @@ function calculateHailProbability(hour, region = 'europe', freezingLevel) {
     else if (dcape >= 500 && cape >= 300) score += 3;
     
     // Relative Feuchte 500hPa: Trockene mittlere Troposphäre begünstigt Hagel
-    // (verhindert Schmelzen der Hagelkörner)
     if (hour.rh500 < 30 && cape >= 800) score += 8;
     else if (hour.rh500 < 40 && cape >= 600) score += 5;
     else if (hour.rh500 < 50 && cape >= 500) score += 3;
-    else if (hour.rh500 > 85 && cape < 1000) score -= 5; // Zu feucht = Hagel schmilzt
+    else if (hour.rh500 > 85 && cape < 1000) score -= 5;
     
     // Temperatur 500hPa: Kältere mittlere Troposphäre begünstigt Hagel
-    const temp500 = hour.temp500 ?? 0;
     if (temp500 < -20 && cape >= 800) score += 6;
     else if (temp500 < -15 && cape >= 600) score += 4;
     else if (temp500 < -10 && cape >= 500) score += 2;
-    else if (temp500 > -5 && cape < 1000) score -= 3; // Zu warm = weniger Hagel
+    else if (temp500 > -5 && cape < 1000) score -= 3;
     
     // Niederschlag: Hagel tritt bei konvektiven Niederschlägen auf
     if (precipAcc >= 2.0 && cape >= 800) score += 6;
@@ -526,7 +605,6 @@ function calculateHailProbability(hour, region = 'europe', freezingLevel) {
     else if (precipProb >= 30 && cape >= 400) score += 1;
     
     // Lifted Index: Starke Instabilität begünstigt Hagel
-    const liftedIndex = hour.liftedIndex ?? 0;
     if (liftedIndex <= -6 && cape >= 800) score += 8;
     else if (liftedIndex <= -4 && cape >= 600) score += 5;
     else if (liftedIndex <= -2 && cape >= 500) score += 3;
@@ -551,7 +629,7 @@ function calculateHailProbability(hour, region = 'europe', freezingLevel) {
         score = Math.max(0, score - 10);
     }
     
-    return Math.min(100, Math.max(0, Math.round(score)));
+    return score;
 }
 
 // Regionsspezifische Parameter für Hagel-Wahrscheinlichkeit
@@ -679,4 +757,3 @@ function getHailParams(region) {
     };
     return params[region] || params['europe'];
 }
-
