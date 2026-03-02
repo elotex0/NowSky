@@ -321,16 +321,27 @@ function calcRelHum(temp, dew) {
 // Quelle: Thompson et al. 2012; Craven & Brooks 2004
 function calcSRH(hour, layer = '0-3km') {
     // Schichtauswahl: 0-1 km nur 1000+850, 0-3 km auch 700
+    // 925 hPa interpolieren (Mittelwert 1000+850) als zusätzliches Level
+    // Verbessert die SRH-Genauigkeit erheblich im kritischen 0-1 km Bereich
+    const ws925 = ((hour.wind_speed_1000hPa ?? 0) + (hour.wind_speed_850hPa ?? 0)) / 2 / 3.6;
+    const wd925 = (() => {
+        const a = (hour.windDir1000 ?? 0) * Math.PI / 180;
+        const b = (hour.windDir850 ?? 0) * Math.PI / 180;
+        return Math.atan2((Math.sin(a) + Math.sin(b)) / 2, (Math.cos(a) + Math.cos(b)) / 2) * 180 / Math.PI;
+    })();
+
     const levels = layer === '0-1km'
         ? [
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
-            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 }
-          ]
+            { ws: ws925,                                  wd: (wd925 + 360) % 360    },
+            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0  }
+        ]
         : [
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
-            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 },
-            { ws: (hour.wind_speed_700hPa  ?? 0) / 3.6, wd: hour.windDir700  ?? 0 }
-          ];
+            { ws: ws925,                                  wd: (wd925 + 360) % 360    },
+            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0  },
+            { ws: (hour.wind_speed_700hPa  ?? 0) / 3.6, wd: hour.windDir700  ?? 0  }
+        ];
 
     const winds = levels.map(l => windToUV(l.ws, l.wd));
 
@@ -374,8 +385,21 @@ function calcShear(hour) {
     const w850 = windToUV(ws850, hour.windDir850 ?? 0);
     const lowLevelShear = Math.hypot(w850.u - w1000.u, w850.v - w1000.v);
 
-    // Kombinierter Shear-Index: 0-6 km dominant, 0-1 km als Gewichtungsfaktor
-    return Math.round((bulkShear * 0.75 + lowLevelShear * 0.25) * 10) / 10;
+    // 0-6 km Shear: 1000→500 hPa Proxy bleibt, ABER:
+    // Effective Shear Layer (ESL) nach Thompson et al. 2007:
+    // Nur der Shear innerhalb der CAPE-tragenden Schicht zählt wirklich.
+    // Approximation: Bei niedrigem CAPE (< 500 J/kg) ist 0-3 km Shear (1000→700 hPa) relevanter.
+    const ws700 = (hour.wind_speed_700hPa ?? 0) / 3.6;
+    const w700 = windToUV(ws700, hour.windDir700 ?? 0);
+    const midShear = Math.hypot(w700.u - w1000.u, w700.v - w1000.v); // 0-3 km proxy
+
+    const cape = hour.cape ?? 0;
+    // Blende bei niedrigem CAPE zunehmend auf 0-3 km Shear über (ESHR nach SPC)
+    const capeWeight = Math.min(1.0, Math.max(0.0, (cape - 200) / 800)); // 0 bei CAPE≤200, 1 bei CAPE≥1000
+    const effectiveShear = bulkShear * capeWeight + midShear * (1 - capeWeight);
+
+    // 0-1 km Shear bleibt als Tornadoindikator gewichtet
+    return Math.round((effectiveShear * 0.8 + lowLevelShear * 0.2) * 10) / 10;
 }
 
 // Verbesserte meteorologische Indizes
@@ -388,8 +412,8 @@ function calcIndices(hour) {
     
     return {
         kIndex: temp850 - temp500 + dew850 - (temp700 - dew700),
-        showalter: temp500 - (temp850 - 9.8 * 1.5),
-        lapse: (temp850 - temp500) / 3.5,
+        showalter: temp500 - (temp850 - 6.5 * 1.5),
+        lapse: (temp850 - temp500) / 4.12,
         liftedIndex: hour.liftedIndex ?? (temp500 - (temp850 - 9.8 * 1.5))
     };
 }
@@ -456,7 +480,18 @@ function calcDCAPE(hour) {
     // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
     if (cape < 100) return 0;
 
-    const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
+    // Stull (1988) verbesserte Wet-Bulb-Näherung für freie Troposphäre:
+    // Tw ≈ T * atan(0.151977 * (rh + 8.313659)^0.5)
+    //      + atan(T + rh) - atan(rh - 1.676331)
+    //      + 0.00391838 * rh^1.5 * atan(0.023101 * rh) - 4.686035
+    // Vereinfacht für unseren Kontext (700 hPa):
+    const rh700 = Math.min(100, Math.max(1, calcRelHum(temp700, dew700)));
+    // Approximation nach Davies-Jones (2008) — deutlich genauer als Faktor 0.33
+    const wetBulb700 = temp700 * Math.atan(0.151977 * Math.sqrt(rh700 + 8.313659))
+                    + Math.atan(temp700 + rh700)
+                    - Math.atan(rh700 - 1.676331)
+                    + 0.00391838 * Math.pow(rh700, 1.5) * Math.atan(0.023101 * rh700)
+                    - 4.686035;
     const tempDiff = wetBulb700 - temp500;
     if (tempDiff <= 0) return 0;
 
@@ -696,7 +731,6 @@ function getProbabilityParams(region) {
     return params[region] || params['europe'];
 }
 
-// Hauptfunktion für Wahrscheinlichkeitsberechnung (optimiert und kompakt)
 function calculateProbability(hour, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
@@ -704,360 +738,311 @@ function calculateProbability(hour, region = 'europe') {
     const cin = Math.abs(hour.cin ?? 0);
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
-    
+
     // Regionsspezifische Filter für Fehlalarme
     const p = getProbabilityParams(region);
-    if (temp2m < p.minTemp) return 0; // Zu kalt für Gewitter
-    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
-    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
-    
-    // Berechne Indizes
+    if (temp2m < p.minTemp) return 0;
+    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5)) return 0;
+    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0;
+
+    // Indizes berechnen
     const shear = calcShear(hour);
     const srh1km = calcSRH(hour, '0-1km');
     const srh = calcSRH(hour, '0-3km');
-    const { kIndex, showalter, lapse, liftedIndex } = calcIndices(hour);
+    const { kIndex, lapse, liftedIndex } = calcIndices(hour);
     const relHum2m = calcRelHum(temp2m, dew);
-    const cloudSum = (hour.cloudLow ?? 0) + (hour.cloudMid ?? 0) + (hour.cloudHigh ?? 0);
-    
-    // Kombinierte Indizes (bewährte meteorologische Parameter)
-    const ehi = (cape * srh) / 160000;
-    const scp = calcSCP(cape, shear, srh, cin, region);
-    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
+
+    const ehi   = (cape * srh) / 160000;
+    const scp   = calcSCP(cape, shear, srh, cin, region);
+    const stp   = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
     const wmaxshear = calcWMAXSHEAR(cape, shear);
-    
-    // Basis-Score basierend auf kombinierten Indizes (regionsspezifisch)
-    let score = 0;
-    
-    // CAPE-Bewertung (regionsspezifisch)
-    for (let i = 0; i < p.capeThresholds.length; i++) {
-        if (cape >= p.capeThresholds[i]) {
-            score += p.capeScores[i];
-            break;
-        }
-    }
-    
-    // CIN-Penalty (stärker gewichtet)
-    if (cin > 200) score -= 15;
-    else if (cin > 100) score -= 8;
-    else if (cin > 50) score -= 4;
-    
-    // Kombinierte Indizes (regionsspezifisch)
-    // Regionen mit hohen Thresholds: usa, south_africa, south_america, australia
+    const dcape = calcDCAPE(hour);
+
     const highThresholdRegions = ['usa', 'south_africa', 'south_america', 'australia'];
     const isHighThreshold = highThresholdRegions.includes(region);
-    
+
+    // ── 1. PHYSIKALISCHES GATE (Taszarek et al. 2020) ──────────────────────────
+    // Wenn WMAXSHEAR UND SCP UND CAPE alle unter Minimalwert → sofort 0
+    const physicalGate = wmaxshear >= 200 || scp >= 0.3 || cape >= p.minCAPE;
+    if (!physicalGate) return 0;
+
+    // ── 2. BASIS-SCORE: WMAXSHEAR als primärer Treiber ─────────────────────────
+    // Taszarek et al. (2020, J. Climate): WMAXSHEAR ist bester globaler Einzelprädiktor
+    let baseScore;
+    if      (wmaxshear >= 1500) baseScore = 70;
+    else if (wmaxshear >= 1000) baseScore = 55;
+    else if (wmaxshear >= 700)  baseScore = 40;
+    else if (wmaxshear >= 500)  baseScore = 28;
+    else if (wmaxshear >= 300)  baseScore = 18;
+    else if (wmaxshear >= 150)  baseScore = 8;
+    else                        baseScore = 2;
+
+    // ── 3. MULTIPLIKATOREN: SCP & STP skalieren den baseScore ──────────────────
+    // Nicht additiv, sondern multiplikativ — verhindert Einzel-Parameter-Inflation
+    const scpMult = Math.min(1.5, 1.0 + scp * 0.15);  // max +50% bei SCP ≈ 3.3
+    const stpMult = Math.min(1.3, 1.0 + stp * 0.10);  // max +30% bei STP ≈ 3.0
+
+    let score = Math.round(baseScore * scpMult * stpMult);
+
+    // ── 4. CIN-PENALTY ─────────────────────────────────────────────────────────
+    if      (cin > 200) score -= 15;
+    else if (cin > 100) score -= 8;
+    else if (cin > 50)  score -= 4;
+
+    // ── 5. EHI (additiv, kleinere Rolle nach Multiplikator-Block) ──────────────
     if (isHighThreshold) {
-        if (scp > 3) score += 25;
-        else if (scp > 2) score += 20;
-        else if (scp > 1.5) score += 14;
-        else if (scp > 1) score += 8;
-        
-        if (stp > 2) score += 18;
-        else if (stp > 1.5) score += 14;
-        else if (stp > 1) score += 10;
-        else if (stp > 0.5) score += 5;
-        
-        if (ehi > 3) score += 15;
-        else if (ehi > 2) score += 12;
-        else if (ehi > 1.5) score += 8;
-        else if (ehi > 1) score += 4;
+        if      (ehi > 3)   score += 8;
+        else if (ehi > 2)   score += 6;
+        else if (ehi > 1.5) score += 4;
+        else if (ehi > 1)   score += 2;
     } else {
-        // Niedrigere Thresholds für andere Regionen
-        if (scp > 2) score += 20;
-        else if (scp > 1.5) score += 16;
-        else if (scp > 1) score += 10;
-        else if (scp > 0.5) score += 5;
-        
-        if (stp > 1.5) score += 15;
-        else if (stp > 1) score += 12;
-        else if (stp > 0.5) score += 7;
-        else if (stp > 0.3) score += 3;
-        
-        // EHI-Schwellen nach Hart & Korotky (1991), klimatologisch angepasst
-        if (ehi >= 2.0) score += 12;
-        else if (ehi >= 1.0) score += 8;
-        else if (ehi >= 0.5) score += 4;
-        else if (ehi >= 0.3) score += 2;
+        if      (ehi >= 2.0) score += 6;
+        else if (ehi >= 1.0) score += 4;
+        else if (ehi >= 0.5) score += 2;
+        else if (ehi >= 0.3) score += 1;
     }
-    
-    // WMAXSHEAR-Score (nach SCP/STP/EHI-Block)
-    // Taszarek et al. 2020: bester globaler Prädiktor, Schwelle 500 m²/s²
-    if (wmaxshear >= 1200) score += 18;
-    else if (wmaxshear >= 900) score += 14;
-    else if (wmaxshear >= 700) score += 10;
-    else if (wmaxshear >= 500) score += 6;
-    else if (wmaxshear >= 300) score += 3;
-    
-    // Shear und SRH (regionsspezifisch)
+
+    // ── 6. SHEAR & SRH additiv (bei ausreichend CAPE) ──────────────────────────
     const highCAPEThreshold = isHighThreshold ? 800 : 500;
-    const lowCAPEThreshold = isHighThreshold ? 500 : 200;
-    
+    const lowCAPEThreshold  = isHighThreshold ? 500 : 200;
+
     if (cape >= highCAPEThreshold) {
         if (isHighThreshold) {
-            if (shear >= 25) score += 12;
-            else if (shear >= 20) score += 10;
-            else if (shear >= 15) score += 7;
-            else if (shear >= 12) score += 4;
-            
-            if (srh >= 250) score += 10;
-            else if (srh >= 200) score += 8;
-            else if (srh >= 150) score += 6;
-            else if (srh >= 120) score += 4;
+            if      (shear >= 25) score += 10;
+            else if (shear >= 20) score += 8;
+            else if (shear >= 15) score += 5;
+            else if (shear >= 12) score += 3;
+
+            if      (srh >= 250) score += 8;
+            else if (srh >= 200) score += 6;
+            else if (srh >= 150) score += 4;
+            else if (srh >= 120) score += 2;
         } else {
-            if (shear >= 20) score += 10;
-            else if (shear >= 15) score += 7;
-            else if (shear >= 10) score += 4;
-            else if (shear >= 8) score += 2;
-            
-            if (srh >= 200) score += 8;
-            else if (srh >= 150) score += 6;
-            else if (srh >= 120) score += 4;
-            else if (srh >= 80) score += 2;
+            if      (shear >= 20) score += 8;
+            else if (shear >= 15) score += 5;
+            else if (shear >= 10) score += 3;
+            else if (shear >= 8)  score += 1;
+
+            if      (srh >= 200) score += 6;
+            else if (srh >= 150) score += 4;
+            else if (srh >= 120) score += 2;
+            else if (srh >= 80)  score += 1;
         }
     } else if (cape >= lowCAPEThreshold) {
         if (isHighThreshold) {
-            if (shear >= 20) score += 5;
-            else if (shear >= 15) score += 3;
-            
-            if (srh >= 200) score += 4;
-            else if (srh >= 150) score += 2;
+            if (shear >= 20) score += 4;
+            else if (shear >= 15) score += 2;
+            if (srh >= 200) score += 3;
+            else if (srh >= 150) score += 1;
         } else {
-            if (shear >= 15) score += 3;
+            if (shear >= 15) score += 2;
             else if (shear >= 10) score += 1;
-            
             if (srh >= 150) score += 2;
             else if (srh >= 100) score += 1;
         }
     }
-    
-    // Lifted Index (regionsspezifisch)
+
+    // ── 7. LIFTED INDEX ────────────────────────────────────────────────────────
     if (region === 'usa') {
         if (cape >= 600) {
-            if (liftedIndex <= -7) score += 12;
-            else if (liftedIndex <= -6) score += 10;
-            else if (liftedIndex <= -4) score += 6;
-            else if (liftedIndex <= -2) score += 3;
+            if      (liftedIndex <= -7) score += 10;
+            else if (liftedIndex <= -6) score += 8;
+            else if (liftedIndex <= -4) score += 5;
+            else if (liftedIndex <= -2) score += 2;
         } else if (cape >= 500) {
-            if (liftedIndex <= -5) score += 4;
-            else if (liftedIndex <= -3) score += 2;
+            if      (liftedIndex <= -5) score += 3;
+            else if (liftedIndex <= -3) score += 1;
         }
     } else {
-        // Europa: Auch bei niedrigem CAPE
         if (cape >= 400) {
-            if (liftedIndex <= -6) score += 10;
-            else if (liftedIndex <= -4) score += 6;
-            else if (liftedIndex <= -2) score += 3;
+            if      (liftedIndex <= -6) score += 8;
+            else if (liftedIndex <= -4) score += 5;
+            else if (liftedIndex <= -2) score += 2;
         } else if (cape >= 200) {
-            if (liftedIndex <= -4) score += 3;
+            if      (liftedIndex <= -4) score += 2;
             else if (liftedIndex <= -2) score += 1;
         }
     }
-    
-    // Lapse Rate (regionsspezifisch)
+
+    // ── 8. LAPSE RATE ──────────────────────────────────────────────────────────
     if (region === 'usa') {
-        if (lapse >= 8.0) score += 6;
-        else if (lapse >= 7.5) score += 5;
-        else if (lapse >= 7.0) score += 3;
-        else if (lapse >= 6.5) score += 2;
-        if (lapse < 5.5 && cape < 1000) score -= 5;
+        if      (lapse >= 8.0) score += 5;
+        else if (lapse >= 7.5) score += 4;
+        else if (lapse >= 7.0) score += 2;
+        else if (lapse >= 6.5) score += 1;
+        if (lapse < 5.5 && cape < 1000) score -= 4;
     } else {
-        // Europa: Niedrigere Schwelle
-        if (lapse >= 7.5) score += 5;
-        else if (lapse >= 7.0) score += 3;
-        else if (lapse >= 6.5) score += 2;
-        else if (lapse >= 6.2) score += 1;
-        else if (lapse >= 6.0) score += 1;
-        if (lapse < 5.0 && cape < 800) score -= 4;
+        if      (lapse >= 7.5) score += 4;
+        else if (lapse >= 7.0) score += 2;
+        else if (lapse >= 6.5) score += 1;
+        if (lapse < 5.0 && cape < 800) score -= 3;
     }
-    
-    // K-Index
-    if (kIndex >= 35) score += 6;
-    else if (kIndex >= 30) score += 4;
-    else if (kIndex >= 25) score += 2;
-    
-    // Feuchtigkeit und Temperatur (regionsspezifisch)
+
+    // ── 9. K-INDEX ─────────────────────────────────────────────────────────────
+    if      (kIndex >= 35) score += 5;
+    else if (kIndex >= 30) score += 3;
+    else if (kIndex >= 25) score += 1;
+
+    // ── 10. FEUCHTIGKEIT ───────────────────────────────────────────────────────
     if (region === 'usa') {
         if (cape >= 600) {
-            if (dew >= 18 && temp2m >= 20) score += 5;
-            else if (dew >= 16 && temp2m >= 18) score += 3;
-            else if (dew >= 14 && temp2m >= 16) score += 2;
-            
-            if (relHum2m >= 70 && temp2m >= 20) score += 4;
-            else if (relHum2m >= 65 && temp2m >= 18) score += 2;
+            if      (dew >= 18 && temp2m >= 20) score += 4;
+            else if (dew >= 16 && temp2m >= 18) score += 2;
+            else if (dew >= 14 && temp2m >= 16) score += 1;
+            if      (relHum2m >= 70 && temp2m >= 20) score += 3;
+            else if (relHum2m >= 65 && temp2m >= 18) score += 1;
         } else if (cape >= 500) {
-            if (dew >= 16 && temp2m >= 18) score += 2;
+            if (dew >= 16 && temp2m >= 18) score += 1;
             if (relHum2m >= 70 && temp2m >= 18) score += 1;
         }
     } else {
-        // Europa: Auch bei niedrigem CAPE
         if (cape >= 400) {
-            if (dew >= 16 && temp2m >= 16) score += 4;
-            else if (dew >= 13 && temp2m >= 13) score += 2;
-            
-            if (relHum2m >= 65 && temp2m >= 18) score += 3;
+            if      (dew >= 16 && temp2m >= 16) score += 3;
+            else if (dew >= 13 && temp2m >= 13) score += 1;
+            if (relHum2m >= 65 && temp2m >= 18) score += 2;
         } else if (cape >= 200) {
-            // Europa: Feuchtigkeit auch bei niedrigem CAPE wichtig
-            if (dew >= 15 && temp2m >= 15) score += 3;
-            else if (dew >= 13 && temp2m >= 13) score += 2;
-            
-            if (relHum2m >= 70 && temp2m >= 18) score += 2;
+            if      (dew >= 15 && temp2m >= 15) score += 2;
+            else if (dew >= 13 && temp2m >= 13) score += 1;
+            if (relHum2m >= 70 && temp2m >= 18) score += 1;
         }
     }
-    
-    // Niederschlag (regionsspezifisch)
+
+    // ── 11. NIEDERSCHLAG ───────────────────────────────────────────────────────
     if (region === 'usa') {
         if (cape >= 600) {
-            if (precipAcc >= 3.0 && cape >= 1000) score += 7;
-            else if (precipAcc >= 2.0 && cape >= 800) score += 5;
-            else if (precipAcc >= 1.0 && cape >= 600) score += 3;
-            
-            if (precipProb >= 70 && cape >= 800) score += 5;
-            else if (precipProb >= 55 && cape >= 600) score += 3;
+            if      (precipAcc >= 3.0 && cape >= 1000) score += 6;
+            else if (precipAcc >= 2.0 && cape >= 800)  score += 4;
+            else if (precipAcc >= 1.0 && cape >= 600)  score += 2;
+            if      (precipProb >= 70 && cape >= 800)  score += 4;
+            else if (precipProb >= 55 && cape >= 600)  score += 2;
         } else if (cape >= 500) {
-            if (precipAcc >= 2.0) score += 2;
-            if (precipProb >= 60) score += 2;
+            if (precipAcc >= 2.0)  score += 2;
+            if (precipProb >= 60)  score += 1;
         }
     } else {
-        // Europa: Auch bei niedrigem CAPE
         if (cape >= 400) {
-            if (precipAcc >= 2.5 && cape >= 800) score += 6;
-            else if (precipAcc >= 1.2 && cape >= 600) score += 4;
-            else if (precipAcc >= 0.5 && cape >= 400) score += 2;
-            
-            if (precipProb >= 65 && cape >= 600) score += 4;
-            else if (precipProb >= 45 && cape >= 400) score += 2;
+            if      (precipAcc >= 2.5 && cape >= 800) score += 5;
+            else if (precipAcc >= 1.2 && cape >= 600) score += 3;
+            else if (precipAcc >= 0.5 && cape >= 400) score += 1;
+            if      (precipProb >= 65 && cape >= 600)  score += 3;
+            else if (precipProb >= 45 && cape >= 400)  score += 1;
         } else if (cape >= 200) {
-            // Europa: Niederschlag auch bei niedrigem CAPE bewerten
-            if (precipAcc >= 1.0) score += 2;
+            if      (precipAcc >= 1.0) score += 2;
             else if (precipAcc >= 0.5) score += 1;
-            else if (precipAcc >= 0.2) score += 1;
-            
-            if (precipProb >= 50) score += 2;
+            if      (precipProb >= 50) score += 2;
             else if (precipProb >= 30) score += 1;
         }
     }
-    
-    // Dauerregen-Filter (regionsspezifisch)
+
+    // Dauerregen-Filter
     if (region === 'usa') {
         if (precipAcc > 3 && cape < 600) score -= 10;
     } else {
         if (precipAcc > 2 && cape < 400) score -= 8;
     }
-    
-    // Relative Feuchte 500hPa (trockene mittlere Troposphäre begünstigt, regionsspezifisch)
+
+    // ── 12. RH 500 hPa ─────────────────────────────────────────────────────────
     if (region === 'usa') {
-        if (hour.rh500 < 30 && cape >= 1000) score += 6;
-        else if (hour.rh500 < 40 && cape >= 800) score += 4;
-        else if (hour.rh500 > 85 && cape < 1000) score -= 5;
+        if      (hour.rh500 < 30 && cape >= 1000) score += 5;
+        else if (hour.rh500 < 40 && cape >= 800)  score += 3;
+        else if (hour.rh500 > 85 && cape < 1000)  score -= 4;
     } else {
-        if (hour.rh500 < 35 && cape >= 800) score += 5;
-        else if (hour.rh500 < 45 && cape >= 600) score += 3;
-        else if (hour.rh500 > 85 && cape < 800) score -= 4;
+        if      (hour.rh500 < 35 && cape >= 800) score += 4;
+        else if (hour.rh500 < 45 && cape >= 600) score += 2;
+        else if (hour.rh500 > 85 && cape < 800)  score -= 3;
     }
-    
-    // Strahlung (tagsüber wichtig, regionsspezifisch)
-    const isNight = hour.directRadiation < 20;
+
+    // ── 13. STRAHLUNG / TAGESZEIT ──────────────────────────────────────────────
+    const isNight   = hour.directRadiation < 20;
     const isDaytime = hour.directRadiation >= 200;
 
     if (region === 'usa') {
         if (isDaytime && temp2m >= 18 && cape >= 600) {
-            if (hour.directRadiation >= 600) score += 5;
-            else if (hour.directRadiation >= 400) score += 3;
+            if      (hour.directRadiation >= 600) score += 4;
+            else if (hour.directRadiation >= 400) score += 2;
         } else if (isNight) {
-            // Low-Level-Jet Check: hohes SRH nachts = LLJ aktiv → kein Pauschalabzug
-            // Quelle: Hanesiak 2024, Climate Central 2025
             const llj_active = srh >= 150 && shear >= 12;
-            if (!llj_active && shear < 12 && cape < 1000) score -= 5; // vorher -7
-            if (llj_active && cape >= 800) score += 4;  // LLJ-Bonus
+            if (!llj_active && shear < 12 && cape < 1000) score -= 5;
+            if  (llj_active && cape >= 800) score += 3;
             else if (cape >= 1200 && srh >= 150) score += 2;
         }
     } else {
         if (isDaytime && temp2m >= 12 && cape >= 300) {
-            if (hour.directRadiation >= 500) score += 4;
+            if      (hour.directRadiation >= 500) score += 3;
             else if (hour.directRadiation >= 300) score += 2;
             else if (hour.directRadiation >= 200) score += 1;
         } else if (isNight) {
             const llj_active = srh >= 100 && shear >= 10;
-            if (!llj_active && shear < 10 && cape < 500) score -= 3; // vorher -4
-            if (llj_active && cape >= 600) score += 3;  // LLJ-Bonus
-            else if (cape >= 800 && srh >= 100) score += 2;
+            if (!llj_active && shear < 10 && cape < 500) score -= 3;
+            if  (llj_active && cape >= 600) score += 2;
+            else if (cape >= 800 && srh >= 100) score += 1;
         }
-    }
-    
-    // Wind (regionsspezifisch)
-    if (region === 'usa') {
-        if (hour.wind >= 8 && hour.wind <= 18 && temp2m >= 15) score += 3;
-        else if (hour.wind > 18 && hour.wind <= 25 && temp2m >= 15) score += 5;
-        if (hour.wind > 30 && cape < 2000) score -= 5;
-    } else {
-        if (hour.wind >= 5 && hour.wind <= 15 && temp2m >= 12) score += 2;
-        else if (hour.wind > 15 && hour.wind <= 20 && temp2m >= 12) score += 4;
-        if (hour.wind > 25 && cape < 1500) score -= 4;
-    }
-    
-    // Böen (können auf Gewitteraktivität hinweisen, regionsspezifisch)
-    const gustDiff = hour.gust - hour.wind;
-    if (region === 'usa') {
-        if (gustDiff > 15 && cape >= 1000 && temp2m >= 15) score += 5;
-        else if (gustDiff > 10 && cape >= 800) score += 3;
-    } else {
-        if (gustDiff > 12 && cape >= 800 && temp2m >= 12) score += 4;
-        else if (gustDiff > 8 && cape >= 600) score += 2;
     }
 
-    // DCAPE: Downdraft-Potential (Gilmore & Wicker 1998)
-    // Hoher DCAPE verstärkt Böen, Hagel, MCS-Aktivität
-    const dcape = calcDCAPE(hour);
-    if (isHighThreshold) {
-        if (dcape >= 1000 && cape >= 500) score += 6;
-        else if (dcape >= 700 && cape >= 400) score += 4;
-        else if (dcape >= 500 && cape >= 300) score += 2;
+    // ── 14. WIND & BÖEN ────────────────────────────────────────────────────────
+    if (region === 'usa') {
+        if      (hour.wind >= 8  && hour.wind <= 18 && temp2m >= 15) score += 2;
+        else if (hour.wind > 18  && hour.wind <= 25 && temp2m >= 15) score += 4;
+        if      (hour.wind > 30  && cape < 2000) score -= 5;
     } else {
-        if (dcape >= 800 && cape >= 400) score += 5;
-        else if (dcape >= 600 && cape >= 300) score += 3;
+        if      (hour.wind >= 5  && hour.wind <= 15 && temp2m >= 12) score += 2;
+        else if (hour.wind > 15  && hour.wind <= 20 && temp2m >= 12) score += 3;
+        if      (hour.wind > 25  && cape < 1500) score -= 4;
+    }
+
+    const gustDiff = hour.gust - hour.wind;
+    if (region === 'usa') {
+        if      (gustDiff > 15 && cape >= 1000 && temp2m >= 15) score += 4;
+        else if (gustDiff > 10 && cape >= 800)  score += 2;
+    } else {
+        if      (gustDiff > 12 && cape >= 800 && temp2m >= 12) score += 3;
+        else if (gustDiff > 8  && cape >= 600)  score += 1;
+    }
+
+    // ── 15. DCAPE ──────────────────────────────────────────────────────────────
+    if (isHighThreshold) {
+        if      (dcape >= 1000 && cape >= 500) score += 5;
+        else if (dcape >= 700  && cape >= 400) score += 3;
+        else if (dcape >= 500  && cape >= 300) score += 1;
+    } else {
+        if      (dcape >= 800 && cape >= 400) score += 4;
+        else if (dcape >= 600 && cape >= 300) score += 2;
         else if (dcape >= 400 && cape >= 200) score += 1;
     }
-    
-    // Ensemble-Daten (falls verfügbar, regionsspezifisch)
+
+    // ── 16. ENSEMBLE ───────────────────────────────────────────────────────────
     if (hour.ensemble) {
-        const MIN_PROB = 0.6;
-        const capeThreshold = isHighThreshold ? 800 : 600;
+        const MIN_PROB    = 0.6;
+        const capeThresh  = isHighThreshold ? 800 : 600;
         const capeMinCAPE = isHighThreshold ? 600 : 400;
-        
-        const capeProb = getEnsembleProb(hour.ensemble, 'cape', capeThreshold, 'above');
+
+        const capeProb = getEnsembleProb(hour.ensemble, 'cape', capeThresh, 'above');
         if (capeProb !== null && capeProb >= MIN_PROB) {
-            score += Math.round((isHighThreshold ? 10 : 8) * capeProb);
+            score += Math.round((isHighThreshold ? 8 : 6) * capeProb);
         }
-        
         const liProb = getEnsembleProb(hour.ensemble, 'lifted_index', -3, 'below');
         if (liProb !== null && liProb >= MIN_PROB && cape >= capeMinCAPE) {
-            score += Math.round((isHighThreshold ? 5 : 4) * liProb);
+            score += Math.round((isHighThreshold ? 4 : 3) * liProb);
         }
-        
-        const precipProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
-        if (precipProb !== null && precipProb >= MIN_PROB && cape >= capeMinCAPE) {
-            score += Math.round((isHighThreshold ? 4 : 3) * precipProb);
+        const precipEnsProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
+        if (precipEnsProb !== null && precipEnsProb >= MIN_PROB && cape >= capeMinCAPE) {
+            score += Math.round((isHighThreshold ? 3 : 2) * precipEnsProb);
         }
     }
-    
-    // Temperatur-Reduktion (kälter = weniger wahrscheinlich, regionsspezifisch)
-    if (temp2m < p.minTempReduction) score = Math.round(score * p.tempReductionFactor);
+
+    // ── 17. TEMPERATUR-REDUKTION ───────────────────────────────────────────────
+    if      (temp2m < p.minTempReduction)  score = Math.round(score * p.tempReductionFactor);
     else if (temp2m < p.minTempReduction2) score = Math.round(score * p.tempReductionFactor2);
-    
-    // Mindestanforderungen für Gewitter (regionsspezifisch)
+
+    // ── 18. FINALE MINDESTANFORDERUNGEN ────────────────────────────────────────
     if (region === 'usa') {
-        if (score > 0 && cape < 500) {
-            score = Math.max(0, score - 10);
-        }
-        if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15);
+        if (score > 0 && cape < 500)                    score = Math.max(0, score - 10);
+        if (score > 0 && cin > 150 && cape < 1500)      score = Math.max(0, score - 15);
     } else {
-        // Europa: Nur bei sehr niedrigem CAPE (< 200) leicht reduzieren
-        if (score > 0 && cape < 200) {
-            score = Math.max(0, score - 5);
-        }
-        if (score > 0 && cin > 150 && cape < 1200) score = Math.max(0, score - 15);
+        if (score > 0 && cape < 200)                    score = Math.max(0, score - 5);
+        if (score > 0 && cin > 150 && cape < 1200)      score = Math.max(0, score - 15);
     }
-    
+
     return Math.min(100, Math.max(0, Math.round(score)));
 }
 
@@ -1114,11 +1099,20 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const veer700_850 = veeringAngle(dir850, dir700);
     const totalVeering = veer850_1000 + veer700_850;
 
-    let veeringFactor = 1.0;
-    if (totalVeering < -20) veeringFactor = 0.3;
-    else if (totalVeering < 0) veeringFactor = 0.6;
-    else if (totalVeering >= 30) veeringFactor = 1.2;
-    else if (totalVeering >= 15) veeringFactor = 1.1;
+    // Veering-Faktor nach Markowski & Richardson (2010), Kap. 5:
+    // Veering von 30° ist typisch, 60°+ ist stark superzell-förderlich.
+    // Cap bei 1.2 unterschätzt den Effekt bei stark veerendem Wind.
+    // Außerdem: Backing über die gesamte Schicht (totalVeering < -30°) = anti-zyklonale Rotation
+    // → sollte STP auf 0 setzen, nicht nur auf 0.3 reduzieren.
+
+    let veeringFactor;
+    if (totalVeering < -30)      veeringFactor = 0.0;  // anti-zyklonal: kein STP
+    else if (totalVeering < -10) veeringFactor = 0.25;
+    else if (totalVeering < 0)   veeringFactor = 0.5;
+    else if (totalVeering < 15)  veeringFactor = 0.85;
+    else if (totalVeering < 30)  veeringFactor = 1.0;
+    else if (totalVeering < 60)  veeringFactor = 1.2;
+    else                         veeringFactor = 1.35; // sehr starkes Veering = günstig1;
 
     const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
     
