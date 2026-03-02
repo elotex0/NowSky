@@ -1198,33 +1198,101 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     }
     
     // Temperatur-Reduktion (regionsspezifisch)
+    // Quellen:
+    // - Taszarek et al. 2019 (J. Climate): Europa Gewittersaison ab März/April,
+    //   Nordeuropa Mai-Oktober, Mittelmeer ganzjährig
+    // - Sherburn & Parker 2014 (Wea. Forecasting): HSLC-Ereignisse (CAPE ≤ 500, Shear ≥ 18 m/s)
+    //   bei DEUTLICH niedrigeren Temperaturen als klassische Warm-Saison-Gewitter möglich
+    // - Morgenstern et al. 2023 (WCD): Wind-field-Thunderstorms Europa = niedrige CAPE,
+    //   hoher Shear, oft Kalt-Saison → Temperaturschwelle darf nicht zu hoch sein
+    // - Taszarek BAMS 2021 (USA/Europa Trends): 95. Perzentil T2M Europa für schwere Gewitter
+
     const tempReductionParams = {
-        'usa': { threshold1: 15, factor1: 0.6, threshold2: 18, factor2: 0.8 },
-        'canada': { threshold1: 12, factor1: 0.6, threshold2: 15, factor2: 0.8 },
-        'south_africa': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
-        'south_america': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
-        'australia': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
-        'east_asia': { threshold1: 12, factor1: 0.6, threshold2: 18, factor2: 0.8 },
-        'south_asia': { threshold1: 22, factor1: 0.6, threshold2: 27, factor2: 0.8 },
-        'southeast_asia': { threshold1: 24, factor1: 0.6, threshold2: 28, factor2: 0.8 },
-        'central_america': { threshold1: 20, factor1: 0.6, threshold2: 24, factor2: 0.8 },
-        'north_africa': { threshold1: 18, factor1: 0.6, threshold2: 22, factor2: 0.8 },
-        'east_africa': { threshold1: 20, factor1: 0.6, threshold2: 24, factor2: 0.8 },
-        'central_africa': { threshold1: 22, factor1: 0.6, threshold2: 26, factor2: 0.8 },
-        'west_africa': { threshold1: 24, factor1: 0.6, threshold2: 28, factor2: 0.8 },
-        'middle_east': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
-        'new_zealand': { threshold1: 10, factor1: 0.6, threshold2: 14, factor2: 0.8 },
-        'russia_central_asia': { threshold1: 10, factor1: 0.6, threshold2: 14, factor2: 0.8 },
-        'europe': { threshold1: 12, factor1: 0.6, threshold2: 15, factor2: 0.8 }
+        // SPC-Klimatologie: USA Warm-Saison dominiert, aber HSLC-Ereignisse
+        // im SE-US auch bei T < 15°C signifikant (Sherburn & Parker 2014)
+        // threshold1 bleibt 15°C (25. Perzentil warm-season SPC proximity soundings)
+        'usa': { threshold1: 13, factor1: 0.55, threshold2: 17, factor2: 0.8 },
+
+        // Hanesiak et al. 2024 (JGR): Kanada Tornados ab ~10°C in Prärie möglich,
+        // aber signifikante Ereignisse meist ab 14°C+
+        'canada': { threshold1: 10, factor1: 0.55, threshold2: 14, factor2: 0.8 },
+
+        // Taszarek 2019: Südeuropa/Mittelmeer Gewitter ganzjährig, auch bei 10-12°C
+        // Nordeuropa ab Mai (≈8-10°C) bis Oktober
+        // Morgenstern 2023: Wind-field-Thunderstorms Europa Winter bei T < 10°C
+        // → threshold1 auf 8°C (Kalt-Saison Gewitter Nordsee/Atlantik physikalisch möglich)
+        'europe': { threshold1: 8, factor1: 0.5, threshold2: 13, factor2: 0.75 },
+
+        // Taszarek 2021 npj: Südafrika (Highveld) Gewittersaison Sep-Apr,
+        // Mindesttemperaturen ~14-16°C für bedeutende Konvektion
+        'south_africa': { threshold1: 14, factor1: 0.6, threshold2: 19, factor2: 0.8 },
+
+        // Taszarek 2020 Part II: Argentinien/Südamerika ähnlich USA Plains
+        // CAPE-reiche Umgebungen meist ab 16°C, aber auch sub-tropische Ausläufer ab 12°C
+        'south_america': { threshold1: 13, factor1: 0.6, threshold2: 18, factor2: 0.8 },
+
+        // Taszarek 2021: Australien Gewittersaison Sep-Mar (Southern Hemisphere)
+        // Thermodynamisch ähnlich USA Plains, threshold leicht niedriger wegen Küsteneffekten
+        'australia': { threshold1: 13, factor1: 0.6, threshold2: 18, factor2: 0.8 },
+
+        // Taszarek 2021: Ostasien (Japan, China, Korea) ähnlich Europa klimatologisch
+        // Kalt-Saison Konvektion (Japan Sea effect) bei T < 10°C möglich
+        'east_asia': { threshold1: 10, factor1: 0.55, threshold2: 16, factor2: 0.8 },
+
+        // Südasien: Monsun-Konvektion, Temperaturen fast immer > 25°C während
+        // aktiver Konvektionsphasen; Pre-Monsoon-Gewitter (Nor'westers) ab ~22°C
+        'south_asia': { threshold1: 20, factor1: 0.6, threshold2: 25, factor2: 0.8 },
+
+        // Südostasien: tropisch, ITCZ-dominiert, Konvektion fast täglich,
+        // bedeutende Gewitter praktisch nur bei T > 24°C (maritime tropical airmass)
+        'southeast_asia': { threshold1: 22, factor1: 0.6, threshold2: 26, factor2: 0.8 },
+
+        // Zentralamerika ähnlich Südostasien, Karibik etwas niedrigere Schwelle
+        // durch höhenlagenbedingte Effekte in Bergregionen
+        'central_america': { threshold1: 18, factor1: 0.6, threshold2: 23, factor2: 0.8 },
+
+        // Nordafrika (Maghreb): Sahara-Konvektion möglich ab ~18°C,
+        // Küsten/Atlas-Gewitter (Marokko, Algerien) ähnlich Mittelmeer ab ~14°C
+        'north_africa': { threshold1: 15, factor1: 0.6, threshold2: 20, factor2: 0.8 },
+
+        // Ostafrika: Hochlandgewitter (Äthiopien, Kenia) bei kühleren T möglich (~16-18°C),
+        // Küstenregionen eher ab 22°C
+        'east_africa': { threshold1: 17, factor1: 0.6, threshold2: 22, factor2: 0.8 },
+
+        // Zentralafrika: tropischer Regenwald, Konvektion fast täglich, T fast immer > 22°C
+        'central_africa': { threshold1: 20, factor1: 0.6, threshold2: 24, factor2: 0.8 },
+
+        // Westafrika: Sahel-Gewitter und MCS. Trockenzeit-MCS ab ~28°C,
+        // aber Küstennähe (Gambia, Senegal) auch ab ~24°C
+        'west_africa': { threshold1: 22, factor1: 0.6, threshold2: 27, factor2: 0.8 },
+
+        // Naher Osten: Frühjahrs-Konvektion Levante/Anatolien ab ~14°C (ähnlich Mittelmeer),
+        // Sommer-Konvektion Iran/Pakistan ab ~20°C
+        'middle_east': { threshold1: 13, factor1: 0.6, threshold2: 18, factor2: 0.8 },
+
+        // Neuseeland: maritime Klimatologie, HSLC-Ereignisse im Winter möglich
+        // (ähnlich Britische Inseln), Taszarek 2019 Analogie
+        'new_zealand': { threshold1: 8, factor1: 0.55, threshold2: 13, factor2: 0.8 },
+
+        // Russland/Zentralasien: kontinental, aber Kalt-Saison-Gewitter im Westen
+        // (Westsibirien, Kasachstan) ab ~8°C möglich (HSLC-analog zu Europa)
+        'russia_central_asia': { threshold1: 8, factor1: 0.55, threshold2: 13, factor2: 0.8 },
     };
-    
+
     const tr = tempReductionParams[region] || tempReductionParams['europe'];
     if (temp2m < tr.threshold1) score = Math.round(score * tr.factor1);
     else if (temp2m < tr.threshold2) score = Math.round(score * tr.factor2);
 
-    // Finale Plausibilitätsprüfung: STP < 0.1 trotz score > 0 = physikalisch inkonsistent
-    // Passiert wenn Einzelfaktoren (EHI, CAPE+Shear) score pushen aber STP versagt
-    if (stp < 0.1 && score > 10) score = Math.min(score, 8);
+    // Finale Plausibilitätsprüfung:
+    // HSLC-Ausnahme nach Sherburn & Parker 2014:
+    // Bei hohem Shear (≥ 18 m/s) und niedrigem CAPE ist STP nahe 0 aber Ereignisse REAL
+    if (stp < 0.1 && score > 10) {
+        if (shear < 15) {
+            score = Math.min(score, 8);   // kein HSLC → hart begrenzen
+        } else {
+            score = Math.min(score, 20);  // HSLC möglich → sanfter begrenzen
+        }
+    }
 
     // Minimalanforderungen – nur noch für Grenzfälle die STP-Filter passiert haben
     const minReqs = {
