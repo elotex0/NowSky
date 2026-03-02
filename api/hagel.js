@@ -34,7 +34,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation&forecast_days=14&models=best_match&timezone=auto`;
+                    `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
         const ensembleUrl = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}` +
                     `&hourly=temperature_2m,dew_point_2m,wind_gusts_10m,wind_speed_10m,` +
@@ -44,7 +44,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation&forecast_days=14&models=best_match&timezone=auto`;
+                    `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
         const [response, ensembleResponse] = await Promise.all([
             fetch(url),
