@@ -553,6 +553,41 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     return Math.min(100, Math.max(0, Math.round(score)));
 }
 
+// Verbesserte LCL-Berechnung nach Bolton (1980) - präziser für Europa
+function calcLCLHeight(temp2m, dew2m) {
+    if (temp2m <= 0 || dew2m <= 0) return 2000; // Fallback: hohes LCL
+    const T = temp2m + 273.15;
+    const Td = dew2m + 273.15;
+    const LCL = 125 * (temp2m - dew2m); // Vereinfachte Bolton-Formel
+    return Math.max(0, LCL);
+}
+
+// Mid-Level Lapse Rate (700-500 hPa) - wichtig für Europa
+function calcMidLevelLapseRate(temp700, temp500) {
+    // Höhendifferenz 700-500 hPa ≈ 2000 m
+    const dz = 2000;
+    if (dz <= 0) return 0;
+    return (temp700 - temp500) / (dz / 1000); // K/km
+}
+
+// Moisture Depth (850-700 hPa) - Feuchtigkeitstiefe für Konvektion
+function calcMoistureDepth(dew850, dew700, temp850, temp700) {
+    const rh850 = calcRelHum(temp850, dew850);
+    const rh700 = calcRelHum(temp700, dew700);
+    // Durchschnittliche relative Feuchte in der Schicht
+    return (rh850 + rh700) / 2;
+}
+
+// Effective Layer Instability (ELI) - ESSL-Methodik für Europa
+function calcELI(cape, cin, pblHeight) {
+    // ELI berücksichtigt CAPE, CIN und Boundary Layer Height
+    // Höhere PBL = bessere Durchmischung = höheres ELI
+    if (cape < 50) return 0;
+    const pblFactor = pblHeight > 1500 ? 1.2 : pblHeight > 1000 ? 1.0 : pblHeight > 500 ? 0.8 : 0.6;
+    const cinFactor = cin < 25 ? 1.0 : cin < 50 ? 0.9 : cin < 100 ? 0.7 : cin < 150 ? 0.5 : 0.3;
+    return cape * pblFactor * cinFactor;
+}
+
 // STP (Significant Tornado Parameter) - nach Thompson et al. (2012) / SPC fixed-layer
 // Für Europa kalibriert (ESTOFEX/ESSL-orientierte Schwellen)
 // Formel: STP = (sbCAPE/1500) * ((2000-LCL)/1000) * (SRH1/150) * (6BWD/20) * ((200+CIN)/150)
@@ -568,10 +603,10 @@ function calcSTP(cape, srh, shear, liftedIndex, cin, temp2m = null, dew2m = null
     // *** HARTES CUTOFF nach SPC: 6BWD < 12.5 m/s → STP = 0 ***
     if (shear < 12.5) return 0;
 
-    // LCL-Höhe nach Bolton (1980): LCL (m) ≈ 125 * (T - Td)
+    // LCL-Höhe nach Bolton (1980) - verwendet verbesserte calcLCLHeight Funktion
     let lclTerm;
     if (temp2m !== null && dew2m !== null) {
-        const lclHeight = 125 * (temp2m - dew2m);
+        const lclHeight = calcLCLHeight(temp2m, dew2m);
         if (lclHeight < 1000) lclTerm = 1.0;
         else if (lclHeight >= 2000) lclTerm = 0.0; // *** HARTES CUTOFF nach SPC ***
         else lclTerm = (2000 - lclHeight) / 1000;  // lineare Interpolation wie SPC
@@ -597,7 +632,42 @@ function calcSTP(cape, srh, shear, liftedIndex, cin, temp2m = null, dew2m = null
     return Math.max(0, capeTerm * srhTerm * shearTerm * lclTerm * cinTerm);
 }
 
-// Hauptfunktion für Wahrscheinlichkeitsberechnung (nur Europa)
+// Verbesserte LCL-Berechnung nach Bolton (1980) - präziser für Europa
+function calcLCLHeight(temp2m, dew2m) {
+    if (temp2m <= 0 || dew2m <= 0) return 2000; // Fallback: hohes LCL
+    const T = temp2m + 273.15;
+    const Td = dew2m + 273.15;
+    const LCL = 125 * (temp2m - dew2m); // Vereinfachte Bolton-Formel
+    return Math.max(0, LCL);
+}
+
+// Mid-Level Lapse Rate (700-500 hPa) - wichtig für Europa
+function calcMidLevelLapseRate(temp700, temp500) {
+    // Höhendifferenz 700-500 hPa ≈ 2000 m
+    const dz = 2000;
+    if (dz <= 0) return 0;
+    return (temp700 - temp500) / (dz / 1000); // K/km
+}
+
+// Moisture Depth (850-700 hPa) - Feuchtigkeitstiefe für Konvektion
+function calcMoistureDepth(dew850, dew700, temp850, temp700) {
+    const rh850 = calcRelHum(temp850, dew850);
+    const rh700 = calcRelHum(temp700, dew700);
+    // Durchschnittliche relative Feuchte in der Schicht
+    return (rh850 + rh700) / 2;
+}
+
+// Effective Layer Instability (ELI) - ESSL-Methodik für Europa
+function calcELI(cape, cin, pblHeight) {
+    // ELI berücksichtigt CAPE, CIN und Boundary Layer Height
+    // Höhere PBL = bessere Durchmischung = höheres ELI
+    if (cape < 50) return 0;
+    const pblFactor = pblHeight > 1500 ? 1.2 : pblHeight > 1000 ? 1.0 : pblHeight > 500 ? 0.8 : 0.6;
+    const cinFactor = cin < 25 ? 1.0 : cin < 50 ? 0.9 : cin < 100 ? 0.7 : cin < 150 ? 0.5 : 0.3;
+    return cape * pblFactor * cinFactor;
+}
+
+// Hauptfunktion für Wahrscheinlichkeitsberechnung (verbessert nach ESSL/European Forecast Experiment)
 function calculateProbability(hour) {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
@@ -605,23 +675,23 @@ function calculateProbability(hour) {
     const cin = Math.abs(hour.cin ?? 0);
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
+    const pblHeight = hour.pblHeight ?? 1000;
     
-    // Europa-Parameter (ESTOFEX/ESSL-orientiert)
-    const minTemp = 5;
-    const minTempWithCAPE = 10;
-    const minCAPE = 200;
-    const minCAPEWithPrecip = 100;
-    const capeThresholds = [1500, 1200, 800, 500, 400, 300, 200];
-    const capeScores =     [25,   20,   14,  8,   6,   4,   2];
-    const minTempReduction = 12;
-    const tempReductionFactor = 0.5;
-    const minTempReduction2 = 15;
-    const tempReductionFactor2 = 0.7;
-
-    // Filter für Fehlalarme (Europa)
-    if (temp2m < minTemp) return 0; // Zu kalt für Gewitter
-    if (temp2m < minTempWithCAPE && cape < (minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
-    if (cape < minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
+    // Europa-Parameter (ESSL/European Forecast Experiment-orientiert)
+    // Taszarek et al. 2019/2020: Europa hat niedrigere CAPE-Schwellen, stärkere Shear-Gewichtung
+    const minTemp = 3; // Kalt-Saison-Gewitter möglich (Morgenstern 2023)
+    const minTempWithCAPE = 8;
+    const minCAPE = 150; // ESSL: Gewitter ab ~150 J/kg möglich
+    const minCAPEWithPrecip = 80;
+    
+    // Filter für Fehlalarme (Europa) - weniger restriktiv für HSLC-Fälle
+    if (temp2m < minTemp && cape < 300) return 0; // Zu kalt, außer bei sehr hohem CAPE
+    if (temp2m < minTempWithCAPE && cape < (minCAPE * 1.2)) {
+        // HSLC-Check: Bei hohem Shear auch bei niedrigem CAPE möglich
+        const shear = calcShear(hour);
+        if (shear < 15) return 0; // Kein HSLC-Potential
+    }
+    if (cape < minCAPEWithPrecip && precipAcc < 0.1 && precipProb < 15) return 0;
     
     // Berechne Indizes
     const shear = calcShear(hour);
@@ -631,178 +701,222 @@ function calculateProbability(hour) {
     const relHum2m = calcRelHum(temp2m, dew);
     const cloudSum = (hour.cloudLow ?? 0) + (hour.cloudMid ?? 0) + (hour.cloudHigh ?? 0);
     
-    // Kombinierte Indizes (bewährte meteorologische Parameter, Europa-only)
+    // Verbesserte physikalische Parameter
+    const lclHeight = calcLCLHeight(temp2m, dew);
+    const midLapse = calcMidLevelLapseRate(hour.temp700 ?? 0, hour.temp500 ?? 0);
+    const moistureDepth = calcMoistureDepth(hour.dew850 ?? 0, hour.dew700 ?? 0, hour.temp850 ?? 0, hour.temp700 ?? 0);
+    const eli = calcELI(cape, cin, pblHeight);
+    
+    // Kombinierte Indizes (Europa-optimiert)
     const ehi = (cape * srh) / 160000;
     const scp = calcSCP(cape, shear, srh, cin);
     const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
     const wmaxshear = calcWMAXSHEAR(cape, shear);
+    const dcape = calcDCAPE(hour);
     
     // Basis-Score basierend auf kombinierten Indizes
     let score = 0;
     
-    // CAPE-Bewertung (Europa)
-    for (let i = 0; i < capeThresholds.length; i++) {
-        if (cape >= capeThresholds[i]) {
-            score += capeScores[i];
-            break;
-        }
-    }
+    // CAPE-Bewertung (Europa) - niedrigere Schwellen als USA
+    // Taszarek 2020: Europa CAPE-Median ~500-800 J/kg für schwere Gewitter
+    if (cape >= 2000) score += 28;
+    else if (cape >= 1500) score += 24;
+    else if (cape >= 1200) score += 20;
+    else if (cape >= 800) score += 16;
+    else if (cape >= 500) score += 12;
+    else if (cape >= 300) score += 8;
+    else if (cape >= 150) score += 4;
     
-    // CIN-Penalty (stärker gewichtet)
-    if (cin > 200) score -= 15;
-    else if (cin > 100) score -= 8;
-    else if (cin > 50) score -= 4;
+    // Effective Layer Instability (ELI) - ESSL-Methodik
+    if (eli >= 2000) score += 10;
+    else if (eli >= 1200) score += 7;
+    else if (eli >= 800) score += 5;
+    else if (eli >= 400) score += 3;
     
-    // Kombinierte Indizes (Europa)
-    if (scp > 2) score += 20;
-    else if (scp > 1.5) score += 16;
-    else if (scp > 1) score += 10;
-    else if (scp > 0.5) score += 5;
+    // CIN-Bewertung (verbessert) - nicht nur Penalty, sondern auch positive Signale
+    if (cin < 25 && cape >= 300) score += 6; // Sehr günstig für Konvektion
+    else if (cin < 50 && cape >= 200) score += 3;
+    else if (cin > 200) score -= 18; // Stark inhibierend
+    else if (cin > 100) score -= 10;
+    else if (cin > 50) score -= 5;
     
-    if (stp > 1.5) score += 15;
-    else if (stp > 1) score += 12;
-    else if (stp > 0.5) score += 7;
-    else if (stp > 0.3) score += 3;
+    // Kombinierte Indizes (Europa) - stärkere Gewichtung
+    if (scp >= 3.0) score += 24;
+    else if (scp >= 2.0) score += 20;
+    else if (scp >= 1.5) score += 16;
+    else if (scp >= 1.0) score += 12;
+    else if (scp >= 0.5) score += 6;
     
-    // EHI-Schwellen nach Hart & Korotky (1991), klimatologisch angepasst für Europa
-    if (ehi >= 2.0) score += 12;
-    else if (ehi >= 1.0) score += 8;
-    else if (ehi >= 0.5) score += 4;
-    else if (ehi >= 0.3) score += 2;
+    if (stp >= 2.0) score += 18;
+    else if (stp >= 1.5) score += 15;
+    else if (stp >= 1.0) score += 12;
+    else if (stp >= 0.5) score += 8;
+    else if (stp >= 0.3) score += 4;
     
-    // WMAXSHEAR-Score (nach SCP/STP/EHI-Block)
-    // Taszarek et al. 2020: bester globaler Prädiktor, Schwelle 500 m²/s²
-    if (wmaxshear >= 1200) score += 18;
+    // EHI-Schwellen (Europa-angepasst)
+    if (ehi >= 2.5) score += 14;
+    else if (ehi >= 2.0) score += 12;
+    else if (ehi >= 1.0) score += 9;
+    else if (ehi >= 0.5) score += 5;
+    else if (ehi >= 0.3) score += 3;
+    
+    // WMAXSHEAR-Score (Taszarek 2020: bester globaler Prädiktor)
+    if (wmaxshear >= 1500) score += 22;
+    else if (wmaxshear >= 1200) score += 18;
     else if (wmaxshear >= 900) score += 14;
     else if (wmaxshear >= 700) score += 10;
-    else if (wmaxshear >= 500) score += 6;
-    else if (wmaxshear >= 300) score += 3;
+    else if (wmaxshear >= 500) score += 7;
+    else if (wmaxshear >= 300) score += 4;
     
-    // Shear und SRH (Europa)
-    const highCAPEThreshold = 500;
-    const lowCAPEThreshold = 200;
+    // Shear-Bewertung (Europa) - stärker gewichtet als CAPE
+    // Púčik 2015: Deep-Layer-Shear entscheidend für schwere Gewitter in Europa
+    if (shear >= 25) score += 14;
+    else if (shear >= 20) score += 11;
+    else if (shear >= 15) score += 8;
+    else if (shear >= 12) score += 5;
+    else if (shear >= 10) score += 3;
+    else if (shear >= 8) score += 1;
     
-    if (cape >= highCAPEThreshold) {
-        if (shear >= 20) score += 10;
-        else if (shear >= 15) score += 7;
-        else if (shear >= 10) score += 4;
-        else if (shear >= 8) score += 2;
-        
-        if (srh >= 200) score += 8;
-        else if (srh >= 150) score += 6;
-        else if (srh >= 120) score += 4;
-        else if (srh >= 80) score += 2;
-    } else if (cape >= lowCAPEThreshold) {
-        if (shear >= 15) score += 3;
-        else if (shear >= 10) score += 1;
-        
-        if (srh >= 150) score += 2;
-        else if (srh >= 100) score += 1;
-    }
+    // SRH-Bewertung (Europa)
+    if (srh >= 250) score += 10;
+    else if (srh >= 200) score += 8;
+    else if (srh >= 150) score += 6;
+    else if (srh >= 120) score += 4;
+    else if (srh >= 80) score += 2;
     
-    // Lifted Index (Europa, auch bei niedrigem CAPE relevant)
-    if (cape >= 400) {
-        if (liftedIndex <= -6) score += 10;
-        else if (liftedIndex <= -4) score += 6;
-        else if (liftedIndex <= -2) score += 3;
-    } else if (cape >= 200) {
-        if (liftedIndex <= -4) score += 3;
-        else if (liftedIndex <= -2) score += 1;
-    }
+    // LCL-Höhe (verbessert) - niedriges LCL = bessere Konvektion
+    if (lclHeight < 500) score += 8;
+    else if (lclHeight < 800) score += 6;
+    else if (lclHeight < 1200) score += 4;
+    else if (lclHeight < 1500) score += 2;
+    else if (lclHeight >= 2500) score -= 6; // Zu hohes LCL = trocken, weniger Konvektion
     
-    // Lapse Rate (Europa)
-    if (lapse >= 7.5) score += 5;
-    else if (lapse >= 7.0) score += 3;
-    else if (lapse >= 6.5) score += 2;
-    else if (lapse >= 6.2) score += 1;
-    else if (lapse >= 6.0) score += 1;
-    if (lapse < 5.0 && cape < 800) score -= 4;
+    // Mid-Level Lapse Rate (700-500 hPa) - wichtig für Europa
+    if (midLapse >= 8.0) score += 8;
+    else if (midLapse >= 7.5) score += 6;
+    else if (midLapse >= 7.0) score += 4;
+    else if (midLapse >= 6.5) score += 2;
+    else if (midLapse < 5.5 && cape < 800) score -= 5;
     
-    // K-Index
-    if (kIndex >= 35) score += 6;
+    // Moisture Depth (850-700 hPa) - Feuchtigkeitstiefe
+    if (moistureDepth >= 75) score += 6;
+    else if (moistureDepth >= 65) score += 4;
+    else if (moistureDepth >= 55) score += 2;
+    else if (moistureDepth < 40 && cape < 600) score -= 4;
+    
+    // Lifted Index (Europa)
+    if (liftedIndex <= -7) score += 12;
+    else if (liftedIndex <= -6) score += 10;
+    else if (liftedIndex <= -4) score += 7;
+    else if (liftedIndex <= -2) score += 4;
+    else if (liftedIndex <= 0) score += 1;
+    
+    // K-Index (verbessert)
+    if (kIndex >= 38) score += 8;
+    else if (kIndex >= 35) score += 6;
     else if (kIndex >= 30) score += 4;
     else if (kIndex >= 25) score += 2;
     
-    // Feuchtigkeit und Temperatur (Europa, auch bei niedrigem CAPE wichtig)
-    if (cape >= 400) {
-        if (dew >= 16 && temp2m >= 16) score += 4;
-        else if (dew >= 13 && temp2m >= 13) score += 2;
-        
-        if (relHum2m >= 65 && temp2m >= 18) score += 3;
-    } else if (cape >= 200) {
-        if (dew >= 15 && temp2m >= 15) score += 3;
-        else if (dew >= 13 && temp2m >= 13) score += 2;
-        
-        if (relHum2m >= 70 && temp2m >= 18) score += 2;
-    }
+    // Feuchtigkeit und Temperatur (Europa)
+    // Taszarek 2021: Taupunkt wichtiger als absolute Temperatur
+    if (dew >= 18 && temp2m >= 18) score += 6;
+    else if (dew >= 16 && temp2m >= 16) score += 4;
+    else if (dew >= 13 && temp2m >= 13) score += 2;
     
-    // Niederschlag (Europa)
-    if (cape >= 400) {
-        if (precipAcc >= 2.5 && cape >= 800) score += 6;
-        else if (precipAcc >= 1.2 && cape >= 600) score += 4;
-        else if (precipAcc >= 0.5 && cape >= 400) score += 2;
-        
-        if (precipProb >= 65 && cape >= 600) score += 4;
-        else if (precipProb >= 45 && cape >= 400) score += 2;
-    } else if (cape >= 200) {
-        if (precipAcc >= 1.0) score += 2;
-        else if (precipAcc >= 0.5) score += 1;
-        else if (precipAcc >= 0.2) score += 1;
-        
-        if (precipProb >= 50) score += 2;
-        else if (precipProb >= 30) score += 1;
-    }
+    if (relHum2m >= 75 && temp2m >= 18) score += 5;
+    else if (relHum2m >= 70 && temp2m >= 16) score += 3;
+    else if (relHum2m >= 65 && temp2m >= 14) score += 1;
     
-    // Dauerregen-Filter (Europa)
-    if (precipAcc > 2 && cape < 400) score -= 8;
+    // Niederschlag (Europa) - stärker gewichtet
+    if (precipAcc >= 3.0 && cape >= 600) score += 8;
+    else if (precipAcc >= 2.0 && cape >= 400) score += 6;
+    else if (precipAcc >= 1.0 && cape >= 300) score += 4;
+    else if (precipAcc >= 0.5 && cape >= 200) score += 2;
     
-    // Relative Feuchte 500hPa (Europa)
-    if (hour.rh500 < 35 && cape >= 800) score += 5;
-    else if (hour.rh500 < 45 && cape >= 600) score += 3;
-    else if (hour.rh500 > 85 && cape < 800) score -= 4;
+    if (precipProb >= 70 && cape >= 500) score += 6;
+    else if (precipProb >= 55 && cape >= 400) score += 4;
+    else if (precipProb >= 40 && cape >= 300) score += 2;
     
-    // Strahlung (tagsüber wichtig, Europa)
+    // Dauerregen-Filter (Europa) - verbessert
+    if (precipAcc > 3 && cape < 300 && shear < 10) score -= 10;
+    else if (precipAcc > 2 && cape < 200) score -= 6;
+    
+    // Relative Feuchte 500hPa (Europa) - trockene mittlere Troposphäre begünstigt
+    if (hour.rh500 < 30 && cape >= 600) score += 7;
+    else if (hour.rh500 < 40 && cape >= 500) score += 5;
+    else if (hour.rh500 < 50 && cape >= 400) score += 3;
+    else if (hour.rh500 > 90 && cape < 800) score -= 6; // Zu feucht = stabilisierend
+    
+    // Strahlung (tagsüber wichtig, Europa) - verbessert
     const isNight = hour.directRadiation < 20;
     const isDaytime = hour.directRadiation >= 200;
+    const isStrongDaytime = hour.directRadiation >= 600;
 
-    if (isDaytime && temp2m >= 12 && cape >= 300) {
-        if (hour.directRadiation >= 500) score += 4;
-        else if (hour.directRadiation >= 300) score += 2;
-        else if (hour.directRadiation >= 200) score += 1;
+    if (isStrongDaytime && temp2m >= 14 && cape >= 300) {
+        score += 7; // Starke Sonneneinstrahlung = starke Erwärmung
+    } else if (isDaytime && temp2m >= 12 && cape >= 200) {
+        score += 4;
     } else if (isNight) {
-        const llj_active = srh >= 100 && shear >= 10;
-        if (!llj_active && shear < 10 && cape < 500) score -= 3;
-        if (llj_active && cape >= 600) score += 3;
-        else if (cape >= 800 && srh >= 100) score += 2;
+        // Low-Level-Jet Detection (Europa) - verbessert
+        const llj_active = srh >= 120 && shear >= 12 && hour.wind >= 8;
+        if (llj_active && cape >= 500) {
+            score += 5; // LLJ aktiv = nächtliche Konvektion möglich
+        } else if (!llj_active && shear < 10 && cape < 400) {
+            score -= 4; // Kein LLJ, schwacher Shear = wenig nächtliche Konvektion
+        } else if (cape >= 600 && srh >= 100) {
+            score += 2; // Moderate nächtliche Bedingungen
+        }
     }
     
-    // Wind (Europa)
-    if (hour.wind >= 5 && hour.wind <= 15 && temp2m >= 12) score += 2;
-    else if (hour.wind > 15 && hour.wind <= 20 && temp2m >= 12) score += 4;
-    if (hour.wind > 25 && cape < 1500) score -= 4;
+    // Wind (Europa) - verbessert
+    if (hour.wind >= 6 && hour.wind <= 18 && temp2m >= 12) score += 3;
+    else if (hour.wind > 18 && hour.wind <= 25 && temp2m >= 12) score += 5;
+    if (hour.wind > 30 && cape < 1200) score -= 6; // Zu starker Wind = stabilisierend
     
-    // Böen (Europa)
+    // Böen (Europa) - verbessert
     const gustDiff = hour.gust - hour.wind;
-    if (gustDiff > 12 && cape >= 800 && temp2m >= 12) score += 4;
-    else if (gustDiff > 8 && cape >= 600) score += 2;
+    if (gustDiff > 15 && cape >= 600 && temp2m >= 12) score += 6;
+    else if (gustDiff > 12 && cape >= 500) score += 4;
+    else if (gustDiff > 8 && cape >= 300) score += 2;
 
-    // DCAPE: Downdraft-Potential (Gilmore & Wicker 1998)
-    // Hoher DCAPE verstärkt Böen, Hagel, MCS-Aktivität
-    const dcape = calcDCAPE(hour);
-    // DCAPE: Downdraft-Potential (Europa-Schwellen)
-    if (dcape >= 800 && cape >= 400) score += 5;
-    else if (dcape >= 600 && cape >= 300) score += 3;
-    else if (dcape >= 400 && cape >= 200) score += 1;
+    // DCAPE: Downdraft-Potential (Europa-Schwellen) - verbessert
+    if (dcape >= 1000 && cape >= 400) score += 7;
+    else if (dcape >= 800 && cape >= 300) score += 5;
+    else if (dcape >= 600 && cape >= 200) score += 3;
+    else if (dcape >= 400 && cape >= 150) score += 1;
     
-    // Temperatur-Reduktion (kälter = weniger wahrscheinlich, Europa)
-    if (temp2m < minTempReduction) score = Math.round(score * tempReductionFactor);
-    else if (temp2m < minTempReduction2) score = Math.round(score * tempReductionFactor2);
+    // Boundary Layer Height - Triggering-Faktor
+    if (pblHeight >= 2000 && cape >= 300) score += 4; // Sehr hohe PBL = gute Durchmischung
+    else if (pblHeight >= 1500 && cape >= 200) score += 2;
+    else if (pblHeight < 300 && cape < 500) score -= 3; // Zu niedrige PBL = schlechtes Triggering
     
-    // Mindestanforderungen für Gewitter (Europa)
-    if (score > 0 && cape < 200) {
-        score = Math.max(0, score - 5);
+    // Temperatur-Reduktion (Europa) - verbessert für HSLC-Fälle
+    if (temp2m < 8) {
+        // Bei sehr niedriger Temperatur: nur bei hohem Shear/CAPE relevant
+        if (shear < 15 && cape < 500) {
+            score = Math.round(score * 0.4); // Stark reduzieren
+        } else {
+            score = Math.round(score * 0.6); // Moderate Reduktion für HSLC
+        }
+    } else if (temp2m < 12) {
+        score = Math.round(score * 0.7);
+    } else if (temp2m < 15) {
+        score = Math.round(score * 0.85);
     }
-    if (score > 0 && cin > 150 && cape < 1200) score = Math.max(0, score - 15);
+    
+    // Finale Plausibilitätsprüfung (Europa)
+    // Mindestanforderungen nach ESSL-Climatology
+    if (score > 0 && cape < 100 && shear < 8) {
+        score = Math.max(0, score - 10); // Zu wenig CAPE und Shear
+    }
+    if (score > 0 && cin > 150 && cape < 1000) {
+        score = Math.max(0, score - 12); // Zu hohes CIN ohne ausreichendes CAPE
+    }
+    
+    // HSLC-Sonderfall: Bei sehr hohem Shear auch bei niedrigem CAPE möglich
+    if (shear >= 20 && cape >= 150 && score < 30) {
+        score = Math.min(score + 5, 35); // Leichter Boost für HSLC-Fälle
+    }
     
     return Math.min(100, Math.max(0, Math.round(score)));
 }
