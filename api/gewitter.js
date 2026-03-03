@@ -1163,7 +1163,7 @@ function calculateProbability(hour, region = 'europe') {
         else if (lapse >= 7.5) score += 5;
         else if (lapse >= 7.0) score += 3;
         else if (lapse >= 6.5) score += 2;
-        if (lapse < 5.5 && cape < 1000) score -= 5;
+        if (lapse < 5.5 && mlCape < 1000) score -= 5;
     } else {
         // Europa: Niedrigere Schwelle
         if (lapse >= 7.5) score += 5;
@@ -1171,7 +1171,7 @@ function calculateProbability(hour, region = 'europe') {
         else if (lapse >= 6.5) score += 2;
         else if (lapse >= 6.2) score += 1;
         else if (lapse >= 6.0) score += 1;
-        if (lapse < 5.0 && cape < 800) score -= 4;
+        if (lapse < 5.0 && mlCape < 800) score -= 4;
     }
     
     // K-Index
@@ -1185,7 +1185,7 @@ function calculateProbability(hour, region = 'europe') {
     
     // Feuchtigkeit und Temperatur (regionsspezifisch)
     if (region === 'usa') {
-        if (isDaytime && temp2m >= 18 && cape >= 600) {
+        if (isDaytime && temp2m >= 18 && mlCape >= 600) {
             if (hour.directRadiation >= 600) score += 5;
             else if (hour.directRadiation >= 400) score += 3;
         } else if (isNight) {
@@ -1197,12 +1197,12 @@ function calculateProbability(hour, region = 'europe') {
             // Quelle: Bonner 1968, Hanesiak 2024, Climate Central 2025
             const llj_active = llShear_low > llShear_mid * 1.5 && llShear_low > 4.0 && srh >= 100;
 
-            if (!llj_active && shear < 12 && cape < 1000) score -= 5;
-            if (llj_active && cape >= 800) score += 4;   // LLJ-Bonus
-            else if (cape >= 1200 && srh >= 150) score += 2;
+            if (!llj_active && shear < 12 && mlCape < 1000) score -= 5;
+            if (llj_active && mlCape >= 800) score += 4;   // LLJ-Bonus
+            else if (mlCape >= 1200 && srh >= 150) score += 2;
         }
     } else {
-        if (isDaytime && temp2m >= 12 && cape >= 300) {
+        if (isDaytime && temp2m >= 12 && mlCape >= 300) {
             if (hour.directRadiation >= 500) score += 4;
             else if (hour.directRadiation >= 300) score += 2;
             else if (hour.directRadiation >= 200) score += 1;
@@ -1212,21 +1212,21 @@ function calculateProbability(hour, region = 'europe') {
             const llShear_mid = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
             const llj_active = llShear_low > llShear_mid * 1.5 && llShear_low > 4.0 && srh >= 75;
 
-            if (!llj_active && shear < 10 && cape < 500) score -= 3;
-            if (llj_active && cape >= 600) score += 3;   // LLJ-Bonus
-            else if (cape >= 800 && srh >= 100) score += 2;
+            if (!llj_active && shear < 10 && mlCape < 500) score -= 3;
+            if (llj_active && mlCape >= 600) score += 3;   // LLJ-Bonus
+            else if (mlCape >= 800 && srh >= 100) score += 2;
         }
     }
     
     // Niederschlag (regionsspezifisch)
     if (region === 'usa') {
         if (mlCape >= 600) {
-            if (precipAcc >= 3.0 && cape >= 1000) score += 7;
-            else if (precipAcc >= 2.0 && cape >= 800) score += 5;
-            else if (precipAcc >= 1.0 && cape >= 600) score += 3;
+            if (precipAcc >= 3.0 && mlCape >= 1000) score += 7;
+            else if (precipAcc >= 2.0 && mlCape >= 800) score += 5;
+            else if (precipAcc >= 1.0 && mlCape >= 600) score += 3;
             
-            if (precipProb >= 70 && cape >= 800) score += 5;
-            else if (precipProb >= 55 && cape >= 600) score += 3;
+            if (precipProb >= 70 && mlCape >= 800) score += 5;
+            else if (precipProb >= 55 && mlCape >= 600) score += 3;
         } else if (mlCape >= 500) {
             if (precipAcc >= 2.0) score += 2;
             if (precipProb >= 60) score += 2;
@@ -1234,12 +1234,12 @@ function calculateProbability(hour, region = 'europe') {
     } else {
         // Europa: Auch bei niedrigem CAPE
         if (mlCape >= 400) {
-            if (precipAcc >= 2.5 && cape >= 800) score += 6;
-            else if (precipAcc >= 1.2 && cape >= 600) score += 4;
-            else if (precipAcc >= 0.5 && cape >= 400) score += 2;
+            if (precipAcc >= 2.5 && mlCape >= 800) score += 6;
+            else if (precipAcc >= 1.2 && mlCape >= 600) score += 4;
+            else if (precipAcc >= 0.5 && mlCape >= 400) score += 2;
             
-            if (precipProb >= 65 && cape >= 600) score += 4;
-            else if (precipProb >= 45 && cape >= 400) score += 2;
+            if (precipProb >= 65 && mlCape >= 600) score += 4;
+            else if (precipProb >= 45 && mlCape >= 400) score += 2;
         } else if (mlCape >= 200) {
             // Europa: Niederschlag auch bei niedrigem CAPE bewerten
             if (precipAcc >= 1.0) score += 2;
@@ -1298,34 +1298,34 @@ function calculateProbability(hour, region = 'europe') {
     if (region === 'usa') {
         if (hour.wind >= 8 && hour.wind <= 18 && temp2m >= 15) score += 3;
         else if (hour.wind > 18 && hour.wind <= 25 && temp2m >= 15) score += 5;
-        if (hour.wind > 30 && cape < 2000) score -= 5;
+        if (hour.wind > 30 && mlCape < 2000) score -= 5;
     } else {
         if (hour.wind >= 5 && hour.wind <= 15 && temp2m >= 12) score += 2;
         else if (hour.wind > 15 && hour.wind <= 20 && temp2m >= 12) score += 4;
-        if (hour.wind > 25 && cape < 1500) score -= 4;
+        if (hour.wind > 25 && mlCape < 1500) score -= 4;
     }
     
     // Böen (können auf Gewitteraktivität hinweisen, regionsspezifisch)
     const gustDiff = hour.gust - hour.wind;
     if (region === 'usa') {
-        if (gustDiff > 15 && cape >= 1000 && temp2m >= 15) score += 5;
-        else if (gustDiff > 10 && cape >= 800) score += 3;
+        if (gustDiff > 15 && mlCape >= 1000 && temp2m >= 15) score += 5;
+        else if (gustDiff > 10 && mlCape >= 800) score += 3;
     } else {
-        if (gustDiff > 12 && cape >= 800 && temp2m >= 12) score += 4;
-        else if (gustDiff > 8 && cape >= 600) score += 2;
+        if (gustDiff > 12 && mlCape >= 800 && temp2m >= 12) score += 4;
+        else if (gustDiff > 8 && mlCape >= 600) score += 2;
     }
 
     // DCAPE: Downdraft-Potential (Gilmore & Wicker 1998)
     // Hoher DCAPE verstärkt Böen, Hagel, MCS-Aktivität
     const dcape = calcDCAPE(hour);
     if (isHighThreshold) {
-        if (dcape >= 1000 && cape >= 500) score += 6;
-        else if (dcape >= 700 && cape >= 400) score += 4;
-        else if (dcape >= 500 && cape >= 300) score += 2;
+        if (dcape >= 1000 && mlCape >= 500) score += 6;
+        else if (dcape >= 700 && mlCape >= 400) score += 4;
+        else if (dcape >= 500 && mlCape >= 300) score += 2;
     } else {
-        if (dcape >= 800 && cape >= 400) score += 5;
-        else if (dcape >= 600 && cape >= 300) score += 3;
-        else if (dcape >= 400 && cape >= 200) score += 1;
+        if (dcape >= 800 && mlCape >= 400) score += 5;
+        else if (dcape >= 600 && mlCape >= 300) score += 3;
+        else if (dcape >= 400 && mlCape >= 200) score += 1;
     }
     
     // Ensemble-Daten (falls verfügbar, regionsspezifisch)
@@ -1340,12 +1340,12 @@ function calculateProbability(hour, region = 'europe') {
         }
         
         const liProb = getEnsembleProb(hour.ensemble, 'lifted_index', -3, 'below');
-        if (liProb !== null && liProb >= MIN_PROB && cape >= capeMinCAPE) {
+        if (liProb !== null && liProb >= MIN_PROB && mlCape >= capeMinCAPE) {
             score += Math.round((isHighThreshold ? 5 : 4) * liProb);
         }
         
         const precipProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
-        if (precipProb !== null && precipProb >= MIN_PROB && cape >= capeMinCAPE) {
+        if (precipProb !== null && precipProb >= MIN_PROB && mlCape >= capeMinCAPE) {
             score += Math.round((isHighThreshold ? 4 : 3) * precipProb);
         }
     }
