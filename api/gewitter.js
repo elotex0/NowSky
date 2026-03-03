@@ -1141,7 +1141,9 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     
     const t = tornadoThresholds[region] || tornadoThresholds['europe'];
     if (temp2m < t.minTemp) return 0;
-    if (cape < t.minCAPE) return 0;
+    if (sbcape < t.minCAPE && mucape < t.minCAPE) return 0;
+    // Zusätzlich: wenn sbCAPE = 0, kein Tornado möglich
+    if (sbcape < 50) return 0;
     if (cin > 200) return 0;
     
     // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
