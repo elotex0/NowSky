@@ -1163,13 +1163,13 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const veer700_850 = veeringAngle(dir850, dir700);
     const totalVeering = veer850_1000 + veer700_850;
 
-    let veeringFactor = 1.0;
-    if (totalVeering < -20) veeringFactor = 0.3;
-    else if (totalVeering < 0) veeringFactor = 0.6;
-    else if (totalVeering >= 30) veeringFactor = 1.2;
-    else if (totalVeering >= 15) veeringFactor = 1.1;
+    const stp = calcSTP(sbcape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
 
-    const stp = calcSTP(sbcape, srh1km, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
+    let veeringBonus = 0;
+    if (totalVeering < -20) veeringBonus = -20;
+    else if (totalVeering < 0) veeringBonus = -10;
+    else if (totalVeering >= 30) veeringBonus = 5;
+    else if (totalVeering >= 15) veeringBonus = 3;
 
     // Basis-Score für Tornado-Wahrscheinlichkeit
     let score = 0;
@@ -1188,15 +1188,16 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         else if (stp >= 0.3) score = 12;
         else if (stp > 0) score = 5;
     } else {
-        if (stp >= 2.0) score = 85;
-        else if (stp >= 1.5) score = 70;
-        else if (stp >= 1.0) score = 55;
-        else if (stp >= 0.7) score = 40;
-        else if (stp >= 0.5) score = 25;
-        else if (stp >= 0.3) score = 12;
+        // Kalibriert nach Púčik et al. 2015 (NHESS): europäischer STP-Median ~0.3-0.5
+        if (stp >= 1.5) score = 85;
+        else if (stp >= 1.0) score = 70;
+        else if (stp >= 0.7) score = 55;
+        else if (stp >= 0.5) score = 40;
+        else if (stp >= 0.3) score = 25;
+        else if (stp >= 0.15) score = 12;
         else if (stp > 0) score = 5;
     }
-    
+
     // Zusätzliche Faktoren (regionsspezifisch)
     if (isHighThreshold) {
         // Hohe Thresholds: usa, south_africa, south_america, australia
@@ -1214,11 +1215,14 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         else if (liftedIndex <= -5 && cape >= 1000) score += 5;
         else if (liftedIndex <= -3 && cape >= 800) score += 3;
         
-        const ehi = (cape * srh) / 160000;
-        if (ehi >= 3.5) score += 10;
-        else if (ehi >= 2.5) score += 8;
-        else if (ehi >= 1.5) score += 5;
-        else if (ehi >= 1.0) score += 3;
+        // EHI nur als Fallback wenn STP = 0 (HSLC-Regime)
+        if (stp === 0) {
+            const ehi = (cape * srh) / 160000;
+            if (ehi >= 3.5) score += 10;
+            else if (ehi >= 2.5) score += 8;
+            else if (ehi >= 1.5) score += 5;
+            else if (ehi >= 1.0) score += 3;
+        }
         
         if (cin > 100) score -= 10;
         if (shear < 12) score -= 15;
@@ -1236,10 +1240,14 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         if (liftedIndex <= -5 && cape >= 800) score += 5;
         else if (liftedIndex <= -3 && cape >= 600) score += 3;
         
-        const ehi = (cape * srh) / 160000;
-        if (ehi >= 2.5) score += 8;
-        else if (ehi >= 1.5) score += 5;
-        else if (ehi >= 1.0) score += 3;
+        // EHI nur als Fallback wenn STP = 0 (HSLC-Regime)
+        if (stp === 0) {
+            const ehi = (cape * srh) / 160000;
+            if (ehi >= 3.5) score += 10;
+            else if (ehi >= 2.5) score += 8;
+            else if (ehi >= 1.5) score += 5;
+            else if (ehi >= 1.0) score += 3;
+        }
         
         if (cin > 100) score -= 10;
         if (shear < 10) score -= 15;
@@ -1337,9 +1345,11 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     // Bei hohem Shear (≥ 18 m/s) und niedrigem CAPE ist STP nahe 0 aber Ereignisse REAL
     if (stp < 0.1 && score > 10) {
         if (shear < 15) {
-            score = Math.min(score, 8);   // kein HSLC → hart begrenzen
+            score = Math.min(score, 5);   // kein HSLC, kein STP → fast null
+        } else if (shear >= 18 && cape >= 150) {
+            score = Math.min(score, 20);  // HSLC Europa nach Sherburn & Parker 2014
         } else {
-            score = Math.min(score, 20);  // HSLC möglich → sanfter begrenzen
+            score = Math.min(score, 10);
         }
     }
 
@@ -1416,6 +1426,8 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     if      (failCount === 3) score = Math.round(score * 0.35); // alle drei fehlen: stark reduzieren
     else if (failCount === 2) score = Math.round(score * 0.55); // zwei fehlen: moderat
     else if (failCount === 1) score = Math.round(score * 0.75); // einer fehlt: leicht reduzieren
+
+    score = Math.max(0, score + veeringBonus);
 
     return Math.min(100, Math.max(0, Math.round(score)));
 }
