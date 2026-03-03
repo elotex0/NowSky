@@ -443,10 +443,10 @@ function calculateProbability(hour) {
     const relHum2m = calcRelHum(temp2m, dew);
     const cloudSum = (hour.cloudLow ?? 0) + (hour.cloudMid ?? 0) + (hour.cloudHigh ?? 0);
     
-    // Kombinierte Indizes (bewährte meteorologische Parameter)
+    // Kombinierte Indizes (bewährte meteorologische Parameter, Europa-only)
     const ehi = (cape * srh) / 160000;
-    const scp = calcSCP(cape, shear, srh, cin, region);
-    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
+    const scp = calcSCP(cape, shear, srh, cin);
+    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
     const wmaxshear = calcWMAXSHEAR(cape, shear);
     
     // Basis-Score basierend auf kombinierten Indizes
