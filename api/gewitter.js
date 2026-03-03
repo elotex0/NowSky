@@ -943,6 +943,9 @@ function calculateProbability(hour, region = 'europe') {
     const { kIndex, showalter, lapse, liftedIndex } = calcIndices(hour);
     const relHum2m = calcRelHum(temp2m, dew);
     const cloudSum = (hour.cloudLow ?? 0) + (hour.cloudMid ?? 0) + (hour.cloudHigh ?? 0);
+
+    const isNight = hour.directRadiation < 20;
+    const isDaytime = hour.directRadiation >= 200;
     
     // Kombinierte Indizes (bewährte meteorologische Parameter)
     const ehi = (cape * srh) / 160000;
@@ -1110,6 +1113,10 @@ function calculateProbability(hour, region = 'europe') {
     if (kIndex >= 35) score += 6;
     else if (kIndex >= 30) score += 4;
     else if (kIndex >= 25) score += 2;
+
+    const w1000 = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
+    const w925  = windToUV((hour.wind_speed_925hPa  ?? 0) / 3.6, hour.windDir925  ?? 0);
+    const w850  = windToUV((hour.wind_speed_850hPa  ?? 0) / 3.6, hour.windDir850  ?? 0);
     
     // Feuchtigkeit und Temperatur (regionsspezifisch)
     if (region === 'usa') {
@@ -1120,9 +1127,6 @@ function calculateProbability(hour, region = 'europe') {
             // LLJ-Check: präziser via Windprofil-Struktur (Bonner 1968)
             // Starker Shear im untersten Layer (1000→925 hPa) aber schwächerer
             // Shear in der Übergangsschicht (925→850 hPa) = klassisches LLJ-Profil
-            const w1000 = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
-            const w925  = windToUV((hour.wind_speed_925hPa  ?? 0) / 3.6, hour.windDir925  ?? 0);
-            const w850  = windToUV((hour.wind_speed_850hPa  ?? 0) / 3.6, hour.windDir850  ?? 0);
             const llShear_low = Math.hypot(w925.u - w1000.u, w925.v - w1000.v);
             const llShear_mid = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
             // Quelle: Bonner 1968, Hanesiak 2024, Climate Central 2025
@@ -1139,9 +1143,6 @@ function calculateProbability(hour, region = 'europe') {
             else if (hour.directRadiation >= 200) score += 1;
         } else if (isNight) {
             // LLJ-Check Europa: niedrigere Schwellen (Taszarek 2019)
-            const w1000 = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
-            const w925  = windToUV((hour.wind_speed_925hPa  ?? 0) / 3.6, hour.windDir925  ?? 0);
-            const w850  = windToUV((hour.wind_speed_850hPa  ?? 0) / 3.6, hour.windDir850  ?? 0);
             const llShear_low = Math.hypot(w925.u - w1000.u, w925.v - w1000.v);
             const llShear_mid = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
             const llj_active = llShear_low > llShear_mid * 1.5 && llShear_low > 4.0 && srh >= 75;
@@ -1203,10 +1204,6 @@ function calculateProbability(hour, region = 'europe') {
         else if (hour.rh500 > 85 && cape < 800) score -= 4;
     }
     
-    // Strahlung (tagsüber wichtig, regionsspezifisch)
-    const isNight = hour.directRadiation < 20;
-    const isDaytime = hour.directRadiation >= 200;
-
     if (region === 'usa') {
         if (isDaytime && temp2m >= 18 && cape >= 600) {
             if (hour.directRadiation >= 600) score += 5;
