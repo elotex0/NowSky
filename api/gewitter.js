@@ -388,103 +388,101 @@ function calcWMAXSHEAR(cape, shear) {
     return Math.round(Math.sqrt(2 * cape) * shear);
 }
 
-// Hagelwahrscheinlichkeit (Europa) aus CAPE/Shear, WMAXSHEAR, DCAPE und Freezing Level
+// Hagelwahrscheinlichkeit (Europa) – orientiert an ESTOFEX/ESSL (CAPE niedrig, Shear/WMAXSHEAR stark gewichtet)
 function calculateHailProbability(hour, wmaxshear, dcape) {
     const cape = Math.max(0, hour.cape ?? 0);
     const shear = calcShear(hour);
     const temp500 = hour.temp500 ?? 0;
     const freezingLevel = hour.freezingLevel ?? 4000; // m
 
-    // Basis-Filter: wenig CAPE oder sehr warm in 500 hPa → praktisch kein Hagel
-    if (cape < 100) return 0;
+    // Basis-Filter: quasi keine Aufwinde → kein Hagel
+    if (cape < 50) return 0;
 
     let score = 0;
 
-    // CAPE – starker Updraft als Grundvoraussetzung für großen Hagel
-    if (cape >= 2000) score += 30;
-    else if (cape >= 1200) score += 22;
-    else if (cape >= 800) score += 16;
-    else if (cape >= 400) score += 10;
+    // CAPE – Updraft-Potenzial, aber mit europäischen (niedrigeren) Schwellen
+    if (cape >= 1500) score += 24;
+    else if (cape >= 1000) score += 18;
+    else if (cape >= 700) score += 12;
+    else if (cape >= 400) score += 8;
+    else if (cape >= 200) score += 4;
 
-    // WMAXSHEAR – kombiniert Auftrieb und Deep-Layer-Shear (Taszarek / Brooks)
-    if (wmaxshear >= 1500) score += 30;
+    // WMAXSHEAR – Hauptindikator für schweren Hagel (Brooks/Taszarek)
+    if (wmaxshear >= 1400) score += 28;
     else if (wmaxshear >= 1000) score += 22;
-    else if (wmaxshear >= 700) score += 15;
-    else if (wmaxshear >= 500) score += 8;
+    else if (wmaxshear >= 800) score += 16;
+    else if (wmaxshear >= 500) score += 10;
 
-    // Deep-Layer-Shear direkt (Superzellen / langlebige Aufwinde)
-    if (shear >= 25) score += 12;
-    else if (shear >= 20) score += 8;
-    else if (shear >= 15) score += 4;
+    // Deep-Layer-Shear – Superzell-/organisierte Zelle
+    if (shear >= 22) score += 10;
+    else if (shear >= 18) score += 7;
+    else if (shear >= 12) score += 4;
 
-    // Thermisches Profil: kalte 500 hPa-Schicht begünstigt Hagelbildung
-    if (temp500 <= -18) score += 8;
-    else if (temp500 <= -14) score += 5;
-    else if (temp500 <= -10) score += 2;
+    // 500 hPa-Temperatur – je kälter, desto mehr Hagelproduktion
+    if (temp500 <= -20) score += 8;
+    else if (temp500 <= -16) score += 5;
+    else if (temp500 <= -12) score += 2;
 
-    // DCAPE kann Downbursts mit Hagel unterstützen, leichte Gewichtung
-    if (dcape >= 800 && cape >= 600) score += 6;
-    else if (dcape >= 600 && cape >= 400) score += 4;
-    else if (dcape >= 400 && cape >= 300) score += 2;
+    // DCAPE – Downburst-Komponente, eher sekundär für Hagel
+    if (dcape >= 800 && cape >= 600) score += 4;
+    else if (dcape >= 600 && cape >= 400) score += 2;
 
-    // Freezing Level: je tiefer, desto mehr Hagel erreicht den Boden
-    // < 2000 m: kaum Schmelzweg → volle Punktzahl
-    // 2000–3000 m: leichte Reduktion
-    // 3000–4000 m: deutlich weniger Bodenhagel
-    // > 4000 m: starke Reduktion (viel schmilzt)
+    // Freezing Level: tiefer → mehr Hagel am Boden, hoch → Schmelzweg lang
     let flFactor = 1.0;
-    if (freezingLevel > 4000) flFactor = 0.5;
-    else if (freezingLevel > 3000) flFactor = 0.7;
-    else if (freezingLevel > 2000) flFactor = 0.85;
+    if (freezingLevel <= 1800) flFactor = 1.15;
+    else if (freezingLevel <= 2500) flFactor = 1.0;
+    else if (freezingLevel <= 3200) flFactor = 0.8;
+    else if (freezingLevel <= 4000) flFactor = 0.6;
+    else flFactor = 0.45;
 
     score = Math.round(score * flFactor);
 
-    // Leichte Mindestanforderungen, um „Pseudo-Hagel“ bei sehr schwachen Lagen zu vermeiden
+    // Mindestanforderungen nach europäischer Climatology (Hagel auch bei geringem CAPE, aber nicht bei quasi 0-Shear)
     if (cape < 300 || shear < 10 || wmaxshear < 400) {
-        score = Math.min(score, 20);
+        score = Math.min(score, 25);
     }
 
     return Math.min(100, Math.max(0, score));
 }
 
-// Sturmböen / schwere Winde (Europa) aus DCAPE, WMAXSHEAR, CAPE und Böen
+// Sturmböen / schwere Winde (Europa) – orientiert an DCAPE/WMAXSHEAR-Studien (z.B. Gatzen, Taszarek)
 function calculateWindProbability(hour, wmaxshear, dcape) {
     const cape = Math.max(0, hour.cape ?? 0);
     const wind10m = hour.wind ?? 0;   // km/h
     const gust = hour.gust ?? 0;      // km/h
     const gustDiff = gust - wind10m;
 
-    // Basis-Filter: komplett stabile Luft ohne DCAPE und ohne WMAXSHEAR → kein Sturm
-    if (dcape < 200 && wmaxshear < 300 && gust < 40) return 0;
+    // Basis-Filter: komplett stabile Lage ohne DCAPE, ohne Böen
+    if (dcape < 150 && wmaxshear < 300 && gust < 40) return 0;
 
     let score = 0;
 
-    // DCAPE – Haupttreiber für Downbursts und schwere Böen
-    if (dcape >= 1200) score += 40;
-    else if (dcape >= 900) score += 32;
-    else if (dcape >= 700) score += 24;
-    else if (dcape >= 500) score += 16;
-    else if (dcape >= 300) score += 8;
+    // DCAPE – Haupttreiber für Downbursts
+    if (dcape >= 1100) score += 32;
+    else if (dcape >= 800) score += 24;
+    else if (dcape >= 600) score += 16;
+    else if (dcape >= 400) score += 10;
+    else if (dcape >= 250) score += 5;
 
-    // WMAXSHEAR – organisiert Konvektion / MCS, unterstützt schwere Böen
-    if (wmaxshear >= 1500) score += 25;
-    else if (wmaxshear >= 1000) score += 18;
-    else if (wmaxshear >= 700) score += 12;
-    else if (wmaxshear >= 500) score += 6;
+    // WMAXSHEAR – organisierte, linienhafte Konvektion / MCS (Derecho-Potenzial)
+    if (wmaxshear >= 1300) score += 22;
+    else if (wmaxshear >= 900) score += 16;
+    else if (wmaxshear >= 600) score += 10;
+    else if (wmaxshear >= 400) score += 5;
 
-    // Böenüberschuss gegenüber Mittelwind (Konvektion / Downbursts)
-    if (gustDiff >= 30) score += 15;
-    else if (gustDiff >= 20) score += 10;
+    // Böenüberschuss gegenüber Mittelwind – Hinweis auf konvektive Böen
+    if (gustDiff >= 30) score += 14;
+    else if (gustDiff >= 20) score += 9;
     else if (gustDiff >= 10) score += 5;
 
-    // Absolutes Böenniveau (Böenstärke am Boden)
-    if (gust >= 100) score += 15;       // ≥ 100 km/h
-    else if (gust >= 80) score += 10;   // ≥ 80 km/h
-    else if (gust >= 60) score += 6;    // ≥ 60 km/h
-    else if (gust >= 50) score += 3;    // ≥ 50 km/h
+    // Absolutes Böenniveau
+    if (gust >= 110) score += 16;       // > 110 km/h
+    else if (gust >= 90) score += 12;   // > 90 km/h
+    else if (gust >= 70) score += 8;    // > 70 km/h
+    else if (gust >= 55) score += 4;    // > 55 km/h
 
-    // Ein bisschen CAPE hilft, damit DCAPE nicht rein trocken-subsidente Lagen überbewertet
-    if (cape < 100 && dcape < 800) score = Math.min(score, 20);
+    // CAPE-Gewicht: Wind-Fälle in Europa oft low-CAPE / high-shear, aber völlig stabile Lagen bremsen
+    if (cape < 100 && dcape < 800) score = Math.min(score, 25);
 
     return Math.min(100, Math.max(0, Math.round(score)));
 }
