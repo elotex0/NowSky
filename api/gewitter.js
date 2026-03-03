@@ -131,7 +131,7 @@ export default async function handler(req, res) {
                 };
             });
 
-        // Tage gruppieren
+        // Tage gruppieren (maximale Gewitter- und Tornado-Werte pro Tag)
         const daysMap = new Map();
         hours.forEach(h => {
             const [datePart] = h.time.split('T');
@@ -154,21 +154,25 @@ export default async function handler(req, res) {
             }
         });
 
-        const gewitter = nextHours.map(h => ({
+        const stunden = nextHours.map(h => ({
             timestamp: h.timestamp,
-            probability: h.probability
+            gewitter: h.probability,
+            tornado: h.tornadoProbability
         }));
 
-        const tornado = nextHours.map(h => ({
-            timestamp: h.timestamp,
-            probability: h.tornadoProbability
-        }));
+        const tage = Array.from(daysMap.values())
+            .sort((a, b) => a.date.localeCompare(b.date))
+            .map(day => ({
+                date: day.date,
+                gewitter: day.maxProbability,
+                tornado: day.maxTornadoProbability
+            }));
 
         return res.status(200).json({
             timezone: timezone,
             region: region,
-            gewitter: gewitter,
-            tornado: tornado
+            stunden: stunden,
+            tage: tage
         });
 
     } catch (error) {
