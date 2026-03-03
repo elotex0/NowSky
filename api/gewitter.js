@@ -138,19 +138,24 @@ export default async function handler(req, res) {
                 };
             });
 
-        // Tage gruppieren (maximale Gewitter- und Tornado-Werte pro Tag)
+        // Zukünftige Tage gruppieren (maximale Gewitter- und Tornado-Werte pro Tag)
         const daysMap = new Map();
+        // Vergangene Tage gruppieren
+        const pastDaysMap = new Map();
+        
         hours.forEach(h => {
             const [datePart] = h.time.split('T');
+            const probability = calculateProbability(h);
+            const shear = calcShear(h);
+            const srh = calcSRH(h);
+            const dcape = calcDCAPE(h);
+            const wmaxshear = calcWMAXSHEAR(h.cape, shear);
+            const tornadoProb = calculateTornadoProbability(h, shear, srh);
+            const hailProb = calculateHailProbability(h, wmaxshear, dcape);
+            const windProb = calculateWindProbability(h, wmaxshear, dcape);
+            
             if (datePart >= currentDateStr) {
-                const probability = calculateProbability(h);
-                const shear = calcShear(h);
-                const srh = calcSRH(h);
-                const dcape = calcDCAPE(h);
-                const wmaxshear = calcWMAXSHEAR(h.cape, shear);
-                const tornadoProb = calculateTornadoProbability(h, shear, srh);
-                const hailProb = calculateHailProbability(h, wmaxshear, dcape);
-                const windProb = calculateWindProbability(h, wmaxshear, dcape);
+                // Zukünftige Tage
                 if (!daysMap.has(datePart)) {
                     daysMap.set(datePart, { 
                         date: datePart, 
@@ -161,6 +166,23 @@ export default async function handler(req, res) {
                     });
                 } else {
                     const dayData = daysMap.get(datePart);
+                    dayData.maxProbability = Math.max(dayData.maxProbability, probability);
+                    dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
+                    dayData.maxHailProbability = Math.max(dayData.maxHailProbability, hailProb);
+                    dayData.maxWindProbability = Math.max(dayData.maxWindProbability, windProb);
+                }
+            } else {
+                // Vergangene Tage
+                if (!pastDaysMap.has(datePart)) {
+                    pastDaysMap.set(datePart, { 
+                        date: datePart, 
+                        maxProbability: probability,
+                        maxTornadoProbability: tornadoProb,
+                        maxHailProbability: hailProb,
+                        maxWindProbability: windProb
+                    });
+                } else {
+                    const dayData = pastDaysMap.get(datePart);
                     dayData.maxProbability = Math.max(dayData.maxProbability, probability);
                     dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
                     dayData.maxHailProbability = Math.max(dayData.maxHailProbability, hailProb);
@@ -195,11 +217,26 @@ export default async function handler(req, res) {
                 wind_risk: categorizeRisk(day.maxWindProbability)
             }));
 
+        const vergangene_tage = Array.from(pastDaysMap.values())
+            .sort((a, b) => b.date.localeCompare(a.date)) // Absteigend sortiert (neueste zuerst)
+            .map(day => ({
+                date: day.date,
+                gewitter: day.maxProbability,
+                tornado: day.maxTornadoProbability,
+                hagel: day.maxHailProbability,
+                wind: day.maxWindProbability,
+                gewitter_risk: categorizeRisk(day.maxProbability),
+                tornado_risk: categorizeRisk(day.maxTornadoProbability),
+                hagel_risk: categorizeRisk(day.maxHailProbability),
+                wind_risk: categorizeRisk(day.maxWindProbability)
+            }));
+
         return res.status(200).json({
             timezone: timezone,
             region: region,
             stunden: stunden,
-            tage: tage
+            tage: tage,
+            vergangene_tage: vergangene_tage
         });
 
     } catch (error) {
