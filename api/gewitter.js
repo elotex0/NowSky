@@ -991,13 +991,42 @@ function calculateProbability(hour, region = 'europe') {
     // Regionsspezifische Filter für Fehlalarme
     const p = getProbabilityParams(region);
     if (temp2m < p.minTemp) return 0; // Zu kalt für Gewitter
-    if (temp2m < p.minTempWithCAPE && mlCape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
-    if (mlCape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
+
+    // HSLC / elevated convection Ausnahme:
+    // Studien:
+    // - Sherburn & Parker 2014 (HSLC): CAPE ≤ 500 J/kg + Shear ≥ 18 m/s → reale Tornados möglich
+    // - Zhang et al. 2023 (China): sig. Tornados bei muCAPE teils < 300 J/kg
+    // - SPC-Outlooks: verwenden MUCAPE explizit, um Gewitter in stark gedeckelten, aber
+    //   dynamischen Umgebungen (starker Shear, forcierte Hebung) zu begründen.
+    //
+    // Idee: Wenn muCAPE vorhanden und Shear hoch genug ist, sollen wir die frühen
+    // "kein CAPE → kein Gewitter"-Filter lockern, um elevated/HSLC-Lagen zuzulassen.
+    //
+    // Wir definieren ein einfaches HSLC/elevated-Kriterium:
+    //   - muCAPE ≥ 300 J/kg (nach Zhang 2023 & Sherburn 2014 "low but non-zero CAPE")
+    //   - Shear ≥ 18 m/s (Sherburn & Parker 2014 HSLC-Schwelle)
+    //   - Temperatur nicht extrem kalt (hier: ≥ 4–6°C je nach Region)
+    //
+    // Diese Fälle umgehen NUR die stark CAPE-basierten Früh-Returns; die eigentliche
+    // Wahrscheinlichkeit wird weiter unten über SCP/STP/WMAXSHEAR etc. bestimmt.
     
-    // Berechne Indizes
+    // Berechne Indizes (Shear/SRH für HSLC-Check und spätere Parameter)
     const shear = calcShear(hour);
     const srh1km = calcSRH(hour, '0-1km');
     const srh = calcSRH(hour, '0-3km');
+
+    const muCapeRaw = Math.max(0, hour.muCape ?? 0);
+    const tempThresholdHSLC = region === 'usa' ? 6 : 4;
+    const isHSLC_or_elevated = (
+        muCapeRaw >= 300 &&
+        shear >= 18 &&
+        temp2m >= tempThresholdHSLC
+    );
+
+    if (!isHSLC_or_elevated) {
+        if (temp2m < p.minTempWithCAPE && mlCape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
+        if (mlCape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
+    }
     const { kIndex, showalter, lapse, liftedIndex } = calcIndices(hour);
     const relHum2m = calcRelHum(temp2m, dew);
     const cloudSum = (hour.cloudLow ?? 0) + (hour.cloudMid ?? 0) + (hour.cloudHigh ?? 0);
@@ -1011,8 +1040,8 @@ function calculateProbability(hour, region = 'europe') {
     // Für SCP nach Thompson et al. (2004) sollen muCAPE/muCIN verwendet werden.
     // Open-Meteo liefert für das ECMWF IFS 0.25°-Modell CAPE/CIN, die wir hier als
     // Näherung für muCAPE/muCIN interpretieren (da sie die „instabilste“ Schicht repräsentieren).
-    // Fallback: falls ECMWF-Daten nicht verfügbar sind, nutze wie bisher CAPE/CIN aus best_match.
-    const muCape = Math.max(0, hour.muCape ?? cape);
+    // Fallback: falls ECMWF-Daten nicht verfügbar sind, nutze wie bisher CAPE/CIN aus best_match (mlCape/mlCin).
+    const muCape = Math.max(0, hour.muCape ?? mlCape);
     const muCin = Math.abs(hour.muCin ?? mlCin);
     const scp = calcSCP(muCape, shear, srh, muCin, region);
     const stp = calcSTP(mlCape, srh1km, shear, liftedIndex, mlCin, region, temp2m, dew);
