@@ -526,9 +526,10 @@ function calcDCAPE(hour) {
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
     const cape = hour.cape ?? 0;
+    const { mucape } = calcMUCAPE(hour);
 
     // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
-    if (cape < 100) return 0;
+    if (cape < 100 && mucape < 200) return 0;
 
     const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
     const tempDiff = wetBulb700 - temp500;
