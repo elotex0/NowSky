@@ -730,8 +730,9 @@ function calculateProbability(hour, region = 'europe') {
     // Regionsspezifische Filter für Fehlalarme
     const p = getProbabilityParams(region);
     if (temp2m < p.minTemp) return 0; // Zu kalt für Gewitter
-    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
-    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
+    // sbcape für konservative Eingangsfilter (Brooks et al. 2003: surface precip braucht surface instability)
+    if (temp2m < p.minTempWithCAPE && sbcape < (p.minCAPE * 1.5)) return 0;
+    if (sbcape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0;
     
     // Berechne Indizes
     const shear = calcShear(hour);
