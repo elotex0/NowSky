@@ -539,8 +539,7 @@ function calcDCAPE(hour, region = 'europe') {
     const T_env_kelvin = temp700 + 273.15;
     const dz = 2500;
     const dcape = Math.max(0, (tempDiff / T_env_kelvin) * 9.81 * dz * moistFactor);
-    const cappedDcape = Math.min(dcape, Math.max(sbcape * 2, 800));
-    return Math.round(cappedDcape);
+    return Math.round(dcape);
 }
 // WMAXSHEAR – bester globaler Prädiktor für schwere Gewitter
 // Quelle: Taszarek et al. (2020, J. Climate Part II), Brooks et al. (2003)
