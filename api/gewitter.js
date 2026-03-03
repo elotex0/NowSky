@@ -174,7 +174,11 @@ export default async function handler(req, res) {
             gewitter: h.probability,
             tornado: h.tornadoProbability,
             hagel: h.hailProbability,
-            wind: h.windProbability
+            wind: h.windProbability,
+            gewitter_risk: categorizeRisk(h.probability),
+            tornado_risk: categorizeRisk(h.tornadoProbability),
+            hagel_risk: categorizeRisk(h.hailProbability),
+            wind_risk: categorizeRisk(h.windProbability)
         }));
 
         const tage = Array.from(daysMap.values())
@@ -184,7 +188,11 @@ export default async function handler(req, res) {
                 gewitter: day.maxProbability,
                 tornado: day.maxTornadoProbability,
                 hagel: day.maxHailProbability,
-                wind: day.maxWindProbability
+                wind: day.maxWindProbability,
+                gewitter_risk: categorizeRisk(day.maxProbability),
+                tornado_risk: categorizeRisk(day.maxTornadoProbability),
+                hagel_risk: categorizeRisk(day.maxHailProbability),
+                wind_risk: categorizeRisk(day.maxWindProbability)
             }));
 
         return res.status(200).json({
@@ -386,6 +394,27 @@ function calcDCAPE(hour) {
 function calcWMAXSHEAR(cape, shear) {
     if (cape <= 0 || shear <= 0) return 0;
     return Math.round(Math.sqrt(2 * cape) * shear);
+}
+
+// ESTOFEX-ähnliche Risikoklassifizierung (Europa):
+// 0 = none (<15%), 1 = Tstorm (15–39%), 2 = Level 1–2 (40–69%), 3 = Level 3 (≥70%)
+function categorizeRisk(prob) {
+    const p = Math.max(0, Math.min(100, Math.round(prob ?? 0)));
+    let level = 0;
+    let label = 'none';
+
+    if (p >= 70) {
+        level = 3;
+        label = 'high';
+    } else if (p >= 40) {
+        level = 2;
+        label = 'moderate';
+    } else if (p >= 15) {
+        level = 1;
+        label = 'tstorm';
+    }
+
+    return { level, label };
 }
 
 // Hagelwahrscheinlichkeit (Europa) – orientiert an ESTOFEX/ESSL (CAPE niedrig, Shear/WMAXSHEAR stark gewichtet)
