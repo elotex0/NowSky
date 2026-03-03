@@ -1114,6 +1114,7 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
     const sbcape = Math.max(0, hour.sbcape ?? 0);
+    const mucape = Math.max(0, hour.mucape ?? 0);
     const cape = Math.max(hour.sbcape ?? 0, hour.mucape ?? 0);  // bestes CAPE
     const cin = Math.abs(hour.cin ?? 0);
     const { liftedIndex } = calcIndices(hour);
