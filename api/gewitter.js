@@ -1018,25 +1018,49 @@ function calculateProbability(hour, region = 'europe') {
     const muCapeRaw = Math.max(0, hour.muCape ?? 0);
 
     // Regionale HSLC / elevated-Schwellen
-    // USA: orientiert an Sherburn & Parker 2014 (HSLC) → CAPE ≤ 500, Shear ≥ 18 m/s
-    // Europa: ESTOFEX-/Taszarek-Umgebungen zeigen signifikante Konvektion schon bei
-    //         muCAPE ~150–300 J/kg und etwas niedrigeren Shear-Schwellen (~16 m/s)
-    //         → Schwellen leicht abgesenkt gegenüber USA.
-    let muCapeHSLC, shearHSLC, tempThresholdHSLC;
-    if (region === 'usa' || region === 'south_america' || region === 'australia' || region === 'south_africa') {
-        muCapeHSLC = 300;
-        shearHSLC = 18;
-        tempThresholdHSLC = 6;
-    } else if (region === 'europe' || region === 'russia_central_asia' || region === 'new_zealand' || region === 'east_asia') {
-        muCapeHSLC = 200;
-        shearHSLC = 16;
-        tempThresholdHSLC = 4;
-    } else {
-        // Tropische / subtropische Regionen: muCAPE hoch, aber Shear oft gering → konservativ
-        muCapeHSLC = 300;
-        shearHSLC = 18;
-        tempThresholdHSLC = 8;
-    }
+    //
+    // Leitstudien:
+    // - USA HSLC: Sherburn & Parker 2014 → CAPE ≤ 500 J/kg, Shear ≥ 18 m/s
+    // - Europa/ESTOFEX/Taszarek 2019/2020: signifikante Konvektion teils schon bei
+    //   muCAPE ~150–300 J/kg + DLS ~15–20 m/s
+    // - Zhang 2023 (China/Ostasien): sig. Tornados bei muCAPE < 300 J/kg möglich
+    //
+    // Wir legen pro Region konservative, aber differenzierte Schwellen für "HSLC/elevated"
+    // fest, die NUR die harten Früh-Returns umgehen, nicht aber automatisch hohe
+    // Wahrscheinlichkeiten erzeugen.
+    const hslcByRegion = {
+        // Nordamerika / Plains-artige Regionen
+        usa:               { mu: 300, shear: 18, temp: 6 },
+        canada:            { mu: 250, shear: 16, temp: 4 }, // kühler, etwas weniger CAPE (Bunkers 2014)
+
+        // Südhalbkugel-Plains-Analoga
+        south_america:     { mu: 300, shear: 18, temp: 6 }, // Argentinien Pampas, Taszarek 2020
+        australia:         { mu: 300, shear: 18, temp: 6 }, // Allen et al. 2011
+        south_africa:      { mu: 300, shear: 18, temp: 6 },
+
+        // Europa / gemässigte Kontinente (ESTOFEX/Taszarek)
+        europe:            { mu: 200, shear: 16, temp: 4 },
+        russia_central_asia:{ mu: 200, shear: 16, temp: 4 },
+        new_zealand:       { mu: 180, shear: 15, temp: 4 }, // maritime HSLC analog UK/Irland
+        east_asia:         { mu: 200, shear: 16, temp: 4 }, // Zhang 2023: muCAPE < 300 teils ausreichend
+
+        // Mittelmeer / Nahost / Nordafrika: wärmer, aber synoptisch ähnlich Europa
+        middle_east:       { mu: 220, shear: 16, temp: 6 },
+        north_africa:      { mu: 220, shear: 16, temp: 6 },
+
+        // Tropen / Subtropen: häufig hohe muCAPE, Shear limitierend → strenger Shear-Fokus
+        central_america:   { mu: 300, shear: 18, temp: 8 },
+        south_asia:        { mu: 300, shear: 18, temp: 8 },
+        southeast_asia:    { mu: 350, shear: 18, temp: 10 },
+        west_africa:       { mu: 300, shear: 18, temp: 8 },
+        central_africa:    { mu: 300, shear: 18, temp: 8 },
+        east_africa:       { mu: 280, shear: 18, temp: 8 },
+    };
+
+    const hslcParams = hslcByRegion[region] || { mu: 300, shear: 18, temp: 8 };
+    const muCapeHSLC = hslcParams.mu;
+    const shearHSLC = hslcParams.shear;
+    const tempThresholdHSLC = hslcParams.temp;
 
     const isHSLC_or_elevated = (
         muCapeRaw >= muCapeHSLC &&
