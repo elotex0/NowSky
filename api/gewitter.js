@@ -34,7 +34,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation&forecast_days=16&past_days=31&models=best_match&timezone=auto`;
+                    `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
         const ensembleUrl = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}` +
                     `&hourly=temperature_2m,dew_point_2m,wind_gusts_10m,wind_speed_10m,` +
@@ -44,7 +44,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation&forecast_days=16&past_days=31&models=best_match&timezone=auto`;
+                    `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
         const [response, ensembleResponse] = await Promise.all([
             fetch(url),
@@ -174,44 +174,43 @@ export default async function handler(req, res) {
             });
 
         // Tage gruppieren
-        // Tage gruppieren (alle Tage: past + heute + forecast)
-    
-    
-    // Tage gruppieren (past + heute + forecast)
-    const daysMap = new Map();
-    
-    hours.forEach(h => {
-        const [datePart] = h.time.split('T');
-    
-        const probability = calculateProbability(h, region);
-        const shear = calcShear(h);
-        const srh = calcSRH(h);
-        const tornadoProb = calculateTornadoProbability(h, shear, srh, region);
-    
-        if (!daysMap.has(datePart)) {
-            daysMap.set(datePart, {
-                date: datePart,
-                probability: probability,
-                tornadoProbability: tornadoProb
-            });
-        } else {
-            const dayData = daysMap.get(datePart);
-            dayData.probability = Math.max(dayData.probability, probability);
-            dayData.tornadoProbability = Math.max(dayData.tornadoProbability, tornadoProb);
-        }
-    });
-    
-    // Alle Tage sortiert zurückgeben
-    const days = Array.from(daysMap.values())
-        .sort((a, b) => a.date.localeCompare(b.date));
-    
-    return res.status(200).json({
-        timezone,
-        region,
-        hours: nextHours,   // falls du die noch brauchst
-        days,               // ← hier KEIN nextDays mehr
-        hasEnsemble
-    });
+        const daysMap = new Map();
+        hours.forEach(h => {
+            const [datePart] = h.time.split('T');
+            if (datePart >= currentDateStr) {
+                const probability = calculateProbability(h, region);
+                const shear = calcShear(h);
+                const srh = calcSRH(h);
+                const tornadoProb = calculateTornadoProbability(h, shear, srh, region);
+                if (!daysMap.has(datePart)) {
+                    daysMap.set(datePart, { 
+                        date: datePart, 
+                        maxProbability: probability,
+                        maxTornadoProbability: tornadoProb
+                    });
+                } else {
+                    const dayData = daysMap.get(datePart);
+                    dayData.maxProbability = Math.max(dayData.maxProbability, probability);
+                    dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
+                }
+            }
+        });
+
+        const nextDays = Array.from(daysMap.values())
+            .sort((a, b) => a.date.localeCompare(b.date))
+            .map(day => ({ 
+                date: day.date, 
+                probability: day.maxProbability,
+                tornadoProbability: day.maxTornadoProbability
+            }));
+
+        return res.status(200).json({
+            timezone: timezone,
+            region: region,
+            hours: nextHours,
+            days: nextDays,
+            hasEnsemble: hasEnsemble
+        });
 
     } catch (error) {
         console.error('Fehler:', error);
@@ -1095,10 +1094,6 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     if (temp2m < t.minTemp) return 0;
     if (cape < t.minCAPE) return 0;
     if (cin > 200) return 0;
-    
-    // Tornado ohne Gewitter unmöglich
-    const thunderstormProb = calculateProbability(hour, region);
-    if (thunderstormProb === 0) return 0;
     
     // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
     const srh1km = calcSRH(hour, '0-1km');
