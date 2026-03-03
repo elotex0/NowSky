@@ -47,7 +47,7 @@ export default async function handler(req, res) {
                     `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
         const mucapeUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
-                    `&hourly=mucape&forecast_days=16&models=ecmwf_ifs025&timezone=auto`;
+                    `&hourly=cape&forecast_days=16&models=ecmwf_ifs025&timezone=auto`;
 
         const [response, ensembleResponse, mucapeResponse] = await Promise.all([
             fetch(url),
