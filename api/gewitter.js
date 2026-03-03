@@ -1016,10 +1016,31 @@ function calculateProbability(hour, region = 'europe') {
     const srh = calcSRH(hour, '0-3km');
 
     const muCapeRaw = Math.max(0, hour.muCape ?? 0);
-    const tempThresholdHSLC = region === 'usa' ? 6 : 4;
+
+    // Regionale HSLC / elevated-Schwellen
+    // USA: orientiert an Sherburn & Parker 2014 (HSLC) → CAPE ≤ 500, Shear ≥ 18 m/s
+    // Europa: ESTOFEX-/Taszarek-Umgebungen zeigen signifikante Konvektion schon bei
+    //         muCAPE ~150–300 J/kg und etwas niedrigeren Shear-Schwellen (~16 m/s)
+    //         → Schwellen leicht abgesenkt gegenüber USA.
+    let muCapeHSLC, shearHSLC, tempThresholdHSLC;
+    if (region === 'usa' || region === 'south_america' || region === 'australia' || region === 'south_africa') {
+        muCapeHSLC = 300;
+        shearHSLC = 18;
+        tempThresholdHSLC = 6;
+    } else if (region === 'europe' || region === 'russia_central_asia' || region === 'new_zealand' || region === 'east_asia') {
+        muCapeHSLC = 200;
+        shearHSLC = 16;
+        tempThresholdHSLC = 4;
+    } else {
+        // Tropische / subtropische Regionen: muCAPE hoch, aber Shear oft gering → konservativ
+        muCapeHSLC = 300;
+        shearHSLC = 18;
+        tempThresholdHSLC = 8;
+    }
+
     const isHSLC_or_elevated = (
-        muCapeRaw >= 300 &&
-        shear >= 18 &&
+        muCapeRaw >= muCapeHSLC &&
+        shear >= shearHSLC &&
         temp2m >= tempThresholdHSLC
     );
 
