@@ -46,17 +46,10 @@ export default async function handler(req, res) {
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
                     `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
-        const mucapeUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
-                    `&hourly=cape&forecast_days=16&models=ecmwf_ifs025&timezone=auto`;
-
-        const [response, ensembleResponse, mucapeResponse] = await Promise.all([
+        const [response, ensembleResponse] = await Promise.all([
             fetch(url),
             fetch(ensembleUrl).catch(err => {
                 console.warn('Ensemble-API-Fehler:', err);
-                return { ok: false, json: () => Promise.resolve({ error: true }) };
-            }),
-            fetch(mucapeUrl).catch(err => {
-                console.warn('MUCAPE-API-Fehler:', err);
                 return { ok: false, json: () => Promise.resolve({ error: true }) };
             })
         ]);
@@ -65,18 +58,6 @@ export default async function handler(req, res) {
         let ensembleData = null;
         if (ensembleResponse.ok) {
             ensembleData = await ensembleResponse.json();
-        }
-
-        let mucapeData = null;
-        if (mucapeResponse.ok) {
-            const mucapeJson = await mucapeResponse.json();
-            if (!mucapeJson.error && mucapeJson?.hourly?.cape?.length) {
-                // Index-Map aufbauen: time → mucape-Wert für schnellen Lookup
-                mucapeData = new Map();
-                mucapeJson.hourly.time.forEach((t, i) => {
-                    mucapeData.set(t, mucapeJson.hourly.cape[i]);
-                });
-            }
         }
 
         if (data.error) {
@@ -88,7 +69,7 @@ export default async function handler(req, res) {
         }
 
         const timezone = data.timezone || 'UTC';
-        const hasEnsemble = !!(ensembleData && !ensembleData.error && ensembleData?.hourly?.time?.length);
+        const hasEnsemble = ensembleData && !ensembleData.error && ensembleData?.hourly?.time?.length;
 
         // Region basierend auf Koordinaten bestimmen
         const region = getRegion(latitude, longitude);
@@ -121,13 +102,12 @@ export default async function handler(req, res) {
                 dew850: data.hourly.dew_point_850hPa?.[i] ?? 0,
                 dew700: data.hourly.dew_point_700hPa?.[i] ?? 0,
                 rh500: data.hourly.relative_humidity_500hPa?.[i] ?? 0,
-                sbcape: data.hourly.cape?.[i] ?? 0,
+                cape: data.hourly.cape?.[i] ?? 0,
                 cin: data.hourly.convective_inhibition?.[i] ?? 0,
                 liftedIndex: data.hourly.lifted_index?.[i] ?? 0,
                 pblHeight: data.hourly.boundary_layer_height?.[i] ?? 0,
                 directRadiation: data.hourly.direct_radiation?.[i] ?? 0,
                 precipAcc: data.hourly.precipitation?.[i] ?? 0,
-                mucape: mucapeData?.get(t) ?? data.hourly.cape?.[i] ?? 0,
             };
 
             // Ensemble-Daten kompakt hinzufügen
@@ -185,12 +165,11 @@ export default async function handler(req, res) {
                     probability: calculateProbability(hour, region),
                     tornadoProbability: calculateTornadoProbability(hour, shear, srh, region),
                     temperature: hour.temperature,
-                    sbcape: hour.sbcape,
-                    mucape: hour.mucape,
+                    cape: hour.cape,
                     shear: shear,
                     srh: srh,
-                    dcape: calcDCAPE(hour, region),
-                    wmaxshear: calcWMAXSHEAR(Math.max(hour.sbcape, hour.mucape ?? 0), shear),
+                    dcape: calcDCAPE(hour),
+                    wmaxshear: calcWMAXSHEAR(hour.cape, shear),
                 };
             });
 
@@ -241,110 +220,83 @@ export default async function handler(req, res) {
 
 // Hilfsfunktionen
 function getRegion(lat, lon) {
-    // Lon normalisieren
-    while (lon > 180)  lon -= 360;
-    while (lon < -180) lon += 360;
-
-    // ─────────────────────────────────────
-    // AMERIKA
-    // ─────────────────────────────────────
-
-    // Kanada (inkl. Toronto)
-    if (lat >= 41 && lat <= 83 && lon >= -141 && lon <= -52)
-        return 'canada';
-
-    // USA (ohne Kanada & Mexiko)
-    if (lat >= 30 && lat < 41 && lon >= -125 && lon <= -65)
-        return 'usa';
-
-    // Mexiko + Mittelamerika (inkl. Panama)
-    if (lat >= 5 && lat < 30 && lon >= -120 && lon <= -60)
-        return 'central_america';
-
-    // Südamerika
-    if (lat >= -60 && lat < 5 && lon >= -85 && lon <= -30)
-        return 'south_america';
-
-
-    // ─────────────────────────────────────
-    // AFRIKA (VOR EUROPA & MIDDLE EAST!)
-    // ─────────────────────────────────────
-
-    // Nordafrika
-    if (lat >= 15 && lat <= 37 && lon >= -20 && lon <= 42)
-        return 'north_africa';
-
-    // Westafrika
-    if (lat >= 0 && lat < 15 && lon >= -20 && lon <= 10)
-        return 'west_africa';
-
-    // Zentralafrika
-    if (lat >= -5 && lat < 10 && lon > 10 && lon <= 35)
-        return 'central_africa';
-
-    // Ostafrika
-    if (lat >= -12 && lat < 15 && lon > 35 && lon <= 52)
-        return 'east_africa';
-
-    // Südliches Afrika
-    if (lat >= -35 && lat < -12 && lon >= 10 && lon <= 55)
-        return 'south_africa';
-
-
-    // ─────────────────────────────────────
-    // NAHER OSTEN
-    // ─────────────────────────────────────
-
-    if (lat >= 12 && lat <= 42 && lon > 42 && lon <= 65)
-        return 'middle_east';
-
-
-    // ─────────────────────────────────────
-    // RUSSLAND / ZENTRALASIEN
-    // ─────────────────────────────────────
-
-    // weiter nach Westen gezogen → Moskau passt jetzt
-    if (lat >= 40 && lat <= 75 && lon >= 30 && lon <= 180)
-        return 'russia_central_asia';
-
-
-    // ─────────────────────────────────────
-    // EUROPA (kommt NACH Afrika & Russland)
-    // ─────────────────────────────────────
-
-    if (lat >= 35 && lat <= 72 && lon >= -25 && lon < 30)
+    // Europa: ca. 35°N - 70°N, -10°W - 40°E
+    if (lat >= 35 && lat <= 70 && lon >= -10 && lon <= 40) {
         return 'europe';
-
-
-    // ─────────────────────────────────────
-    // ASIEN
-    // ─────────────────────────────────────
-
-    if (lat >= 5 && lat <= 35 && lon > 60 && lon <= 100)
+    }
+    // USA: ca. 25°N - 50°N, -125°W - -65°W
+    if (lat >= 25 && lat <= 50 && lon >= -125 && lon <= -65) {
+        return 'usa';
+    }
+    // Kanada: ca. 42°N - 70°N, -140°W - -50°W
+    if (lat >= 42 && lat <= 70 && lon >= -140 && lon <= -50) {
+        return 'canada';
+    }
+    // Mittelamerika/Karibik: ca. 10°N - 25°N, -120°W - -60°W
+    if (lat >= 10 && lat <= 25 && lon >= -120 && lon <= -60) {
+        return 'central_america';
+    }
+    // Südamerika - Brasilien/Argentinien: ca. 5°N - 35°S, -80°W - -30°W
+    if (lat >= -35 && lat <= 5 && lon >= -80 && lon <= -30) {
+        return 'south_america';
+    }
+    // Südamerika - Anden: ca. 5°N - 20°S, -80°W - -65°W
+    if (lat >= -20 && lat <= 5 && lon >= -80 && lon <= -65) {
+        return 'south_america';
+    }
+    // Afrika - Südafrika: ca. 22°S - 35°S, 15°E - 35°E
+    if (lat >= -35 && lat <= -22 && lon >= 15 && lon <= 35) {
+        return 'south_africa';
+    }
+    // Afrika - Ostafrika (Kenia, Tansania, Äthiopien, Somalia, Uganda): ca. 5°S - 12°N, 30°E - 52°E
+    if (lat >= -5 && lat <= 12 && lon >= 30 && lon <= 52) {
+        return 'east_africa';
+    }
+    // Afrika - Zentralafrika (Kongo, Kamerun, etc.): ca. 5°S - 10°N, 10°W - 30°E
+    if (lat >= -5 && lat <= 10 && lon >= -10 && lon <= 30) {
+        return 'central_africa';
+    }
+    // Afrika - Westafrika (Nigeria, Ghana, Senegal, etc.): ca. 5°N - 15°N, -20°W - 15°E
+    if (lat >= 5 && lat <= 15 && lon >= -20 && lon <= 15) {
+        return 'west_africa';
+    }
+    // Afrika - Nordafrika (Sahara, Maghreb): ca. 15°N - 35°N, -20°W - 40°E
+    if (lat >= 15 && lat <= 35 && lon >= -20 && lon <= 40) {
+        return 'north_africa';
+    }
+    // Madagaskar und umliegende Inseln: ca. 12°S - 25°S, 43°E - 51°E
+    if (lat >= -25 && lat <= -12 && lon >= 43 && lon <= 51) {
+        return 'south_africa'; // Ähnliche Bedingungen wie Südafrika
+    }
+    // Asien - Südasien (Indien, Pakistan, Bangladesch): ca. 5°N - 35°N, 60°E - 100°E
+    if (lat >= 5 && lat <= 35 && lon >= 60 && lon <= 100) {
         return 'south_asia';
-
-    if (lat >= -10 && lat <= 25 && lon > 100 && lon <= 145)
-        return 'southeast_asia';
-
-    if (lat >= 20 && lat <= 55 && lon > 100 && lon <= 155)
+    }
+    // Asien - Ostasien (China, Japan, Korea): ca. 20°N - 50°N, 100°E - 145°E
+    if (lat >= 20 && lat <= 50 && lon >= 100 && lon <= 145) {
         return 'east_asia';
-
-
-    // ─────────────────────────────────────
-    // AUSTRALIEN & OZEANIEN
-    // ─────────────────────────────────────
-
-    if (lat >= -45 && lat <= -10 && lon >= 110 && lon <= 155)
+    }
+    // Asien - Südostasien: ca. 5°S - 25°N, 90°E - 145°E
+    if (lat >= -5 && lat <= 25 && lon >= 90 && lon <= 145) {
+        return 'southeast_asia';
+    }
+    // Australien: ca. 10°S - 45°S, 110°E - 155°E
+    if (lat >= -45 && lat <= -10 && lon >= 110 && lon <= 155) {
         return 'australia';
-
-    if (lat >= -48 && lat <= -33 && (lon >= 165 || lon <= -165))
+    }
+    // Neuseeland: ca. 34°S - 47°S, 165°E - 180°E und -180°W - -175°W
+    if (lat >= -47 && lat <= -34 && ((lon >= 165 && lon <= 180) || (lon >= -180 && lon <= -175))) {
         return 'new_zealand';
-
-
-    // ─────────────────────────────────────
-    // FALLBACK
-    // ─────────────────────────────────────
-
+    }
+    // Russland/Zentralasien: ca. 40°N - 70°N, 40°E - 180°E
+    if (lat >= 40 && lat <= 70 && lon >= 40 && lon <= 180) {
+        return 'russia_central_asia';
+    }
+    // Naher Osten: ca. 12°N - 40°N, 25°E - 60°E
+    if (lat >= 12 && lat <= 40 && lon >= 25 && lon <= 60) {
+        return 'middle_east';
+    }
+    // Standard: Europa (für unbekannte Regionen)
     return 'europe';
 }
 
@@ -495,41 +447,21 @@ function calcSCP(cape, shear, srh, cin, region = 'europe') {
 // DCAPE (Downdraft CAPE) nach Gilmore & Wicker (1998)
 // Approximation über 700-500 hPa Schicht
 // Hoher DCAPE → starke Downbursts, Hagel, Sturmböen
-function calcDCAPE(hour, region = 'europe') {
+function calcDCAPE(hour) {
     const temp700 = hour.temp700 ?? 0;
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
-    const sbcape = hour.sbcape ?? 0;
+    const cape = hour.cape ?? 0;
 
     // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
-    // DCAPE-Mindestschwelle regionsspezifisch (sbcape muss ausreichend sein)
-    const dcapeMinCAPE = {
-        'usa': 300,
-        'canada': 250,
-        'south_america': 300,
-        'south_africa': 300,
-        'australia': 300,
-        'europe': 200,          // Europa: niedrigere CAPE-Klimatologie
-        'russia_central_asia': 200,
-        'east_asia': 200,
-        'new_zealand': 150,
-        'middle_east': 200,
-        'north_africa': 200,
-        'east_africa': 250,
-        'central_africa': 250,
-        'west_africa': 250,
-        'south_asia': 300,
-        'southeast_asia': 300,
-        'central_america': 250,
-    }[region] ?? 200;
-
-    if (sbcape < dcapeMinCAPE) return 0;
+    if (cape < 100) return 0;
 
     const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
     const tempDiff = wetBulb700 - temp500;
     if (tempDiff <= 0) return 0;
 
     // Physikalisch: DCAPE nur relevant wenn Feuchteparzel wärmer als Umgebung
+    // Trockenheit 700 hPa dämpft DCAPE stark (kein Verdunstungsantrieb)
     const dewDepression700 = temp700 - dew700;
     const moistFactor = dewDepression700 > 20 ? 0.2        // sehr trocken = kaum Evaporation
                       : dewDepression700 > 10 ? 0.5
@@ -541,6 +473,7 @@ function calcDCAPE(hour, region = 'europe') {
     const dcape = Math.max(0, (tempDiff / T_env_kelvin) * 9.81 * dz * moistFactor);
     return Math.round(dcape);
 }
+
 // WMAXSHEAR – bester globaler Prädiktor für schwere Gewitter
 // Quelle: Taszarek et al. (2020, J. Climate Part II), Brooks et al. (2003)
 // WMAXSHEAR = sqrt(2 * CAPE) * BS06
@@ -697,7 +630,7 @@ function getProbabilityParams(region) {
             minTempReduction2: 28, tempReductionFactor2: 0.8
         },
         'north_africa': {
-            minTemp: 14, minTempWithCAPE: 17, minCAPE: 300, minCAPEWithPrecip: 150,
+            minTemp: 15, minTempWithCAPE: 20, minCAPE: 300, minCAPEWithPrecip: 150,
             capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
             capeScores: [28, 22, 18, 14, 10, 6, 3],
             minTempReduction: 18, tempReductionFactor: 0.5,
@@ -767,9 +700,7 @@ function getProbabilityParams(region) {
 function calculateProbability(hour, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
-    const sbcape = Math.max(0, hour.sbcape ?? 0);
-    const mucape = Math.max(0, hour.mucape ?? 0);
-    const cape = Math.max(sbcape, mucape); // MUCAPE-dominiert für Scoring (Taszarek 2020)
+    const cape = Math.max(0, hour.cape ?? 0);
     const cin = Math.abs(hour.cin ?? 0);
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
@@ -777,9 +708,8 @@ function calculateProbability(hour, region = 'europe') {
     // Regionsspezifische Filter für Fehlalarme
     const p = getProbabilityParams(region);
     if (temp2m < p.minTemp) return 0; // Zu kalt für Gewitter
-    // sbcape für konservative Eingangsfilter (Brooks et al. 2003: surface precip braucht surface instability)
-    if (temp2m < p.minTempWithCAPE && sbcape < (p.minCAPE * 1.5)) return 0;
-    if (sbcape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0;
+    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
+    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
     
     // Berechne Indizes
     const shear = calcShear(hour);
@@ -791,8 +721,8 @@ function calculateProbability(hour, region = 'europe') {
     
     // Kombinierte Indizes (bewährte meteorologische Parameter)
     const ehi = (cape * srh) / 160000;
-    const scp = calcSCP(mucape || cape, shear, srh, cin, region);
-    const stp = calcSTP(sbcape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
+    const scp = calcSCP(cape, shear, srh, cin, region);
+    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
     const wmaxshear = calcWMAXSHEAR(cape, shear);
     
     // Basis-Score basierend auf kombinierten Indizes (regionsspezifisch)
@@ -1077,7 +1007,7 @@ function calculateProbability(hour, region = 'europe') {
 
     // DCAPE: Downdraft-Potential (Gilmore & Wicker 1998)
     // Hoher DCAPE verstärkt Böen, Hagel, MCS-Aktivität
-    const dcape = calcDCAPE(hour, region);
+    const dcape = calcDCAPE(hour);
     if (isHighThreshold) {
         if (dcape >= 1000 && cape >= 500) score += 6;
         else if (dcape >= 700 && cape >= 400) score += 4;
@@ -1116,15 +1046,16 @@ function calculateProbability(hour, region = 'europe') {
     
     // Mindestanforderungen für Gewitter (regionsspezifisch)
     if (region === 'usa') {
-        if (score > 0 && sbcape < 500) {
+        if (score > 0 && cape < 500) {
             score = Math.max(0, score - 10);
         }
-        if (score > 0 && cin > 150 && sbcape < 1500) score = Math.max(0, score - 15);
+        if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15);
     } else {
-        if (score > 0 && sbcape < 200) {
+        // Europa: Nur bei sehr niedrigem CAPE (< 200) leicht reduzieren
+        if (score > 0 && cape < 200) {
             score = Math.max(0, score - 5);
         }
-        if (score > 0 && cin > 150 && sbcape < 1200) score = Math.max(0, score - 15);
+        if (score > 0 && cin > 150 && cape < 1200) score = Math.max(0, score - 15);
     }
     
     return Math.min(100, Math.max(0, Math.round(score)));
@@ -1134,9 +1065,7 @@ function calculateProbability(hour, region = 'europe') {
 function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
-    const sbcape = Math.max(0, hour.sbcape ?? 0);
-    const mucape = Math.max(0, hour.mucape ?? 0);
-    const cape = Math.max(hour.sbcape ?? 0, hour.mucape ?? 0);  // bestes CAPE
+    const cape = Math.max(0, hour.cape ?? 0);
     const cin = Math.abs(hour.cin ?? 0);
     const { liftedIndex } = calcIndices(hour);
     
@@ -1163,21 +1092,11 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     
     const t = tornadoThresholds[region] || tornadoThresholds['europe'];
     if (temp2m < t.minTemp) return 0;
-    if (sbcape < t.minCAPE && mucape < t.minCAPE) return 0;
-    // Zusätzlich: wenn sbCAPE = 0, kein Tornado möglich
-    if (sbcape < 50) return 0;
+    if (cape < t.minCAPE) return 0;
     if (cin > 200) return 0;
-
-    // Tornado ohne Gewitter ist extrem unwahrscheinlich
-    const thunderstormProb = calculateProbability(hour, region);
-    if (thunderstormProb === 0) return 0;
     
     // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
     const srh1km = calcSRH(hour, '0-1km');
-    const srh3km = calcSRH(hour, '0-3km');
-    // 850 hPa ≈ 1500m statt 1000m → srh1km systematisch unterschätzt
-    // Gewichteter Mix korrigiert die Drucklevel-Approximation (gilt global)
-    const srhForSTP = srh1km * 0.5 + srh3km * 0.5;
     
     // STP berechnen (regionsspezifisch)
     // Veer-with-Height Check: Winds müssen mit der Höhe drehen (backing am Boden → veering oben)
@@ -1195,14 +1114,14 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const veer700_850 = veeringAngle(dir850, dir700);
     const totalVeering = veer850_1000 + veer700_850;
 
-    const stp = calcSTP(sbcape, srhForSTP, shear, liftedIndex, cin, region, temp2m, dew);
+    let veeringFactor = 1.0;
+    if (totalVeering < -20) veeringFactor = 0.3;
+    else if (totalVeering < 0) veeringFactor = 0.6;
+    else if (totalVeering >= 30) veeringFactor = 1.2;
+    else if (totalVeering >= 15) veeringFactor = 1.1;
 
-    let veeringBonus = 0;
-    if (totalVeering < -20) veeringBonus = -20;
-    else if (totalVeering < 0) veeringBonus = -10;
-    else if (totalVeering >= 30) veeringBonus = 5;
-    else if (totalVeering >= 15) veeringBonus = 3;
-
+    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
+    
     // Basis-Score für Tornado-Wahrscheinlichkeit
     let score = 0;
     
@@ -1220,16 +1139,15 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         else if (stp >= 0.3) score = 12;
         else if (stp > 0) score = 5;
     } else {
-        // Kalibriert nach Púčik et al. 2015 (NHESS): europäischer STP-Median ~0.3-0.5
-        if (stp >= 1.5) score = 85;
-        else if (stp >= 1.0) score = 70;
-        else if (stp >= 0.7) score = 55;
-        else if (stp >= 0.5) score = 40;
-        else if (stp >= 0.3) score = 25;
-        else if (stp >= 0.15) score = 12;
+        if (stp >= 2.0) score = 85;
+        else if (stp >= 1.5) score = 70;
+        else if (stp >= 1.0) score = 55;
+        else if (stp >= 0.7) score = 40;
+        else if (stp >= 0.5) score = 25;
+        else if (stp >= 0.3) score = 12;
         else if (stp > 0) score = 5;
     }
-
+    
     // Zusätzliche Faktoren (regionsspezifisch)
     if (isHighThreshold) {
         // Hohe Thresholds: usa, south_africa, south_america, australia
@@ -1247,14 +1165,11 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         else if (liftedIndex <= -5 && cape >= 1000) score += 5;
         else if (liftedIndex <= -3 && cape >= 800) score += 3;
         
-        // EHI nur als Fallback wenn STP = 0 (HSLC-Regime)
-        if (stp === 0) {
-            const ehi = (cape * srh) / 160000;
-            if (ehi >= 3.5) score += 10;
-            else if (ehi >= 2.5) score += 8;
-            else if (ehi >= 1.5) score += 5;
-            else if (ehi >= 1.0) score += 3;
-        }
+        const ehi = (cape * srh) / 160000;
+        if (ehi >= 3.5) score += 10;
+        else if (ehi >= 2.5) score += 8;
+        else if (ehi >= 1.5) score += 5;
+        else if (ehi >= 1.0) score += 3;
         
         if (cin > 100) score -= 10;
         if (shear < 12) score -= 15;
@@ -1272,14 +1187,10 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         if (liftedIndex <= -5 && cape >= 800) score += 5;
         else if (liftedIndex <= -3 && cape >= 600) score += 3;
         
-        // EHI nur als Fallback wenn STP = 0 (HSLC-Regime)
-        if (stp === 0) {
-            const ehi = (cape * srh) / 160000;
-            if (ehi >= 3.5) score += 10;
-            else if (ehi >= 2.5) score += 8;
-            else if (ehi >= 1.5) score += 5;
-            else if (ehi >= 1.0) score += 3;
-        }
+        const ehi = (cape * srh) / 160000;
+        if (ehi >= 2.5) score += 8;
+        else if (ehi >= 1.5) score += 5;
+        else if (ehi >= 1.0) score += 3;
         
         if (cin > 100) score -= 10;
         if (shear < 10) score -= 15;
@@ -1377,11 +1288,9 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     // Bei hohem Shear (≥ 18 m/s) und niedrigem CAPE ist STP nahe 0 aber Ereignisse REAL
     if (stp < 0.1 && score > 10) {
         if (shear < 15) {
-            score = Math.min(score, 5);   // kein HSLC, kein STP → fast null
-        } else if (shear >= 18 && cape >= 150) {
-            score = Math.min(score, 20);  // HSLC Europa nach Sherburn & Parker 2014
+            score = Math.min(score, 8);   // kein HSLC → hart begrenzen
         } else {
-            score = Math.min(score, 10);
+            score = Math.min(score, 20);  // HSLC möglich → sanfter begrenzen
         }
     }
 
@@ -1458,8 +1367,6 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     if      (failCount === 3) score = Math.round(score * 0.35); // alle drei fehlen: stark reduzieren
     else if (failCount === 2) score = Math.round(score * 0.55); // zwei fehlen: moderat
     else if (failCount === 1) score = Math.round(score * 0.75); // einer fehlt: leicht reduzieren
-
-    score = Math.max(0, score + veeringBonus);
 
     return Math.min(100, Math.max(0, Math.round(score)));
 }
