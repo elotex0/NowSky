@@ -88,7 +88,7 @@ export default async function handler(req, res) {
         }
 
         const timezone = data.timezone || 'UTC';
-        const hasEnsemble = ensembleData && !ensembleData.error && ensembleData?.hourly?.time?.length;
+        const hasEnsemble = !!(ensembleData && !ensembleData.error && ensembleData?.hourly?.time?.length);
 
         // Region basierend auf Koordinaten bestimmen
         const region = getRegion(latitude, longitude);
@@ -697,7 +697,7 @@ function getProbabilityParams(region) {
             minTempReduction2: 28, tempReductionFactor2: 0.8
         },
         'north_africa': {
-            minTemp: 15, minTempWithCAPE: 20, minCAPE: 300, minCAPEWithPrecip: 150,
+            minTemp: 14, minTempWithCAPE: 17, minCAPE: 300, minCAPEWithPrecip: 150,
             capeThresholds: [2000, 1500, 1200, 1000, 800, 600, 400],
             capeScores: [28, 22, 18, 14, 10, 6, 3],
             minTempReduction: 18, tempReductionFactor: 0.5,
