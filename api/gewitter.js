@@ -1146,6 +1146,10 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     // Zusätzlich: wenn sbCAPE = 0, kein Tornado möglich
     if (sbcape < 50) return 0;
     if (cin > 200) return 0;
+
+    // Tornado ohne Gewitter ist extrem unwahrscheinlich
+    const thunderstormProb = calculateProbability(hour, region);
+    if (thunderstormProb === 0) return 0;
     
     // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
     const srh1km = calcSRH(hour, '0-1km');
