@@ -462,60 +462,54 @@ function calcThetaE(temp, dew, pressure = 1000) {
     return T_K * Math.exp((Lv * w) / (cp * T_K));
 }
 
-// MUCAPE-Approximation: Teste Parcels von Boden, 925, 850 hPa
-// Nimm den instabilsten → Most Unstable CAPE
+// MUCAPE-Approximation: Findet das instabilste Paket in der untersten Schicht (0-300 hPa)
+// Verwendet Bolton (1980) für ThetaE und skaliert CAPE basierend auf dem Lifted Index
 function calcMUCAPE(hour) {
-    const sbCAPE = hour.cape ?? 0;
+    const sbCAPE = Math.max(0, hour.cape ?? 0);
+    const sbLI = hour.liftedIndex ?? 0;
     const temp500 = hour.temp500 ?? -20;
+    const rh500 = hour.rh500 ?? 50;
 
-    // Umgebungs-ThetaE auf 500 hPa (als Referenz für Auftrieb)
-    const thetaE500 = calcThetaE(temp500, temp500 - 25, 500);
+    // Taupunkt auf 500hPa schätzen (für Umgebungs-ThetaE)
+    const dew500 = temp500 - ((100 - rh500) / 5); 
+    const thetaE500 = calcThetaE(temp500, dew500, 500);
 
-    // Surface Parcel
-    const thetaE_sfc = calcThetaE(hour.temperature ?? 0, hour.dew ?? 0, 1000);
-    const buoyancy_sfc = thetaE_sfc - thetaE500;
-    const elevatedCAPE_sfc = buoyancy_sfc > 0
-        ? Math.max(0, buoyancy_sfc * 9.81 * 2500 / (temp500 + 273.15))
-        : 0;
+    // Hilfsfunktion zur CAPE-Schätzung eines Pakets
+    const estimateCAPE = (pTemp, pDew, pPres) => {
+        const thetaEP = calcThetaE(pTemp, pDew, pPres);
+        if (thetaEP <= thetaE500) return 0;
 
-    // 925 hPa Parcel (falls verfügbar)
-    let elevatedCAPE_925 = 0;
-    if (hour.temp925 !== null && hour.dew925 !== null) {
-        const dewDepression925 = (hour.temp925 ?? 0) - (hour.dew925 ?? 0);
-        if (dewDepression925 < 10) { // nur wenn feucht genug
-            const thetaE925 = calcThetaE(hour.temp925, hour.dew925, 925);
-            const buoyancy925 = thetaE925 - thetaE500;
-            elevatedCAPE_925 = buoyancy925 > 0
-                ? Math.max(0, buoyancy925 * 9.81 * 3000 / (temp500 + 273.15))
-                : 0;
-        }
-    }
+        // Paket-Temperatur auf 500hPa schätzen (Bolton-Approximation)
+        // Delta_T_500hPa \approx 0.5 * Delta_ThetaE
+        const pTemp500 = temp500 + 0.5 * (thetaEP - thetaE500);
+        const pLI = temp500 - pTemp500;
 
-    // 850 hPa Parcel
-    const temp850 = hour.temp850 ?? 0;
-    const dew850 = hour.dew850 ?? 0;
-    const dewDepression850 = temp850 - dew850;
-    let elevatedCAPE_850 = 0;
-    if (dewDepression850 < 8) { // nur wenn feuchte 850hPa-Schicht
-        const thetaE850 = calcThetaE(temp850, dew850, 850);
-        const buoyancy850 = thetaE850 - thetaE500;
-        elevatedCAPE_850 = buoyancy850 > 0
-            ? Math.max(0, buoyancy850 * 9.81 * 3500 / (temp500 + 273.15))
-            : 0;
-    }
+        if (pLI >= 0) return 0;
 
-    const mucape = Math.max(sbCAPE, elevatedCAPE_sfc, elevatedCAPE_925, elevatedCAPE_850);
+        // Skalierung: 1 Grad LI entspricht ca. 150-250 J/kg CAPE (je nach Feuchte)
+        // Wir nehmen 200 als stabilen globalen Durchschnitt
+        return Math.abs(pLI) * 200;
+    };
+
+    // Teste verschiedene Pakete
+    const elevated_925 = (hour.temp925 !== null && hour.dew925 !== null) 
+        ? estimateCAPE(hour.temp925, hour.dew925, 925) : 0;
+    
+    const elevated_850 = (hour.temp850 !== null && hour.dew850 !== null)
+        ? estimateCAPE(hour.temp850, hour.dew850, 850) : 0;
+
+    // MUCAPE ist das Maximum aus Surface und Elevated
+    const mucape = Math.max(sbCAPE, elevated_925, elevated_850);
 
     // isElevated: wenn elevated Parcel deutlich mehr CAPE hat als Boden
-    // und Boden-CAPE niedrig (typisch bei starker nächtlicher Abkühlung/Cap)
-    const maxElevated = Math.max(elevatedCAPE_925, elevatedCAPE_850);
-    const isElevated = maxElevated > sbCAPE * 1.5 && sbCAPE < 300 && maxElevated > 150;
+    // Typisch bei nächtlicher Inversion oder Warmfronten
+    const isElevated = (elevated_925 > sbCAPE * 1.3 || elevated_850 > sbCAPE * 1.3) && sbCAPE < 500;
 
-    // LLJ-Check: 925 hPa Wind > 15 m/s = Low-Level-Jet aktiv
+    // LLJ-Check: 925 hPa Wind > 12 m/s (leicht gesenkt für bessere Erfassung)
     const ws925_ms = (hour.wind_speed_925hPa ?? 0) / 3.6;
-    const hasLLJ = ws925_ms >= 15;
+    const hasLLJ = ws925_ms >= 12;
 
-    return { mucape: Math.round(mucape), isElevated, hasLLJ };
+    return { mucape: Math.round(mucape), sbCAPE, isElevated, hasLLJ };
 }
 
 // DCAPE (Downdraft CAPE) nach Gilmore & Wicker (1998)
@@ -1182,32 +1176,36 @@ function calculateProbability(hour, region = 'europe') {
 function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
-    const sbCAPE = Math.max(0, hour.cape ?? 0);
-    const { mucape, isElevated } = calcMUCAPE(hour);
-    const cape = mucape;
+    const { mucape, sbCAPE, isElevated } = calcMUCAPE(hour);
+    const cape = sbCAPE; // Tornados sind an bodengebundene Instabilität gebunden
+    
+    // Hartes Aus für elevated Convection bei Tornados (physikalisch begründet)
+    if (isElevated && sbCAPE < 200) return 0;
+
     const cin = isElevated ? 0 : Math.abs(hour.cin ?? 0);
-    if (cin > 200) return 0; // Zu stabil für Tornado, unabhängig von anderen Faktoren
+    if (cin > 150 && sbCAPE < 1000) return 0; // Zu starker Deckel für Tornado-Entwicklung
+    
     const { liftedIndex } = calcIndices(hour);
     
     // Basis-Filter: Zu kalt oder keine Instabilität = kein Tornado (regionsspezifisch)
     const tornadoThresholds = {
-        'usa': { minTemp: 12, minCAPE: 500 },
-        'canada': { minTemp: 10, minCAPE: 400 },
-        'south_africa': { minTemp: 12, minCAPE: 500 },
-        'south_america': { minTemp: 12, minCAPE: 450 },
-        'australia': { minTemp: 12, minCAPE: 450 },
-        'east_asia': { minTemp: 10, minCAPE: 400 },
+        'usa': { minTemp: 12, minCAPE: 400 },
+        'canada': { minTemp: 10, minCAPE: 300 },
+        'south_africa': { minTemp: 12, minCAPE: 400 },
+        'south_america': { minTemp: 12, minCAPE: 400 },
+        'australia': { minTemp: 12, minCAPE: 400 },
+        'east_asia': { minTemp: 10, minCAPE: 300 },
         'south_asia': { minTemp: 18, minCAPE: 400 },
         'southeast_asia': { minTemp: 20, minCAPE: 350 },
         'central_america': { minTemp: 18, minCAPE: 350 },
+        'europe': { minTemp: 8, minCAPE: 150 },
         'north_africa': { minTemp: 15, minCAPE: 350 },
         'east_africa': { minTemp: 18, minCAPE: 350 },
         'central_africa': { minTemp: 20, minCAPE: 300 },
         'west_africa': { minTemp: 22, minCAPE: 300 },
         'middle_east': { minTemp: 12, minCAPE: 350 },
         'new_zealand': { minTemp: 8, minCAPE: 300 },
-        'russia_central_asia': { minTemp: 8, minCAPE: 300 },
-        'europe': { minTemp: 8, minCAPE: 400 }
+        'russia_central_asia': { minTemp: 8, minCAPE: 300 }
     };
     
     const t = tornadoThresholds[region] || tornadoThresholds['europe'];
