@@ -26,41 +26,30 @@ export default async function handler(req, res) {
     }
 
     try {
-        // Basis-API: "best_match"-Modell liefert u.a. MLCAPE (für STP_coffer) und weitere Felder
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
                     `&hourly=wind_gusts_10m,wind_speed_10m,temperature_2m,dew_point_2m,` +
                     `cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability,` +
-                    `wind_direction_1000hPa,wind_direction_925hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
-                    `wind_speed_1000hPa,wind_speed_925hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
+                    `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
+                    `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
                     `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
-        // Ensemble-API (für Unsicherheiten)
         const ensembleUrl = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}` +
                     `&hourly=temperature_2m,dew_point_2m,wind_gusts_10m,wind_speed_10m,` +
                     `cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability,` +
-                    `wind_direction_1000hPa,wind_direction_925hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
-                    `wind_speed_1000hPa,wind_speed_925hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
+                    `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
+                    `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
                     `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
-        // ECMWF IFS 0.25°: hier holen wir CAPE/CIN, die wir als Näherung für muCAPE/muCIN (SPC) verwenden
-        // Quelle: Open-Meteo Doku + SPC-Formel für SCP (Thompson et al. 2004)
-        const ecmwfMuUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
-                    `&hourly=cape,convective_inhibition&forecast_days=16&models=ecmwf_ifs025&timezone=auto`;
-
-        const [response, ensembleResponse, ecmwfMuResponse] = await Promise.all([
+        const [response, ensembleResponse] = await Promise.all([
             fetch(url),
             fetch(ensembleUrl).catch(err => {
                 console.warn('Ensemble-API-Fehler:', err);
-                return { ok: false, json: () => Promise.resolve({ error: true }) };
-            }),
-            fetch(ecmwfMuUrl).catch(err => {
-                console.warn('ECMWF-muCAPE-API-Fehler:', err);
                 return { ok: false, json: () => Promise.resolve({ error: true }) };
             })
         ]);
@@ -69,10 +58,6 @@ export default async function handler(req, res) {
         let ensembleData = null;
         if (ensembleResponse.ok) {
             ensembleData = await ensembleResponse.json();
-        }
-        let muData = null;
-        if (ecmwfMuResponse.ok) {
-            muData = await ecmwfMuResponse.json();
         }
 
         if (data.error) {
@@ -85,7 +70,6 @@ export default async function handler(req, res) {
 
         const timezone = data.timezone || 'UTC';
         const hasEnsemble = ensembleData && !ensembleData.error && ensembleData?.hourly?.time?.length;
-        const hasMu = muData && !muData.error && muData?.hourly?.time?.length;
 
         // Region basierend auf Koordinaten bestimmen
         const region = getRegion(latitude, longitude);
@@ -103,13 +87,11 @@ export default async function handler(req, res) {
                 wind: data.hourly.wind_speed_10m?.[i] ?? 0,
                 gust: data.hourly.wind_gusts_10m?.[i] ?? 0,
                 windDir1000: data.hourly.wind_direction_1000hPa?.[i] ?? 0,
-                windDir925: data.hourly.wind_direction_925hPa?.[i] ?? 0,
                 windDir850: data.hourly.wind_direction_850hPa?.[i] ?? 0,
                 windDir700: data.hourly.wind_direction_700hPa?.[i] ?? 0,
                 windDir500: data.hourly.wind_direction_500hPa?.[i] ?? 0,
                 windDir300: data.hourly.wind_direction_300hPa?.[i] ?? 0,
                 wind_speed_1000hPa: data.hourly.wind_speed_1000hPa?.[i] ?? 0,
-                wind_speed_925hPa: data.hourly.wind_speed_925hPa?.[i] ?? 0,
                 wind_speed_850hPa: data.hourly.wind_speed_850hPa?.[i] ?? 0,
                 wind_speed_700hPa: data.hourly.wind_speed_700hPa?.[i] ?? 0,
                 wind_speed_500hPa: data.hourly.wind_speed_500hPa?.[i] ?? 0,
@@ -120,29 +102,13 @@ export default async function handler(req, res) {
                 dew850: data.hourly.dew_point_850hPa?.[i] ?? 0,
                 dew700: data.hourly.dew_point_700hPa?.[i] ?? 0,
                 rh500: data.hourly.relative_humidity_500hPa?.[i] ?? 0,
-                // CAPE/CIN aus best_match.
-                // In deinen Formeln werden diese Werte als Mixed-Layer-Proxies (mlCAPE/mlCIN) verwendet (Coffer 2019 / SPC stpc5).
                 cape: data.hourly.cape?.[i] ?? 0,
                 cin: data.hourly.convective_inhibition?.[i] ?? 0,
-                // Alias-Namen für explizite, lesbare Verwendung:
-                mlCape: data.hourly.cape?.[i] ?? 0,
-                mlCin: Math.abs(data.hourly.convective_inhibition?.[i] ?? 0),
                 liftedIndex: data.hourly.lifted_index?.[i] ?? 0,
                 pblHeight: data.hourly.boundary_layer_height?.[i] ?? 0,
                 directRadiation: data.hourly.direct_radiation?.[i] ?? 0,
                 precipAcc: data.hourly.precipitation?.[i] ?? 0,
-                // Defaults, damit TypeScript (in JS-Dateien) die Properties kennt:
-                muCape: 0,
-                muCin: 0,
             };
-
-            // muCAPE/muCIN aus ECMWF IFS 0.25° (als Proxy für SPC-muCAPE/muCIN in SCP)
-            // Annahme: gleiche Zeitschritte wie im "best_match"-Lauf (Open-Meteo Forecast-API)
-            if (hasMu) {
-                baseData.muCape = muData.hourly.cape?.[i] ?? 0;
-                // muCIN im Code immer als Absolutwert (J/kg) verwendet
-                baseData.muCin = Math.abs(muData.hourly.convective_inhibition?.[i] ?? 0);
-            }
 
             // Ensemble-Daten kompakt hinzufügen
             if (hasEnsemble && ensembleData.hourly.time[i] === t) {
@@ -194,40 +160,16 @@ export default async function handler(req, res) {
             .map(hour => {
                 const shear = calcShear(hour);
                 const srh = calcSRH(hour);
-                const srh1km = calcSRH(hour, '0-1km');
-                const srh500m = calcSRH(hour, '0-500m');
-
-                // Klare Trennung der CAPE-Typen:
-                const mlCape = Math.max(0, hour.mlCape ?? hour.cape ?? 0);
-                const mlCin = Math.abs(hour.mlCin ?? hour.cin ?? 0);
-                const muCape = Math.max(0, hour.muCape ?? mlCape);
-                const muCin = Math.abs(hour.muCin ?? mlCin);
-
-                // Tornado-/Severe-Parameter nach den eingebauten Studien
-                const ehi = (mlCape * srh) / 160000;
-                const scp = calcSCP(muCape, shear, srh, muCin, region);
-                const stp_fixed = calcSTP(mlCape, srh1km, shear, hour.liftedIndex, mlCin, region, hour.temperature, hour.dew, '0-1km');
-                const stp_coffer = calcSTP(mlCape, srh500m, shear, hour.liftedIndex, mlCin, region, hour.temperature, hour.dew, '0-500m');
-
                 return {
                     timestamp: hour.time,
                     probability: calculateProbability(hour, region),
                     tornadoProbability: calculateTornadoProbability(hour, shear, srh, region),
                     temperature: hour.temperature,
-                    cape: mlCape,
-                    muCape: muCape,
-                    cin: mlCin,
-                    muCin: muCin,
+                    cape: hour.cape,
                     shear: shear,
                     srh: srh,
-                    srh1km: srh1km,
-                    srh500m: srh500m,
-                    ehi: ehi,
-                    scp: scp,
-                    stp_fixed: stp_fixed,
-                    stp_coffer: stp_coffer,
                     dcape: calcDCAPE(hour),
-                    wmaxshear: calcWMAXSHEAR(mlCape, shear),
+                    wmaxshear: calcWMAXSHEAR(hour.cape, shear),
                 };
             });
 
@@ -278,110 +220,83 @@ export default async function handler(req, res) {
 
 // Hilfsfunktionen
 function getRegion(lat, lon) {
-    // Lon normalisieren
-    while (lon > 180)  lon -= 360;
-    while (lon < -180) lon += 360;
-
-    // ─────────────────────────────────────
-    // AMERIKA
-    // ─────────────────────────────────────
-
-    // Kanada (inkl. Toronto)
-    if (lat >= 41 && lat <= 83 && lon >= -141 && lon <= -52)
-        return 'canada';
-
-    // USA (ohne Kanada & Mexiko)
-    if (lat >= 30 && lat < 41 && lon >= -125 && lon <= -65)
-        return 'usa';
-
-    // Mexiko + Mittelamerika (inkl. Panama)
-    if (lat >= 5 && lat < 30 && lon >= -120 && lon <= -60)
-        return 'central_america';
-
-    // Südamerika
-    if (lat >= -60 && lat < 5 && lon >= -85 && lon <= -30)
-        return 'south_america';
-
-
-    // ─────────────────────────────────────
-    // AFRIKA (VOR EUROPA & MIDDLE EAST!)
-    // ─────────────────────────────────────
-
-    // Nordafrika
-    if (lat >= 15 && lat <= 37 && lon >= -20 && lon <= 42)
-        return 'north_africa';
-
-    // Westafrika
-    if (lat >= 0 && lat < 15 && lon >= -20 && lon <= 10)
-        return 'west_africa';
-
-    // Zentralafrika
-    if (lat >= -5 && lat < 10 && lon > 10 && lon <= 35)
-        return 'central_africa';
-
-    // Ostafrika
-    if (lat >= -12 && lat < 15 && lon > 35 && lon <= 52)
-        return 'east_africa';
-
-    // Südliches Afrika
-    if (lat >= -35 && lat < -12 && lon >= 10 && lon <= 55)
-        return 'south_africa';
-
-
-    // ─────────────────────────────────────
-    // NAHER OSTEN
-    // ─────────────────────────────────────
-
-    if (lat >= 12 && lat <= 42 && lon > 42 && lon <= 65)
-        return 'middle_east';
-
-
-    // ─────────────────────────────────────
-    // RUSSLAND / ZENTRALASIEN
-    // ─────────────────────────────────────
-
-    // weiter nach Westen gezogen → Moskau passt jetzt
-    if (lat >= 40 && lat <= 75 && lon >= 30 && lon <= 180)
-        return 'russia_central_asia';
-
-
-    // ─────────────────────────────────────
-    // EUROPA (kommt NACH Afrika & Russland)
-    // ─────────────────────────────────────
-
-    if (lat >= 35 && lat <= 72 && lon >= -25 && lon < 30)
+    // Europa: ca. 35°N - 70°N, -10°W - 40°E
+    if (lat >= 35 && lat <= 70 && lon >= -10 && lon <= 40) {
         return 'europe';
-
-
-    // ─────────────────────────────────────
-    // ASIEN
-    // ─────────────────────────────────────
-
-    if (lat >= 5 && lat <= 35 && lon > 60 && lon <= 100)
+    }
+    // USA: ca. 25°N - 50°N, -125°W - -65°W
+    if (lat >= 25 && lat <= 50 && lon >= -125 && lon <= -65) {
+        return 'usa';
+    }
+    // Kanada: ca. 42°N - 70°N, -140°W - -50°W
+    if (lat >= 42 && lat <= 70 && lon >= -140 && lon <= -50) {
+        return 'canada';
+    }
+    // Mittelamerika/Karibik: ca. 10°N - 25°N, -120°W - -60°W
+    if (lat >= 10 && lat <= 25 && lon >= -120 && lon <= -60) {
+        return 'central_america';
+    }
+    // Südamerika - Brasilien/Argentinien: ca. 5°N - 35°S, -80°W - -30°W
+    if (lat >= -35 && lat <= 5 && lon >= -80 && lon <= -30) {
+        return 'south_america';
+    }
+    // Südamerika - Anden: ca. 5°N - 20°S, -80°W - -65°W
+    if (lat >= -20 && lat <= 5 && lon >= -80 && lon <= -65) {
+        return 'south_america';
+    }
+    // Afrika - Südafrika: ca. 22°S - 35°S, 15°E - 35°E
+    if (lat >= -35 && lat <= -22 && lon >= 15 && lon <= 35) {
+        return 'south_africa';
+    }
+    // Afrika - Ostafrika (Kenia, Tansania, Äthiopien, Somalia, Uganda): ca. 5°S - 12°N, 30°E - 52°E
+    if (lat >= -5 && lat <= 12 && lon >= 30 && lon <= 52) {
+        return 'east_africa';
+    }
+    // Afrika - Zentralafrika (Kongo, Kamerun, etc.): ca. 5°S - 10°N, 10°W - 30°E
+    if (lat >= -5 && lat <= 10 && lon >= -10 && lon <= 30) {
+        return 'central_africa';
+    }
+    // Afrika - Westafrika (Nigeria, Ghana, Senegal, etc.): ca. 5°N - 15°N, -20°W - 15°E
+    if (lat >= 5 && lat <= 15 && lon >= -20 && lon <= 15) {
+        return 'west_africa';
+    }
+    // Afrika - Nordafrika (Sahara, Maghreb): ca. 15°N - 35°N, -20°W - 40°E
+    if (lat >= 15 && lat <= 35 && lon >= -20 && lon <= 40) {
+        return 'north_africa';
+    }
+    // Madagaskar und umliegende Inseln: ca. 12°S - 25°S, 43°E - 51°E
+    if (lat >= -25 && lat <= -12 && lon >= 43 && lon <= 51) {
+        return 'south_africa'; // Ähnliche Bedingungen wie Südafrika
+    }
+    // Asien - Südasien (Indien, Pakistan, Bangladesch): ca. 5°N - 35°N, 60°E - 100°E
+    if (lat >= 5 && lat <= 35 && lon >= 60 && lon <= 100) {
         return 'south_asia';
-
-    if (lat >= -10 && lat <= 25 && lon > 100 && lon <= 145)
-        return 'southeast_asia';
-
-    if (lat >= 20 && lat <= 55 && lon > 100 && lon <= 155)
+    }
+    // Asien - Ostasien (China, Japan, Korea): ca. 20°N - 50°N, 100°E - 145°E
+    if (lat >= 20 && lat <= 50 && lon >= 100 && lon <= 145) {
         return 'east_asia';
-
-
-    // ─────────────────────────────────────
-    // AUSTRALIEN & OZEANIEN
-    // ─────────────────────────────────────
-
-    if (lat >= -45 && lat <= -10 && lon >= 110 && lon <= 155)
+    }
+    // Asien - Südostasien: ca. 5°S - 25°N, 90°E - 145°E
+    if (lat >= -5 && lat <= 25 && lon >= 90 && lon <= 145) {
+        return 'southeast_asia';
+    }
+    // Australien: ca. 10°S - 45°S, 110°E - 155°E
+    if (lat >= -45 && lat <= -10 && lon >= 110 && lon <= 155) {
         return 'australia';
-
-    if (lat >= -48 && lat <= -33 && (lon >= 165 || lon <= -165))
+    }
+    // Neuseeland: ca. 34°S - 47°S, 165°E - 180°E und -180°W - -175°W
+    if (lat >= -47 && lat <= -34 && ((lon >= 165 && lon <= 180) || (lon >= -180 && lon <= -175))) {
         return 'new_zealand';
-
-
-    // ─────────────────────────────────────
-    // FALLBACK
-    // ─────────────────────────────────────
-
+    }
+    // Russland/Zentralasien: ca. 40°N - 70°N, 40°E - 180°E
+    if (lat >= 40 && lat <= 70 && lon >= 40 && lon <= 180) {
+        return 'russia_central_asia';
+    }
+    // Naher Osten: ca. 12°N - 40°N, 25°E - 60°E
+    if (lat >= 12 && lat <= 40 && lon >= 25 && lon <= 60) {
+        return 'middle_east';
+    }
+    // Standard: Europa (für unbekannte Regionen)
     return 'europe';
 }
 
@@ -395,157 +310,72 @@ function windToUV(speed, direction) {
     return { u: -speed * Math.sin(rad), v: -speed * Math.cos(rad) };
 }
 
-function veeringAngle(d1, d2) {
-        let diff = (d2 - d1 + 360) % 360;
-        return diff > 180 ? diff - 360 : diff; // positiv = Veering, negativ = Backing
-    }
-
 function calcRelHum(temp, dew) {
     const es = 6.112 * Math.exp((17.67 * temp) / (temp + 243.5));
     const e = 6.112 * Math.exp((17.67 * dew) / (dew + 243.5));
     return Math.min(100, Math.max(0, (e / es) * 100));
 }
 
-// SRH-Berechnung nach Bunkers et al. (2000), erweitert nach Coffer et al. (2019)
-// Quellen:
-// - Bunkers et al. 2000 (WAF): Supercell Sturmbewegung & SRH
-// - Coffer et al. 2019 (WAF): 0-500 m SRH diskriminiert sign. Tornados vs. nontornadic
-//   signifikant besser als 0-1 km oder effektive SRH
-//   "Replacing ESRH with 0–500 m AGL SRH increases correct events by 8%,
-//    decreases missed events and false alarms by 18%"
-// - Thompson et al. 2007: Effective layer SRH Standard
-//
-// Pressure-Level → Höhen-Approximation (Standard-Atmosphäre):
-//   1000 hPa ≈ 110 m AGL  → Boden-Proxy
-//    925 hPa ≈ 760 m AGL  → bester Proxy für 0-500 m Schicht (Mittelwert 110-760 m)
-//    850 hPa ≈ 1460 m AGL → 0-1 km Proxy (Mittelwert 110-1460 m)
-//    700 hPa ≈ 3010 m AGL → 0-3 km Proxy
-//    500 hPa ≈ 5570 m AGL → 0-6 km Proxy
-//
-// Layer-Definitionen:
-//   '0-500m' → 1000 + 925 hPa          (präzisester Proxy für 0-500 m AGL)
-//   '0-1km'  → 1000 + 925 + 850 hPa    (3-Level für bessere Hodograph-Auflösung)
-//   '0-3km'  → 1000 + 925 + 850 + 700  (Standard für EHI/Synoptik)
-//   '0-6km'  → alle Level bis 500 hPa  (für SCP/Bulk-Shear-Checks)
+// SRH – getrennt für 0-1 km und 0-3 km berechnen
+// 0-1 km ≈ 1000→850 hPa, 0-3 km ≈ 1000→700 hPa
+// Quelle: Thompson et al. 2012; Craven & Brooks 2004
 function calcSRH(hour, layer = '0-3km') {
-    let levels;
-
-    if (layer === '0-500m') {
-        // 925 hPa ≈ 760 m AGL — bester verfügbarer Proxy für 0-500 m Schicht
-        // Coffer et al. 2019: Physikalisch repräsentiert 0-500 m den
-        // bodennahen Inflow-Layer, in dem Rotation für Tornadogenese entscheidend ist
-        levels = [
+    // Schichtauswahl: 0-1 km nur 1000+850, 0-3 km auch 700
+    const levels = layer === '0-1km'
+        ? [
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
-            { ws: (hour.wind_speed_925hPa  ?? 0) / 3.6, wd: hour.windDir925  ?? 0 },
-        ];
-
-    } else if (layer === '0-1km') {
-        // 3 Level für bessere Hodograph-Auflösung im kritischen 0-1 km Layer
-        // 925 hPa als Zwischenpunkt verbessert Genauigkeit erheblich gegenüber
-        // direktem Sprung 1000→850 hPa
-        levels = [
+            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 }
+          ]
+        : [
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
-            { ws: (hour.wind_speed_925hPa  ?? 0) / 3.6, wd: hour.windDir925  ?? 0 },
             { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 },
-        ];
-
-    } else if (layer === '0-3km') {
-        // Standard für EHI und synoptische SRH-Analyse
-        levels = [
-            { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
-            { ws: (hour.wind_speed_925hPa  ?? 0) / 3.6, wd: hour.windDir925  ?? 0 },
-            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 },
-            { ws: (hour.wind_speed_700hPa  ?? 0) / 3.6, wd: hour.windDir700  ?? 0 },
-        ];
-
-    } else {
-        // '0-6km' — für SCP/Bulk-Shear-Checks
-        levels = [
-            { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
-            { ws: (hour.wind_speed_925hPa  ?? 0) / 3.6, wd: hour.windDir925  ?? 0 },
-            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 },
-            { ws: (hour.wind_speed_700hPa  ?? 0) / 3.6, wd: hour.windDir700  ?? 0 },
-            { ws: (hour.wind_speed_500hPa  ?? 0) / 3.6, wd: hour.windDir500  ?? 0 },
-        ];
-    }
+            { ws: (hour.wind_speed_700hPa  ?? 0) / 3.6, wd: hour.windDir700  ?? 0 }
+          ];
 
     const winds = levels.map(l => windToUV(l.ws, l.wd));
 
-    // Bunkers-Methode: Mean Wind + 7.5 m/s orthogonal zum Shear-Vektor (rechts)
-    // Quelle: Bunkers et al. 2000, WAF — Standard für operationelle SRH-Berechnung
-    // Alle Level gleichgewichtet (konsistent mit SPC-Implementierung)
+    // Mean Wind & Shear-Vektor für Bunkers-Methode
     const meanU = winds.reduce((s, w) => s + w.u, 0) / winds.length;
     const meanV = winds.reduce((s, w) => s + w.v, 0) / winds.length;
 
-    // Shear-Vektor = Differenz zwischen oberstem und unterstem Level
     const shearU = winds[winds.length - 1].u - winds[0].u;
     const shearV = winds[winds.length - 1].v - winds[0].v;
     const shearMag = Math.hypot(shearU, shearV) || 1;
 
-    // Right-Mover Sturmbewegung: 7.5 m/s rechts des Shear-Vektors
-    // Bunkers 2000: Empirisch aus 394 Superzellen-Hodographen abgeleitet
+    // Bunkers Right-Mover: 7.5 m/s rechts des Shear-Vektors
     const devMag = 7.5;
     const stormU = meanU + devMag * (shearV / shearMag);
     const stormV = meanV - devMag * (shearU / shearMag);
 
-    // SRH = Summe der Kreuzprodukte (Fläche im storm-relativen Hodographen)
-    // Positiv = zyklonische Rotation (Right-Mover), negativ = antizyklonisch
     let srh = 0;
     for (let i = 0; i < winds.length - 1; i++) {
-        const u1 = winds[i].u   - stormU, v1 = winds[i].v   - stormV;
+        const u1 = winds[i].u - stormU, v1 = winds[i].v - stormV;
         const u2 = winds[i+1].u - stormU, v2 = winds[i+1].v - stormV;
         srh += u1 * v2 - u2 * v1;
     }
 
-    // Absolutwert: Wir wollen den Betrag der Rotation (Right-Mover positiv)
     return Math.round(Math.abs(srh) * 10) / 10;
 }
 
-// 0-6 km Bulk Wind Shear nach SPC-Standard
-// Quelle: Thompson et al. (2003, 2012) — 0-6 km BWD als primärer Superzell-Parameter
-// 1000→500 hPa als bester verfügbarer Proxy für 0-6 km (Standard-Atmosphäre)
-// Low-Level-Shear (0-1 km): jetzt über 1000→925→850 hPa für bessere Auflösung
-// Gewichtung: 0-6 km dominant (75%), 0-1 km als Qualitätsfaktor (25%)
-// Quelle Gewichtung: Bunkers 2014 — Low-Level-Shear entscheidend für Tornadogenese,
-//   aber 0-6 km BWD primärer Prädiktor für Superzell-Organisation
 function calcShear(hour) {
-    // 0-6 km Bulk Shear: 1000→500 hPa Vektor-Differenz
-    const ws500  = (hour.wind_speed_500hPa  ?? 0) / 3.6;
+    // 0-6 km Bulk Wind Shear: Standardschicht für Superzell-Parameter
+    // Approximation: 1000 hPa ≈ 0 km, 500 hPa ≈ 5.5 km, 300 hPa ≈ 9 km (zu hoch)
+    // Besser: 1000→500 hPa als Proxy für 0-6 km Shear (meteorologischer Standard)
+    const ws500 = (hour.wind_speed_500hPa ?? 0) / 3.6;
     const ws1000 = (hour.wind_speed_1000hPa ?? 0) / 3.6;
-    const w500   = windToUV(ws500,  hour.windDir500  ?? 0);
-    const w1000  = windToUV(ws1000, hour.windDir1000 ?? 0);
+    const w500 = windToUV(ws500, hour.windDir500 ?? 0);
+    const w1000 = windToUV(ws1000, hour.windDir1000 ?? 0);
+
     const bulkShear = Math.hypot(w500.u - w1000.u, w500.v - w1000.v);
 
-    // 0-1 km Low-Level-Shear: jetzt mit 925 hPa als Zwischenpunkt
-    // Physikalisch: 925 hPa ≈ 760 m AGL → repräsentiert Windprofil im
-    // kritischen bodennahen Inflow-Layer besser als direkter 1000→850-Sprung
-    const ws925 = (hour.wind_speed_925hPa ?? 0) / 3.6;
+    // Effective Shear: Nur relevant wenn untere Troposphäre ausreichend CAPE hat
+    // Penalisiere sehr schwachen Shear unter 850 hPa (0-1 km Shear für Tornados)
     const ws850 = (hour.wind_speed_850hPa ?? 0) / 3.6;
-    const w925  = windToUV(ws925, hour.windDir925 ?? 0);
-    const w850  = windToUV(ws850, hour.windDir850 ?? 0);
-
-    // Low-Level-Shear als maximaler Vektor aus zwei Teilschichten:
-    // Schicht 1: 1000→925 hPa (0-760 m) — bodennahe Rotation
-    // Schicht 2: 925→850 hPa (760-1460 m) — Übergangsschicht
-    // Gesamt: 1000→850 hPa mit 925 als Stützpunkt (vektorielle Summe)
-    // Teilschichten für LLJ-Diagnostik
-    const llShear_1000_925 = Math.hypot(w925.u - w1000.u, w925.v - w1000.v);
-    const llShear_925_850  = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
-    // Gesamter 0-1 km Shear: Vektordifferenz 1000→850 (vektoriell korrekt)
+    const w850 = windToUV(ws850, hour.windDir850 ?? 0);
     const lowLevelShear = Math.hypot(w850.u - w1000.u, w850.v - w1000.v);
 
-    // LLJ-Fingerprint nach Bonner (1968) & Stull (1988):
-    // Starker Shear im untersten Layer (1000→925 hPa, 0-760 m) aber
-    // deutlich schwächerer Shear in der Übergangsschicht (925→850 hPa, 760-1460 m)
-    // → klassisches LLJ-Profil mit bodennahem Windmaximum
-    // Schwelle: unterer Layer ≥ 1.5x oberer Layer UND Mindestbetrag > 4 m/s
-    const isLLJ = llShear_1000_925 > llShear_925_850 * 1.5 && llShear_1000_925 > 4.0;
-
-    // Kombinierter Shear-Index: 0-6 km dominant (75%), 0-1 km als Qualitätsfaktor (25%)
-    // LLJ-Bonus: Bei aktivem LLJ bodennahen Shear stärker gewichten
-    // Physikalisch: LLJ-induzierter Shear erhöht SRH und Tornadopotential (Markowski 2003)
-    const weight = isLLJ ? { bulk: 0.65, ll: 0.35 } : { bulk: 0.75, ll: 0.25 };
-    return Math.round((bulkShear * weight.bulk + lowLevelShear * weight.ll) * 10) / 10;
+    // Kombinierter Shear-Index: 0-6 km dominant, 0-1 km als Gewichtungsfaktor
+    return Math.round((bulkShear * 0.75 + lowLevelShear * 0.25) * 10) / 10;
 }
 
 // Verbesserte meteorologische Indizes
@@ -564,118 +394,52 @@ function calcIndices(hour) {
     };
 }
 
-// Mindestparameter für SCP-Berechnung
-// Quelle: SPC SCP-Hilfe — EBWD < 10 m/s → SCP = 0 (hartes Cutoff)
-// Alle minShear-Werte auf ≥ 10 m/s angehoben (konsistent mit SPC-Standard)
-// minCAPE nach Taszarek 2020: Europa Gewitterschwelle ~150 J/kg MLCAPE bei BSO6-Fällen
+// Regionsspezifische Parameter für SCP/STP
 function getRegionParams(region) {
     const params = {
-        'usa':               { minCAPE: 100, minShear: 10, minSRH: 50,  normCAPE: 1000, normShear: 20, normSRH: 50 },
-        'canada':            { minCAPE:  80, minShear: 10, minSRH: 40,  normCAPE:  900, normShear: 18, normSRH: 45 },
-        'central_america':   { minCAPE: 150, minShear: 10, minSRH: 35,  normCAPE: 1200, normShear: 16, normSRH: 40 },
-        'south_america':     { minCAPE: 100, minShear: 10, minSRH: 45,  normCAPE: 1200, normShear: 20, normSRH: 50 },
-        'south_africa':      { minCAPE: 150, minShear: 10, minSRH: 50,  normCAPE: 1500, normShear: 20, normSRH: 60 },
-        'east_africa':       { minCAPE: 150, minShear: 10, minSRH: 35,  normCAPE: 1400, normShear: 14, normSRH: 40 },
-        'central_africa':    { minCAPE: 150, minShear: 10, minSRH: 25,  normCAPE: 1500, normShear: 12, normSRH: 30 },
-        'west_africa':       { minCAPE: 150, minShear: 10, minSRH: 30,  normCAPE: 1500, normShear: 12, normSRH: 35 },
-        'north_africa':      { minCAPE: 100, minShear: 10, minSRH: 35,  normCAPE: 1000, normShear: 14, normSRH: 35 },
-        'south_asia':        { minCAPE: 150, minShear: 10, minSRH: 35,  normCAPE: 1500, normShear: 14, normSRH: 40 },
-        'east_asia':         { minCAPE: 100, minShear: 10, minSRH: 40,  normCAPE: 1200, normShear: 18, normSRH: 45 },
-        'southeast_asia':    { minCAPE: 150, minShear: 10, minSRH: 25,  normCAPE: 1500, normShear: 12, normSRH: 30 },
-        'australia':         { minCAPE: 100, minShear: 10, minSRH: 45,  normCAPE: 1200, normShear: 20, normSRH: 50 },
-        'new_zealand':       { minCAPE:  80, minShear: 10, minSRH: 35,  normCAPE:  800, normShear: 16, normSRH: 35 },
-        'russia_central_asia':{ minCAPE: 80, minShear: 10, minSRH: 35,  normCAPE:  800, normShear: 16, normSRH: 35 },
-        'middle_east':       { minCAPE: 100, minShear: 10, minSRH: 35,  normCAPE: 1000, normShear: 14, normSRH: 35 },
-        // Europa: Taszarek 2020 — min. CAPE für Gewitterentwicklung ~150 J/kg (MLCAPE)
-        // Púčik 2015: ESWD-Analysen zeigen Gewitteraktivität ab ~150 J/kg + DLS ≥ 10 m/s
-        'europe':            { minCAPE:  80, minShear: 10, minSRH: 35,  normCAPE:  800, normShear: 16, normSRH: 35 },
+        'usa': { minCAPE: 100, minShear: 8, minSRH: 50, normCAPE: 1000, normShear: 12, normSRH: 50 },
+        'canada': { minCAPE: 100, minShear: 7, minSRH: 45, normCAPE: 900, normShear: 11, normSRH: 45 },
+        'central_america': { minCAPE: 150, minShear: 6, minSRH: 40, normCAPE: 1200, normShear: 10, normSRH: 50 },
+        'south_america': { minCAPE: 150, minShear: 8, minSRH: 50, normCAPE: 1200, normShear: 12, normSRH: 50 },
+        'south_africa': { minCAPE: 200, minShear: 10, minSRH: 60, normCAPE: 1500, normShear: 14, normSRH: 60 },
+        'east_africa': { minCAPE: 200, minShear: 6, minSRH: 40, normCAPE: 1400, normShear: 9, normSRH: 50 },
+        'central_africa': { minCAPE: 200, minShear: 5, minSRH: 30, normCAPE: 1500, normShear: 8, normSRH: 40 },
+        'west_africa': { minCAPE: 200, minShear: 5, minSRH: 35, normCAPE: 1500, normShear: 8, normSRH: 45 },
+        'north_africa': { minCAPE: 150, minShear: 6, minSRH: 40, normCAPE: 1000, normShear: 10, normSRH: 40 },
+        'south_asia': { minCAPE: 200, minShear: 6, minSRH: 40, normCAPE: 1500, normShear: 10, normSRH: 50 },
+        'east_asia': { minCAPE: 150, minShear: 8, minSRH: 50, normCAPE: 1200, normShear: 12, normSRH: 50 },
+        'southeast_asia': { minCAPE: 200, minShear: 5, minSRH: 35, normCAPE: 1500, normShear: 8, normSRH: 45 },
+        'australia': { minCAPE: 150, minShear: 8, minSRH: 50, normCAPE: 1200, normShear: 12, normSRH: 50 },
+        'new_zealand': { minCAPE: 100, minShear: 6, minSRH: 40, normCAPE: 800, normShear: 10, normSRH: 40 },
+        'russia_central_asia': { minCAPE: 100, minShear: 6, minSRH: 40, normCAPE: 800, normShear: 10, normSRH: 40 },
+        'middle_east': { minCAPE: 150, minShear: 6, minSRH: 40, normCAPE: 1000, normShear: 10, normSRH: 40 },
+        'europe': { minCAPE: 100, minShear: 6, minSRH: 40, normCAPE: 800, normShear: 10, normSRH: 40 }
     };
     return params[region] || params['europe'];
 }
 
-// SCP nach Thompson et al. (2004) mit CIN-Korrektur nach Gropp & Davenport (2018)
-// Quelle: https://www.spc.noaa.gov/exper/mesoanalysis/help/help_scp.html
-// Formel (SPC-aktuell): SCP = (muCAPE/1000) * (ESRH/50) * (EBWD/20) * (-40/muCIN)
-// EBWD-Regeln: < 10 m/s → 0; > 20 m/s → Term = 1 (gecappt auf 1.0 laut SPC)
-// CIN-Term: muCIN > -40 J/kg → Term = 1.0 (Gropp & Davenport 2018)
-// Regionale Skalierung: Taszarek et al. (2020, 2021) — Europa STP-Schwelle 0.75 statt 1.0,
-//   d.h. SCP-Werte in Europa klimatologisch ~25-30% niedriger als USA
+// SCP nach Thompson et al. (2004): (MUCAPE/1000) * (ESRH/50) * (EBWD/12)
+// Normalisierung nach SPC-Standard, regionaler CIN-Korrekturfaktor bleibt
 function calcSCP(cape, shear, srh, cin, region = 'europe') {
-    // Mindestwerte für sinnvolle Berechnung
-    // SPC-Standard: EBWD < 10 m/s → SCP = 0
-    if (shear < 10.0) return 0;
-    if (cape <= 0 || srh <= 0) return 0;
+    const p = getRegionParams(region);
+    if (cape < p.minCAPE || shear < p.minShear || srh < p.minSRH) return 0;
+    if (shear < 12.5) return 0; // konsistent mit STP-Cutoff
 
-    // SPC-Standard CAPE/1000 (keine Normierung nötig)
-    const capeTerm = cape / 1000;
+    // SPC-Standard: CAPE/1000, SRH/50, BWD/12
+    const capeTerm  = cape / 1000;
+    const srhTerm   = Math.min(srh / 50, 4.0);
+    const shearTerm = Math.min(shear / 12, 1.5);
+    const cinTerm   = cin < 40 ? 1.0 : Math.max(0.1, 1 - (cin - 40) / 200);
 
-    // ESRH/50 — gecappt bei 4.0 (SPC-Praxis, hohe Werte selten > 200 m²/s²)
-    const srhTerm = Math.min(srh / 50, 4.0);
-
-    // EBWD/20 — SPC: 10-20 m/s linear, > 20 m/s → Term = 1.0 (GECAPPT)
-    // Achtung: SPC cappt bei 1.0, NICHT bei 1.5 für normales SCP
-    // (1.5 ist nur für STP-shearTerm gültig!)
-    const shearTerm = shear >= 20 ? 1.0 : (shear / 20);
-
-    // CIN-Term nach Gropp & Davenport (2018):
-    // muCIN > -40 J/kg → cinTerm = 1.0
-    // muCIN <= -40 J/kg → cinTerm = -40 / muCIN (wobei cin als Absolutwert vorliegt)
-    // Physikalisch: Starke CIN verhindert Konvektionsauslöse trotz günstiger Kinematik
-    let cinTerm;
-    if (cin <= 40) {
-        cinTerm = 1.0;  // günstig: CIN schwach
-    } else {
-        // Gropp & Davenport: -40 / muCIN, wobei muCIN negativ ist
-        // In unserem Code ist cin = abs(CIN), also: -40 / (-cin) = 40 / cin
-        cinTerm = Math.max(0, 40 / cin);
-    }
-
-    // Regionaler Skalierungsfaktor
-    // Quellen:
-    // - Taszarek et al. 2020 (J.Clim.): Europa CAPE-Tail 3000-4000 J/kg vs. USA 6000-8000 J/kg
-    //   → Gleiche Physik, aber SCP-Werte strukturell niedriger
-    // - Taszarek BAMS 2021: STP-Schwelle 0.75 für Europa (statt 1.0 USA)
-    //   → Übertragen auf SCP: Europäische Ereignisse bei SCP ~0.5-1.5 signifikant
-    // - Púčik et al. 2015: Europa sig. Tornados bei CAPE ähnlich non-severe, DLS entscheidend
-    // - Allen et al. 2011 (Australien): Ähnlich USA Plains klimatologisch
-    // - Brooks et al. 2003 (global): WMAXSHEAR > 500 = schweres Gewitter, universell gültig
+    // Regionaler Skalierungsfaktor (Taszarek 2020: Europa braucht niedrigere Schwellen)
     const regionScale = {
-        // USA: Referenz = 1.0 (SPC-Datenbasis)
-        'usa': 1.0,
-        // Kanada: ähnlich nördl. USA Plains, etwas weniger CAPE (Bunkers 2014)
-        'canada': 0.95,
-        // Südamerika: ähnlich USA Plains (Argentinien Pampas), Taszarek 2020
-        'south_america': 0.95,
-        // Australien: sehr ähnlich USA Plains (Allen et al. 2011)
-        'australia': 0.95,
-        // Südafrika (Highveld): hoch CAPE, aber SPC-Formeln ungetestet → konservativ
-        'south_africa': 0.90,
-        // Europa: Taszarek 2020/2021 — STP-Schwelle 0.75, SCP klimatologisch niedriger
-        // Púčik 2015: sig. Tornados Europa bei deutlich niedrigeren SCP als USA
-        'europe': 0.80,
-        // Russland/Zentralasien: europäisches Regime, kontinentaler Charakter
-        'russia_central_asia': 0.80,
-        // Ostasien (Japan, China): europäisches Regime, Taszarek 2021
-        'east_asia': 0.80,
-        // Neuseeland: maritim, HSLC-Regime möglich
-        'new_zealand': 0.80,
-        // Naher Osten: Frühjahrskonvektion, mediterran ähnlich
-        'middle_east': 0.75,
-        // Nordafrika (Maghreb): Mittelmeernähe, aber weniger häufig
-        'north_africa': 0.70,
-        // Zentralamerika: tropisch, CAPE hoch, aber Shear niedriger
-        'central_america': 0.75,
-        // Südasien (Indien/Pakistan): Monsun-Konvektion, Shear-Regime anders
-        'south_asia': 0.70,
-        // Südostasien: tropisch, ITCZ-dominiert, Shear sehr niedrig
-        'southeast_asia': 0.65,
-        // Ostafrika: Hochland-Konvektion, wenig Datenlage
-        'east_africa': 0.65,
-        // Zentralafrika: ITCZ, kaum organisierte Superzellen
-        'central_africa': 0.60,
-        // Westafrika: Sahel-MCS, kaum Superzellen
-        'west_africa': 0.60,
-    }[region] ?? 0.80;
+        'usa': 1.0, 'canada': 0.95, 'south_america': 0.95, 'south_africa': 0.9,
+        'australia': 0.95, 'europe': 0.85, 'east_asia': 0.85,
+        'south_asia': 0.8, 'southeast_asia': 0.75, 'middle_east': 0.8,
+        'central_america': 0.8, 'east_africa': 0.7, 'central_africa': 0.65,
+        'west_africa': 0.65, 'north_africa': 0.75, 'new_zealand': 0.85,
+        'russia_central_asia': 0.85
+    }[region] ?? 0.85;
 
     return Math.max(0, capeTerm * srhTerm * shearTerm * cinTerm * regionScale);
 }
@@ -719,109 +483,64 @@ function calcWMAXSHEAR(cape, shear) {
     return Math.round(Math.sqrt(2 * cape) * shear);
 }
 
-// STP nach SPC-Standard (Thompson et al. 2012, aktualisiert Coffer et al. 2019)
-// Zwei Versionen implementiert:
-//   A) STP_fixed (Thompson 2012): 0-1 km SRH / 150, EBWD/20 — SPC-Standard
-//   B) STP_coffer (Coffer 2019):  0-500 m SRH / 75  — bessere Diskriminierung
-//
-// Quelle STP_fixed: https://www.spc.noaa.gov/exper/mesoanalysis/help/begin.html
-//   STP = (sbCAPE/1500) * ((2000-sbLCL)/1000) * (SRH1km/150) * (EBWD/20) * ((200+CIN)/150)
-//   Cutoffs: EBWD < 12.5 m/s → STP = 0; LCL > 2000 m → LCL-Term = 0; CIN > -200 → CIN-Term = 0
-//
-// Quelle STP_coffer: Coffer et al. (2019, WAF), SPC stpc5:
-//   STP = (mlCAPE/1500) * ((2000-mlLCL)/1000) * (SRH500m/75) * (EBWD/20) * ((200+CIN)/150)
-//   "Replacing ESRH with 0-500 m SRH increases correct events by 8%,
-//    decreases false alarms by 18%"
-//
-// Globale Anpassung: Taszarek BAMS 2021:
-//   Europa STP-Schwelle = 0.75 (statt 1.0 USA)
-//   → Wir verwenden einheitliche SPC-Formel + regionalen Skalierungsfaktor
-//
-// Parameter:
-//   cape    = CAPE (J/kg) — Surface-based oder Mixed-Layer
-//   srh     = SRH (m²/s²) — 0-1 km ODER 0-500 m (je nach Aufruf)
-//   shear   = 0-6 km Bulk Wind Shear (m/s) — entspricht EBWD
-//   liftedIndex = Lifted Index (°C) — Fallback für LCL wenn temp2m/dew2m fehlen
-//   cin     = CIN (J/kg, Absolutwert)
-//   srh_type = '0-1km' oder '0-500m' — bestimmt Normierung
-function calcSTP(cape, srh, shear, liftedIndex, cin, region = 'europe', temp2m = null, dew2m = null, srh_type = '0-1km') {
-    // *** HARTES CUTOFF nach SPC: EBWD < 12.5 m/s → STP = 0 ***
-    // Quelle: Thompson et al. 2012 & SPC-Mesoanalysis-Help
+// STP (Significant Tornado Parameter) - nach Thompson et al. (2012) / SPC fixed-layer
+// Quelle: https://www.spc.noaa.gov/exper/mesoanalysis/help/help_stor.html
+// Formel: STP = (sbCAPE/1500) * ((2000-LCL)/1000) * (SRH1/150) * (6BWD/20) * ((200+CIN)/150)
+function calcSTP(cape, srh, shear, liftedIndex, cin, region = 'europe', temp2m = null, dew2m = null) {
+    const stpThresholds = {
+        'usa':                { minCAPE: 300, minSRH: 80, minShear: 10, normCAPE: 1500, normSRH: 150, normShear: 20 },
+        'canada':             { minCAPE: 200, minSRH: 70, minShear: 9,  normCAPE: 1200, normSRH: 130, normShear: 18 },
+        'central_america':    { minCAPE: 200, minSRH: 50, minShear: 8,  normCAPE: 1200, normSRH: 100, normShear: 16 },
+        'south_america':      { minCAPE: 250, minSRH: 70, minShear: 10, normCAPE: 1400, normSRH: 130, normShear: 18 },
+        'south_africa':       { minCAPE: 300, minSRH: 90, minShear: 12, normCAPE: 1600, normSRH: 160, normShear: 20 },
+        'east_africa':        { minCAPE: 200, minSRH: 50, minShear: 7,  normCAPE: 1300, normSRH: 100, normShear: 15 },
+        'central_africa':     { minCAPE: 200, minSRH: 40, minShear: 6,  normCAPE: 1200, normSRH:  80, normShear: 14 },
+        'west_africa':        { minCAPE: 200, minSRH: 45, minShear: 6,  normCAPE: 1300, normSRH:  90, normShear: 14 },
+        'north_africa':       { minCAPE: 200, minSRH: 50, minShear: 8,  normCAPE: 1200, normSRH: 100, normShear: 16 },
+        'south_asia':         { minCAPE: 250, minSRH: 60, minShear: 8,  normCAPE: 1400, normSRH: 120, normShear: 16 },
+        'east_asia':          { minCAPE: 200, minSRH: 70, minShear: 10, normCAPE: 1300, normSRH: 130, normShear: 18 },
+        'southeast_asia':     { minCAPE: 200, minSRH: 50, minShear: 6,  normCAPE: 1300, normSRH: 100, normShear: 14 },
+        'australia':          { minCAPE: 250, minSRH: 80, minShear: 10, normCAPE: 1400, normSRH: 140, normShear: 20 },
+        'new_zealand':        { minCAPE: 150, minSRH: 50, minShear: 7,  normCAPE: 1000, normSRH: 100, normShear: 16 },
+        'russia_central_asia':{ minCAPE: 150, minSRH: 50, minShear: 7,  normCAPE: 1000, normSRH: 100, normShear: 16 },
+        'middle_east':        { minCAPE: 200, minSRH: 50, minShear: 8,  normCAPE: 1200, normSRH: 100, normShear: 16 },
+        'europe':             { minCAPE: 100, minSRH: 40, minShear: 6,  normCAPE: 1000, normSRH: 100, normShear: 18 }
+    };
+
+    const t = stpThresholds[region] || stpThresholds['europe'];
+
+    if (cape < t.minCAPE || srh < t.minSRH || shear < t.minShear) return 0;
+
+    // *** HARTES CUTOFF nach SPC: 6BWD < 12.5 m/s → STP = 0 ***
     if (shear < 12.5) return 0;
-    if (cape <= 0 || srh <= 0) return 0;
 
-    // CAPE-Term: sbCAPE/1500 J/kg (SPC-Standard, NICHT regionalisiert)
-    // Thompson 2003/2012: normiert auf 1500 J/kg als "Signifikanz-Schwelle"
-    const capeTerm = Math.min(cape / 1500, 3.0);
-
-    // LCL-Term nach Bolton (1980): LCL_height ≈ 125 * (T2m - Td2m) [Meter]
-    // SPC: < 1000 m → 1.0; > 2000 m → 0.0 (hartes Cutoff)
+    // LCL-Höhe nach Bolton (1980): LCL (m) ≈ 125 * (T - Td)
     let lclTerm;
     if (temp2m !== null && dew2m !== null) {
-        // Bolton (1980) LCL-Approximation — ausreichend genau für Modell-Output
-        const lclHeight = Math.max(0, 125 * (temp2m - dew2m));
-        if      (lclHeight < 1000)  lclTerm = 1.0;  // günstig: tiefe LCL
-        else if (lclHeight >= 2000) lclTerm = 0.0;  // hartes SPC-Cutoff
-        else    lclTerm = (2000 - lclHeight) / 1000; // lineare Interpolation
+        const lclHeight = 125 * (temp2m - dew2m);
+        if (lclHeight < 1000) lclTerm = 1.0;
+        else if (lclHeight >= 2000) lclTerm = 0.0; // *** HARTES CUTOFF nach SPC ***
+        else lclTerm = (2000 - lclHeight) / 1000;  // lineare Interpolation wie SPC
     } else {
-        // Fallback via Lifted Index (schlechtere Approximation)
         lclTerm = liftedIndex <= -4 ? 1.0
                 : liftedIndex <= -2 ? 0.8
-                : liftedIndex <=  0 ? 0.5
+                : liftedIndex <= 0  ? 0.5
                 : 0.2;
     }
 
-    // SRH-Term: Abhängig von SRH-Layer
-    // STP_fixed  (Thompson 2012): SRH_0-1km / 150 m²/s²
-    // STP_coffer (Coffer 2019):   SRH_0-500m / 75  m²/s²
-    // Beide sind physikalisch konsistent (75 = 150/2, weil 0-500m-Layer halb so tief)
-    // SPC cap: 3.0
-    let srhNorm;
-    if (srh_type === '0-500m') {
-        // Coffer et al. 2019: 0-500 m SRH normiert mit 75 m²/s²
-        srhNorm = 75;
-    } else {
-        // Thompson 2012 Standard: 0-1 km SRH normiert mit 150 m²/s²
-        srhNorm = 150;
-    }
-    const srhTerm = Math.min(srh / srhNorm, 3.0);
-
-    // EBWD-Term (= 0-6 km Shear):
-    // SPC: < 12.5 m/s → 0 (oben bereits gecappt)
-    // > 30 m/s → Term = 1.5 (SPC-Standard für STP, anders als SCP!)
+    const capeTerm  = Math.min(cape / t.normCAPE, 3.0);
+    // *** SRH jetzt normiert mit 150 (SPC-Standard), nicht 100 ***
+    const srhTerm   = Math.min(srh / 150, 3.0);
+    // *** 6BWD normiert mit 20 m/s (SPC-Standard), cap bei 1.5 für > 30 m/s ***
     const shearTerm = shear >= 30 ? 1.5 : (shear / 20);
 
-    // CIN-Term: ((200 + mlCIN) / 150) = ((200 - |CIN|) / 150)
-    // SPC: mlCIN > -50 J/kg → CIN-Term = 1.0; mlCIN < -200 J/kg → CIN-Term = 0.0
+    // *** CIN: hartes Cutoff bei -200, set to 1 wenn > -50 J/kg (SPC-Standard) ***
     let cinTerm;
-    if      (cin <= 50)  cinTerm = 1.0;            // günstiges CIN → kein Penalty
-    else if (cin >= 200) cinTerm = 0.0;            // hartes Cutoff: starkes Capping
-    else    cinTerm = (200 - cin) / 150;           // lineare Interpolation SPC-Formel
+    if (cin <= 50) cinTerm = 1.0;          // cin ist abs-Wert im Code, also cin < 50 = günstig
+    else if (cin >= 200) cinTerm = 0.0;    // hartes Cutoff
+    else cinTerm = (200 - cin) / 150;      // lineare Interpolation (200+(-cin))/150
 
-    // Basis-STP (SPC-Standard, unregionalisiert)
-    const stpRaw = capeTerm * lclTerm * srhTerm * shearTerm * cinTerm;
-
-    // Regionaler Skalierungsfaktor für globale Anwendung
-    // Hauptquelle: Taszarek BAMS 2021 — STP-Schwelle Europa = 0.75 (statt 1.0)
-    // → Effektiv werden europäische Ereignisse bei STP ~0.5-0.75 als signifikant eingestuft
-    // → Regionaler Scale: Europa = 1.0/0.75 ≈ 1.33 wäre FALSCH (erhöht STP)
-    // KORREKT: STP-Formel bleibt unverändert, aber die INTERPRETATION der Schwellenwerte
-    //           wird regional angepasst (in calculateTornadoProbability)
-    // Ausnahme: Für Regionen mit strukturell anderen Hodographen (tropisch) leichte Absenkung
-    const regionScale = {
-        'usa': 1.0, 'canada': 1.0, 'south_america': 1.0, 'australia': 1.0,
-        'south_africa': 1.0,
-        // Europäische & gemäßigte Regionen: Taszarek 2021 — STP-Schwelle niedriger
-        // WIR SKALIEREN NICHT die Formel, sondern passen Schwellenwerte unten an
-        'europe': 1.0, 'russia_central_asia': 1.0, 'east_asia': 1.0,
-        'new_zealand': 1.0, 'middle_east': 1.0, 'north_africa': 1.0,
-        // Tropische Regionen: Shear-Regime fundamental anders (ITCZ-dominiert)
-        // Tornados selten durch klassische Superzellen → konservative Absenkung
-        'central_america': 0.85, 'south_asia': 0.80, 'southeast_asia': 0.75,
-        'east_africa': 0.75, 'central_africa': 0.70, 'west_africa': 0.70,
-    }[region] ?? 1.0;
-
-    return Math.max(0, stpRaw * regionScale);
+    return Math.max(0, capeTerm * srhTerm * shearTerm * lclTerm * cinTerm);
 }
 
 // Ensemble-Wahrscheinlichkeit (vereinfacht)
@@ -981,132 +700,46 @@ function getProbabilityParams(region) {
 function calculateProbability(hour, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
-    // "cape/cin" aus best_match werden im restlichen Code als Mixed-Layer-Proxies genutzt
-    // (Coffer 2019 STP_coffer). Für klare Semantik verwenden wir mlCape/mlCin.
-    const mlCape = Math.max(0, hour.mlCape ?? hour.cape ?? 0);
-    const mlCin = Math.abs(hour.mlCin ?? hour.cin ?? 0);
+    const cape = Math.max(0, hour.cape ?? 0);
+    const cin = Math.abs(hour.cin ?? 0);
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
     
     // Regionsspezifische Filter für Fehlalarme
     const p = getProbabilityParams(region);
     if (temp2m < p.minTemp) return 0; // Zu kalt für Gewitter
-
-    // HSLC / elevated convection Ausnahme:
-    // Studien:
-    // - Sherburn & Parker 2014 (HSLC): CAPE ≤ 500 J/kg + Shear ≥ 18 m/s → reale Tornados möglich
-    // - Zhang et al. 2023 (China): sig. Tornados bei muCAPE teils < 300 J/kg
-    // - SPC-Outlooks: verwenden MUCAPE explizit, um Gewitter in stark gedeckelten, aber
-    //   dynamischen Umgebungen (starker Shear, forcierte Hebung) zu begründen.
-    //
-    // Idee: Wenn muCAPE vorhanden und Shear hoch genug ist, sollen wir die frühen
-    // "kein CAPE → kein Gewitter"-Filter lockern, um elevated/HSLC-Lagen zuzulassen.
-    //
-    // Wir definieren ein einfaches HSLC/elevated-Kriterium:
-    //   - muCAPE ≥ 300 J/kg (nach Zhang 2023 & Sherburn 2014 "low but non-zero CAPE")
-    //   - Shear ≥ 18 m/s (Sherburn & Parker 2014 HSLC-Schwelle)
-    //   - Temperatur nicht extrem kalt (hier: ≥ 4–6°C je nach Region)
-    //
-    // Diese Fälle umgehen NUR die stark CAPE-basierten Früh-Returns; die eigentliche
-    // Wahrscheinlichkeit wird weiter unten über SCP/STP/WMAXSHEAR etc. bestimmt.
+    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
+    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
     
-    // Berechne Indizes (Shear/SRH für HSLC-Check und spätere Parameter)
+    // Berechne Indizes
     const shear = calcShear(hour);
     const srh1km = calcSRH(hour, '0-1km');
     const srh = calcSRH(hour, '0-3km');
-
-    const muCapeRaw = Math.max(0, hour.muCape ?? 0);
-
-    // Regionale HSLC / elevated-Schwellen
-    //
-    // Leitstudien:
-    // - USA HSLC: Sherburn & Parker 2014 → CAPE ≤ 500 J/kg, Shear ≥ 18 m/s
-    // - Europa/ESTOFEX/Taszarek 2019/2020: signifikante Konvektion teils schon bei
-    //   muCAPE ~150–300 J/kg + DLS ~15–20 m/s
-    // - Zhang 2023 (China/Ostasien): sig. Tornados bei muCAPE < 300 J/kg möglich
-    //
-    // Wir legen pro Region konservative, aber differenzierte Schwellen für "HSLC/elevated"
-    // fest, die NUR die harten Früh-Returns umgehen, nicht aber automatisch hohe
-    // Wahrscheinlichkeiten erzeugen.
-    const hslcByRegion = {
-        // Nordamerika / Plains-artige Regionen
-        usa:               { mu: 300, shear: 18, temp: 6 },
-        canada:            { mu: 250, shear: 16, temp: 4 }, // kühler, etwas weniger CAPE (Bunkers 2014)
-
-        // Südhalbkugel-Plains-Analoga
-        south_america:     { mu: 300, shear: 18, temp: 6 }, // Argentinien Pampas, Taszarek 2020
-        australia:         { mu: 300, shear: 18, temp: 6 }, // Allen et al. 2011
-        south_africa:      { mu: 300, shear: 18, temp: 6 },
-
-        // Europa / gemässigte Kontinente (ESTOFEX/Taszarek)
-        europe:            { mu: 200, shear: 16, temp: 4 },
-        russia_central_asia:{ mu: 200, shear: 16, temp: 4 },
-        new_zealand:       { mu: 180, shear: 15, temp: 4 }, // maritime HSLC analog UK/Irland
-        east_asia:         { mu: 200, shear: 16, temp: 4 }, // Zhang 2023: muCAPE < 300 teils ausreichend
-
-        // Mittelmeer / Nahost / Nordafrika: wärmer, aber synoptisch ähnlich Europa
-        middle_east:       { mu: 220, shear: 16, temp: 6 },
-        north_africa:      { mu: 220, shear: 15, temp: 6 },
-
-        // Tropen / Subtropen: häufig hohe muCAPE, Shear limitierend → strenger Shear-Fokus
-        central_america:   { mu: 300, shear: 18, temp: 8 },
-        south_asia:        { mu: 300, shear: 18, temp: 8 },
-        southeast_asia:    { mu: 350, shear: 18, temp: 10 },
-        west_africa:       { mu: 300, shear: 18, temp: 8 },
-        central_africa:    { mu: 300, shear: 18, temp: 8 },
-        east_africa:       { mu: 280, shear: 18, temp: 8 },
-    };
-
-    const hslcParams = hslcByRegion[region] || { mu: 300, shear: 18, temp: 8 };
-    const muCapeHSLC = hslcParams.mu;
-    const shearHSLC = hslcParams.shear;
-    const tempThresholdHSLC = hslcParams.temp;
-
-    const isHSLC_or_elevated = (
-        muCapeRaw >= muCapeHSLC &&
-        shear >= shearHSLC &&
-        temp2m >= tempThresholdHSLC
-    );
-
-    if (!isHSLC_or_elevated) {
-        if (temp2m < p.minTempWithCAPE && mlCape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
-        if (mlCape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
-    }
     const { kIndex, showalter, lapse, liftedIndex } = calcIndices(hour);
     const relHum2m = calcRelHum(temp2m, dew);
     const cloudSum = (hour.cloudLow ?? 0) + (hour.cloudMid ?? 0) + (hour.cloudHigh ?? 0);
-
-    const isNight = hour.directRadiation < 20;
-    const isDaytime = hour.directRadiation >= 200;
     
     // Kombinierte Indizes (bewährte meteorologische Parameter)
-    const ehi = (mlCape * srh) / 160000;
-
-    // Für SCP nach Thompson et al. (2004) sollen muCAPE/muCIN verwendet werden.
-    // Open-Meteo liefert für das ECMWF IFS 0.25°-Modell CAPE/CIN, die wir hier als
-    // Näherung für muCAPE/muCIN interpretieren (da sie die „instabilste“ Schicht repräsentieren).
-    // Fallback: falls ECMWF-Daten nicht verfügbar sind, nutze wie bisher CAPE/CIN aus best_match (mlCape/mlCin).
-    const muCape = Math.max(0, hour.muCape ?? mlCape);
-    const muCin = Math.abs(hour.muCin ?? mlCin);
-    const scp = calcSCP(muCape, shear, srh, muCin, region);
-    const stp = calcSTP(mlCape, srh1km, shear, liftedIndex, mlCin, region, temp2m, dew);
-    const wmaxshear = calcWMAXSHEAR(mlCape, shear);
+    const ehi = (cape * srh) / 160000;
+    const scp = calcSCP(cape, shear, srh, cin, region);
+    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
+    const wmaxshear = calcWMAXSHEAR(cape, shear);
     
     // Basis-Score basierend auf kombinierten Indizes (regionsspezifisch)
     let score = 0;
     
     // CAPE-Bewertung (regionsspezifisch)
     for (let i = 0; i < p.capeThresholds.length; i++) {
-        if (mlCape >= p.capeThresholds[i]) {
+        if (cape >= p.capeThresholds[i]) {
             score += p.capeScores[i];
             break;
         }
     }
     
     // CIN-Penalty (stärker gewichtet)
-    if (mlCin > 200) score -= 15;
-    else if (mlCin > 100) score -= 8;
-    else if (mlCin > 50) score -= 4;
+    if (cin > 200) score -= 15;
+    else if (cin > 100) score -= 8;
+    else if (cin > 50) score -= 4;
     
     // Kombinierte Indizes (regionsspezifisch)
     // Regionen mit hohen Thresholds: usa, south_africa, south_america, australia
@@ -1147,30 +780,19 @@ function calculateProbability(hour, region = 'europe') {
         else if (ehi >= 0.3) score += 2;
     }
     
-    // WMAXSHEAR = sqrt(2 * CAPE) * BS06
-    // Quellen:
-    // - Taszarek et al. (2020, J.Clim. Part I): Schwelle 500 m²/s² = "severe environment"
-    //   (mit Bedingung: BS06 ≥ 10 m/s)
-    // - Taszarek 2019 (J.Clim. Europa-Klimatologie): Diskriminant nonsevere/severe = 400 m²/s²
-    // - Brooks et al. (2003, Atmos.Res.): Globale Schwelle bestätigt durch Taszarek
-    // - Für tropische Regionen (SE-Asien, Zentralafrika): CAPE dominiert → niedrigere
-    //   WMAXSHEAR-Werte trotz realer Gewittergefahr → regionaler Faktor notwendig
-    const wmaxshearScale = ['south_asia','southeast_asia','central_africa','west_africa','east_africa'].includes(region) ? 0.7 : 1.0;
-    const wms = wmaxshear * wmaxshearScale;
-
-    if      (wms >= 1500) score += 20; // Extreme Bedingungen: breite Ereignisdokumentation
-    else if (wms >= 1200) score += 17; // Sehr schwere Gewitter (USA/Argentinien Regime)
-    else if (wms >= 900)  score += 13; // Schwere Gewitter, typische Superzell-Umgebung
-    else if (wms >= 700)  score += 9;  // Deutliche Gewittergefahr
-    else if (wms >= 500)  score += 6;  // Taszarek 2020: "severe environment" Schwelle
-    else if (wms >= 400)  score += 3;  // Taszarek 2019 Europa: nonsevere/severe Diskriminant
-    else if (wms >= 250)  score += 1;  // Schwacher Hinweis auf organisierte Konvektion
+    // WMAXSHEAR-Score (nach SCP/STP/EHI-Block)
+    // Taszarek et al. 2020: bester globaler Prädiktor, Schwelle 500 m²/s²
+    if (wmaxshear >= 1200) score += 18;
+    else if (wmaxshear >= 900) score += 14;
+    else if (wmaxshear >= 700) score += 10;
+    else if (wmaxshear >= 500) score += 6;
+    else if (wmaxshear >= 300) score += 3;
     
     // Shear und SRH (regionsspezifisch)
     const highCAPEThreshold = isHighThreshold ? 800 : 500;
     const lowCAPEThreshold = isHighThreshold ? 500 : 200;
     
-    if (mlCape >= highCAPEThreshold) {
+    if (cape >= highCAPEThreshold) {
         if (isHighThreshold) {
             if (shear >= 25) score += 12;
             else if (shear >= 20) score += 10;
@@ -1192,7 +814,7 @@ function calculateProbability(hour, region = 'europe') {
             else if (srh >= 120) score += 4;
             else if (srh >= 80) score += 2;
         }
-    } else if (mlCape >= lowCAPEThreshold) {
+    } else if (cape >= lowCAPEThreshold) {
         if (isHighThreshold) {
             if (shear >= 20) score += 5;
             else if (shear >= 15) score += 3;
@@ -1210,22 +832,22 @@ function calculateProbability(hour, region = 'europe') {
     
     // Lifted Index (regionsspezifisch)
     if (region === 'usa') {
-        if (mlCape >= 600) {
+        if (cape >= 600) {
             if (liftedIndex <= -7) score += 12;
             else if (liftedIndex <= -6) score += 10;
             else if (liftedIndex <= -4) score += 6;
             else if (liftedIndex <= -2) score += 3;
-        } else if (mlCape >= 500) {
+        } else if (cape >= 500) {
             if (liftedIndex <= -5) score += 4;
             else if (liftedIndex <= -3) score += 2;
         }
     } else {
         // Europa: Auch bei niedrigem CAPE
-        if (mlCape >= 400) {
+        if (cape >= 400) {
             if (liftedIndex <= -6) score += 10;
             else if (liftedIndex <= -4) score += 6;
             else if (liftedIndex <= -2) score += 3;
-        } else if (mlCape >= 200) {
+        } else if (cape >= 200) {
             if (liftedIndex <= -4) score += 3;
             else if (liftedIndex <= -2) score += 1;
         }
@@ -1237,7 +859,7 @@ function calculateProbability(hour, region = 'europe') {
         else if (lapse >= 7.5) score += 5;
         else if (lapse >= 7.0) score += 3;
         else if (lapse >= 6.5) score += 2;
-        if (lapse < 5.5 && mlCape < 1000) score -= 5;
+        if (lapse < 5.5 && cape < 1000) score -= 5;
     } else {
         // Europa: Niedrigere Schwelle
         if (lapse >= 7.5) score += 5;
@@ -1245,76 +867,66 @@ function calculateProbability(hour, region = 'europe') {
         else if (lapse >= 6.5) score += 2;
         else if (lapse >= 6.2) score += 1;
         else if (lapse >= 6.0) score += 1;
-        if (lapse < 5.0 && mlCape < 800) score -= 4;
+        if (lapse < 5.0 && cape < 800) score -= 4;
     }
     
     // K-Index
     if (kIndex >= 35) score += 6;
     else if (kIndex >= 30) score += 4;
     else if (kIndex >= 25) score += 2;
-
-    const w1000 = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
-    const w925  = windToUV((hour.wind_speed_925hPa  ?? 0) / 3.6, hour.windDir925  ?? 0);
-    const w850  = windToUV((hour.wind_speed_850hPa  ?? 0) / 3.6, hour.windDir850  ?? 0);
     
     // Feuchtigkeit und Temperatur (regionsspezifisch)
     if (region === 'usa') {
-        if (isDaytime && temp2m >= 18 && mlCape >= 600) {
-            if (hour.directRadiation >= 600) score += 5;
-            else if (hour.directRadiation >= 400) score += 3;
-        } else if (isNight) {
-            // LLJ-Check: präziser via Windprofil-Struktur (Bonner 1968)
-            // Starker Shear im untersten Layer (1000→925 hPa) aber schwächerer
-            // Shear in der Übergangsschicht (925→850 hPa) = klassisches LLJ-Profil
-            const llShear_low = Math.hypot(w925.u - w1000.u, w925.v - w1000.v);
-            const llShear_mid = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
-            // Quelle: Bonner 1968, Hanesiak 2024, Climate Central 2025
-            const llj_active = llShear_low > llShear_mid * 1.5 && llShear_low > 4.0 && srh >= 100;
-
-            if (!llj_active && shear < 12 && mlCape < 1000) score -= 5;
-            if (llj_active && mlCape >= 800) score += 4;   // LLJ-Bonus
-            else if (mlCape >= 1200 && srh >= 150) score += 2;
+        if (cape >= 600) {
+            if (dew >= 18 && temp2m >= 20) score += 5;
+            else if (dew >= 16 && temp2m >= 18) score += 3;
+            else if (dew >= 14 && temp2m >= 16) score += 2;
+            
+            if (relHum2m >= 70 && temp2m >= 20) score += 4;
+            else if (relHum2m >= 65 && temp2m >= 18) score += 2;
+        } else if (cape >= 500) {
+            if (dew >= 16 && temp2m >= 18) score += 2;
+            if (relHum2m >= 70 && temp2m >= 18) score += 1;
         }
     } else {
-        if (isDaytime && temp2m >= 12 && mlCape >= 300) {
-            if (hour.directRadiation >= 500) score += 4;
-            else if (hour.directRadiation >= 300) score += 2;
-            else if (hour.directRadiation >= 200) score += 1;
-        } else if (isNight) {
-            // LLJ-Check Europa: niedrigere Schwellen (Taszarek 2019)
-            const llShear_low = Math.hypot(w925.u - w1000.u, w925.v - w1000.v);
-            const llShear_mid = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
-            const llj_active = llShear_low > llShear_mid * 1.5 && llShear_low > 4.0 && srh >= 75;
-
-            if (!llj_active && shear < 10 && mlCape < 500) score -= 3;
-            if (llj_active && mlCape >= 600) score += 3;   // LLJ-Bonus
-            else if (mlCape >= 800 && srh >= 100) score += 2;
+        // Europa: Auch bei niedrigem CAPE
+        if (cape >= 400) {
+            if (dew >= 16 && temp2m >= 16) score += 4;
+            else if (dew >= 13 && temp2m >= 13) score += 2;
+            
+            if (relHum2m >= 65 && temp2m >= 18) score += 3;
+        } else if (cape >= 200) {
+            // Europa: Feuchtigkeit auch bei niedrigem CAPE wichtig
+            if (dew >= 15 && temp2m >= 15) score += 3;
+            else if (dew >= 13 && temp2m >= 13) score += 2;
+            
+            if (relHum2m >= 70 && temp2m >= 18) score += 2;
         }
     }
     
     // Niederschlag (regionsspezifisch)
     if (region === 'usa') {
-        if (mlCape >= 600) {
-            if (precipAcc >= 3.0 && mlCape >= 1000) score += 7;
-            else if (precipAcc >= 2.0 && mlCape >= 800) score += 5;
-            else if (precipAcc >= 1.0 && mlCape >= 600) score += 3;
+        if (cape >= 600) {
+            if (precipAcc >= 3.0 && cape >= 1000) score += 7;
+            else if (precipAcc >= 2.0 && cape >= 800) score += 5;
+            else if (precipAcc >= 1.0 && cape >= 600) score += 3;
             
-            if (precipProb >= 70 && mlCape >= 800) score += 5;
-            else if (precipProb >= 55 && mlCape >= 600) score += 3;
-        } else if (mlCape >= 500) {
+            if (precipProb >= 70 && cape >= 800) score += 5;
+            else if (precipProb >= 55 && cape >= 600) score += 3;
+        } else if (cape >= 500) {
             if (precipAcc >= 2.0) score += 2;
             if (precipProb >= 60) score += 2;
         }
     } else {
         // Europa: Auch bei niedrigem CAPE
-        if (mlCape >= 400) {
-            if (precipAcc >= 2.5 && mlCape >= 800) score += 6;
-            else if (precipAcc >= 1.2 && mlCape >= 600) score += 4;
-            else if (precipAcc >= 0.5 && mlCape >= 400) score += 2;
+        if (cape >= 400) {
+            if (precipAcc >= 2.5 && cape >= 800) score += 6;
+            else if (precipAcc >= 1.2 && cape >= 600) score += 4;
+            else if (precipAcc >= 0.5 && cape >= 400) score += 2;
             
-            if (precipProb >= 65 && mlCape >= 600) score += 4;
-            else if (precipProb >= 45 && mlCape >= 400) score += 2;
-        } else if (mlCape >= 200) {
+            if (precipProb >= 65 && cape >= 600) score += 4;
+            else if (precipProb >= 45 && cape >= 400) score += 2;
+        } else if (cape >= 200) {
             // Europa: Niederschlag auch bei niedrigem CAPE bewerten
             if (precipAcc >= 1.0) score += 2;
             else if (precipAcc >= 0.5) score += 1;
@@ -1327,44 +939,48 @@ function calculateProbability(hour, region = 'europe') {
     
     // Dauerregen-Filter (regionsspezifisch)
     if (region === 'usa') {
-        if (precipAcc > 3 && mlCape < 600) score -= 10;
+        if (precipAcc > 3 && cape < 600) score -= 10;
     } else {
-        if (precipAcc > 2 && mlCape < 400) score -= 8;
+        if (precipAcc > 2 && cape < 400) score -= 8;
     }
     
     // Relative Feuchte 500hPa (trockene mittlere Troposphäre begünstigt, regionsspezifisch)
     if (region === 'usa') {
-        if (hour.rh500 < 30 && mlCape >= 1000) score += 6;
-        else if (hour.rh500 < 40 && mlCape >= 800) score += 4;
-        else if (hour.rh500 > 85 && mlCape < 1000) score -= 5;
+        if (hour.rh500 < 30 && cape >= 1000) score += 6;
+        else if (hour.rh500 < 40 && cape >= 800) score += 4;
+        else if (hour.rh500 > 85 && cape < 1000) score -= 5;
     } else {
-        if (hour.rh500 < 35 && mlCape >= 800) score += 5;
-        else if (hour.rh500 < 45 && mlCape >= 600) score += 3;
-        else if (hour.rh500 > 85 && mlCape < 800) score -= 4;
+        if (hour.rh500 < 35 && cape >= 800) score += 5;
+        else if (hour.rh500 < 45 && cape >= 600) score += 3;
+        else if (hour.rh500 > 85 && cape < 800) score -= 4;
     }
     
+    // Strahlung (tagsüber wichtig, regionsspezifisch)
+    const isNight = hour.directRadiation < 20;
+    const isDaytime = hour.directRadiation >= 200;
+
     if (region === 'usa') {
-        if (isDaytime && temp2m >= 18 && mlCape >= 600) {
+        if (isDaytime && temp2m >= 18 && cape >= 600) {
             if (hour.directRadiation >= 600) score += 5;
             else if (hour.directRadiation >= 400) score += 3;
         } else if (isNight) {
             // Low-Level-Jet Check: hohes SRH nachts = LLJ aktiv → kein Pauschalabzug
             // Quelle: Hanesiak 2024, Climate Central 2025
             const llj_active = srh >= 150 && shear >= 12;
-            if (!llj_active && shear < 12 && mlCape < 1000) score -= 5; // vorher -7
-            if (llj_active && mlCape >= 800) score += 4;  // LLJ-Bonus
-            else if (mlCape >= 1200 && srh >= 150) score += 2;
+            if (!llj_active && shear < 12 && cape < 1000) score -= 5; // vorher -7
+            if (llj_active && cape >= 800) score += 4;  // LLJ-Bonus
+            else if (cape >= 1200 && srh >= 150) score += 2;
         }
     } else {
-        if (isDaytime && temp2m >= 12 && mlCape >= 300) {
+        if (isDaytime && temp2m >= 12 && cape >= 300) {
             if (hour.directRadiation >= 500) score += 4;
             else if (hour.directRadiation >= 300) score += 2;
             else if (hour.directRadiation >= 200) score += 1;
         } else if (isNight) {
             const llj_active = srh >= 100 && shear >= 10;
-            if (!llj_active && shear < 10 && mlCape < 500) score -= 3; // vorher -4
-            if (llj_active && mlCape >= 600) score += 3;  // LLJ-Bonus
-            else if (mlCape >= 800 && srh >= 100) score += 2;
+            if (!llj_active && shear < 10 && cape < 500) score -= 3; // vorher -4
+            if (llj_active && cape >= 600) score += 3;  // LLJ-Bonus
+            else if (cape >= 800 && srh >= 100) score += 2;
         }
     }
     
@@ -1372,34 +988,34 @@ function calculateProbability(hour, region = 'europe') {
     if (region === 'usa') {
         if (hour.wind >= 8 && hour.wind <= 18 && temp2m >= 15) score += 3;
         else if (hour.wind > 18 && hour.wind <= 25 && temp2m >= 15) score += 5;
-        if (hour.wind > 30 && mlCape < 2000) score -= 5;
+        if (hour.wind > 30 && cape < 2000) score -= 5;
     } else {
         if (hour.wind >= 5 && hour.wind <= 15 && temp2m >= 12) score += 2;
         else if (hour.wind > 15 && hour.wind <= 20 && temp2m >= 12) score += 4;
-        if (hour.wind > 25 && mlCape < 1500) score -= 4;
+        if (hour.wind > 25 && cape < 1500) score -= 4;
     }
     
     // Böen (können auf Gewitteraktivität hinweisen, regionsspezifisch)
     const gustDiff = hour.gust - hour.wind;
     if (region === 'usa') {
-        if (gustDiff > 15 && mlCape >= 1000 && temp2m >= 15) score += 5;
-        else if (gustDiff > 10 && mlCape >= 800) score += 3;
+        if (gustDiff > 15 && cape >= 1000 && temp2m >= 15) score += 5;
+        else if (gustDiff > 10 && cape >= 800) score += 3;
     } else {
-        if (gustDiff > 12 && mlCape >= 800 && temp2m >= 12) score += 4;
-        else if (gustDiff > 8 && mlCape >= 600) score += 2;
+        if (gustDiff > 12 && cape >= 800 && temp2m >= 12) score += 4;
+        else if (gustDiff > 8 && cape >= 600) score += 2;
     }
 
     // DCAPE: Downdraft-Potential (Gilmore & Wicker 1998)
     // Hoher DCAPE verstärkt Böen, Hagel, MCS-Aktivität
     const dcape = calcDCAPE(hour);
     if (isHighThreshold) {
-        if (dcape >= 1000 && mlCape >= 500) score += 6;
-        else if (dcape >= 700 && mlCape >= 400) score += 4;
-        else if (dcape >= 500 && mlCape >= 300) score += 2;
+        if (dcape >= 1000 && cape >= 500) score += 6;
+        else if (dcape >= 700 && cape >= 400) score += 4;
+        else if (dcape >= 500 && cape >= 300) score += 2;
     } else {
-        if (dcape >= 800 && mlCape >= 400) score += 5;
-        else if (dcape >= 600 && mlCape >= 300) score += 3;
-        else if (dcape >= 400 && mlCape >= 200) score += 1;
+        if (dcape >= 800 && cape >= 400) score += 5;
+        else if (dcape >= 600 && cape >= 300) score += 3;
+        else if (dcape >= 400 && cape >= 200) score += 1;
     }
     
     // Ensemble-Daten (falls verfügbar, regionsspezifisch)
@@ -1414,12 +1030,12 @@ function calculateProbability(hour, region = 'europe') {
         }
         
         const liProb = getEnsembleProb(hour.ensemble, 'lifted_index', -3, 'below');
-        if (liProb !== null && liProb >= MIN_PROB && mlCape >= capeMinCAPE) {
+        if (liProb !== null && liProb >= MIN_PROB && cape >= capeMinCAPE) {
             score += Math.round((isHighThreshold ? 5 : 4) * liProb);
         }
         
         const precipProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
-        if (precipProb !== null && precipProb >= MIN_PROB && mlCape >= capeMinCAPE) {
+        if (precipProb !== null && precipProb >= MIN_PROB && cape >= capeMinCAPE) {
             score += Math.round((isHighThreshold ? 4 : 3) * precipProb);
         }
     }
@@ -1430,16 +1046,16 @@ function calculateProbability(hour, region = 'europe') {
     
     // Mindestanforderungen für Gewitter (regionsspezifisch)
     if (region === 'usa') {
-        if (score > 0 && mlCape < 500) {
+        if (score > 0 && cape < 500) {
             score = Math.max(0, score - 10);
         }
-        if (score > 0 && mlCin > 150 && mlCape < 1500) score = Math.max(0, score - 15);
+        if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15);
     } else {
         // Europa: Nur bei sehr niedrigem CAPE (< 200) leicht reduzieren
-        if (score > 0 && mlCape < 200) {
+        if (score > 0 && cape < 200) {
             score = Math.max(0, score - 5);
         }
-        if (score > 0 && mlCin > 150 && mlCape < 1200) score = Math.max(0, score - 15);
+        if (score > 0 && cin > 150 && cape < 1200) score = Math.max(0, score - 15);
     }
     
     return Math.min(100, Math.max(0, Math.round(score)));
@@ -1450,117 +1066,65 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
     const cape = Math.max(0, hour.cape ?? 0);
-    // muCAPE (Most Unstable CAPE) — wird in den Quellen (z.B. Zhang et al. 2023) explizit verwendet.
-    // Wir nutzen muCAPE hier für die Mindest-CAPE-Schwelle, lassen aber STP/HSLC-Logik weiterhin
-    // auf dem "cape" (best_match ≈ MLCAPE) laufen, damit HSLC (CAPE ≤ 500) nicht verfälscht wird.
-    const muCape = Math.max(0, hour.muCape ?? cape);
     const cin = Math.abs(hour.cin ?? 0);
     const { liftedIndex } = calcIndices(hour);
     
-    // Mindest-Schwellen für Tornado-Berechnung
-    // Quellen:
-    // - Sherburn & Parker 2014 (WAF): HSLC = CAPE ≤ 500 J/kg + Shear ≥ 18 m/s → reale Tornados
-    //   → minCAPE darf NICHT > 300 J/kg sein (HSLC-Ereignisse werden sonst komplett verpasst)
-    // - Púčik 2015 (MWR): Europa sig. Tornados mit CAPE ähnlich non-severe → DLS entscheidend
-    //   → Europa minCAPE auf 150 J/kg (HSLC-kompatibel)
-    // - Thompson et al. (2003): 25. Perzentil der USA sig. Tornado-Sounding-Datenbank:
-    //   CAPE ~500 J/kg (aber HSLC-Ausnahmen bei >18 m/s Shear!)
-    // - Grünwald & Brooks 2011: Europa Tornados bei LCL + CAPE niedriger als USA
-    // - Zhang et al. 2023 (QJRMS): China sig. Tornados bei MUCAPE teils < 300 J/kg möglich
+    // Basis-Filter: Zu kalt oder keine Instabilität = kein Tornado (regionsspezifisch)
     const tornadoThresholds = {
-        // USA: 25. Perzentil SPC-Datenbank ~500 J/kg, aber HSLC-Ausnahmen ab CAPE=100
-        // Kompromiss: 300 J/kg (HSLC-Bereich wird durch HSLC-Check unten abgedeckt)
-        'usa':               { minTemp: 10, minCAPE: 300 },
-        // Kanada: ähnlich USA, etwas kälter (Bunkers 2014 Alberta)
-        'canada':            { minTemp:  8, minCAPE: 250 },
-        // Südamerika (Argentinien): ähnlich USA Plains (Taszarek 2020)
-        'south_america':     { minTemp: 10, minCAPE: 300 },
-        // Australien: ähnlich USA Plains (Allen et al. 2011)
-        'australia':         { minTemp: 10, minCAPE: 300 },
-        // Südafrika (Highveld): CAPE-reich, aber weniger dokumentiert
-        'south_africa':      { minTemp: 10, minCAPE: 300 },
-        // Europa: HSLC-kompatibel nach Sherburn 2014 + Púčik 2015
-        // Grünwald 2011: Europa-Tornados bei niedrigerer CAPE+LCL als USA
-        'europe':            { minTemp:  6, minCAPE: 150 },
-        // Russland/Zentralasien: wie Europa (HSLC-Regime im Westen möglich)
-        'russia_central_asia':{ minTemp: 6, minCAPE: 150 },
-        // Ostasien (China/Japan): Zhang 2023 — China sig. Tornados ab CAPE ~300
-        // Japan Sea effect: HSLC möglich ab CAPE ~100
-        'east_asia':         { minTemp:  8, minCAPE: 150 },
-        // Neuseeland: HSLC-Regime maritime Luft (wie Brit. Inseln)
-        'new_zealand':       { minTemp:  6, minCAPE: 150 },
-        // Naher Osten: mediterran ähnlich, Frühjahrskonvektion
-        'middle_east':       { minTemp: 10, minCAPE: 200 },
-        // Nordafrika (Maghreb): mediterran, selten aber möglich
-        'north_africa':      { minTemp: 12, minCAPE: 200 },
-        // Südasien: Monsun-Umgebung, Nor'westers (Bengalen) können Tornados erzeugen
-        'south_asia':        { minTemp: 18, minCAPE: 250 },
-        // Südostasien: tropisch, Tornado-Superzellen selten
-        'southeast_asia':    { minTemp: 20, minCAPE: 250 },
-        // Zentralamerika: ähnlich SE-Asien, Karibik etwas aktiver
-        'central_america':   { minTemp: 16, minCAPE: 200 },
-        // Ostafrika: Hochland-Gewitter, Tornados möglich aber selten dokumentiert
-        'east_africa':       { minTemp: 16, minCAPE: 200 },
-        // Zentralafrika: ITCZ, Tornados sehr selten, CAPE hoch
-        'central_africa':    { minTemp: 18, minCAPE: 200 },
-        // Westafrika: Sahel, MCS-Tornados möglich (ähnlich QLCS-Regime)
-        'west_africa':       { minTemp: 20, minCAPE: 200 },
+        'usa': { minTemp: 12, minCAPE: 500 },
+        'canada': { minTemp: 10, minCAPE: 400 },
+        'south_africa': { minTemp: 12, minCAPE: 500 },
+        'south_america': { minTemp: 12, minCAPE: 450 },
+        'australia': { minTemp: 12, minCAPE: 450 },
+        'east_asia': { minTemp: 10, minCAPE: 400 },
+        'south_asia': { minTemp: 18, minCAPE: 400 },
+        'southeast_asia': { minTemp: 20, minCAPE: 350 },
+        'central_america': { minTemp: 18, minCAPE: 350 },
+        'north_africa': { minTemp: 15, minCAPE: 350 },
+        'east_africa': { minTemp: 18, minCAPE: 350 },
+        'central_africa': { minTemp: 20, minCAPE: 300 },
+        'west_africa': { minTemp: 22, minCAPE: 300 },
+        'middle_east': { minTemp: 12, minCAPE: 350 },
+        'new_zealand': { minTemp: 8, minCAPE: 300 },
+        'russia_central_asia': { minTemp: 8, minCAPE: 300 },
+        'europe': { minTemp: 8, minCAPE: 400 }
     };
-
+    
     const t = tornadoThresholds[region] || tornadoThresholds['europe'];
     if (temp2m < t.minTemp) return 0;
-    // HSLC-Ausnahme nach Sherburn & Parker 2014:
-    // Wenn Shear ≥ 18 m/s → minCAPE auf 100 J/kg absenkbar (HSLC-Regime)
-    const effectiveMinCAPE = (shear >= 18 && muCape >= 100) ? Math.min(t.minCAPE, 150) : t.minCAPE;
-    if (muCape < effectiveMinCAPE) return 0;
-    if (cin > 250) return 0;  // SPC: CIN < -250 J/kg → keine Konvektion auslösbar
-
+    if (cape < t.minCAPE) return 0;
+    if (cin > 200) return 0;
+    
     // Tornado ohne Gewitter unmöglich
     const thunderstormProb = calculateProbability(hour, region);
     if (thunderstormProb === 0) return 0;
     
-    // SRH-Berechnung für STP: 0-500 m SRH nach Coffer et al. (2019)
-    // "Replacing ESRH with 0-500 m SRH increases correct events by 8%,
-    //  decreases missed events and false alarms by 18%" (Coffer et al. 2019, WAF)
-    // Fallback: 0-1 km SRH wenn 0-500 m nicht ausreichend aufgelöst
-    const srh500m = calcSRH(hour, '0-500m');
-    const srh1km  = calcSRH(hour, '0-1km');
-    // Nutze 0-500 m SRH für STP (Coffer 2019), 0-1 km als Backup-Check
-    const srh_for_stp = srh500m > 0 ? srh500m : srh1km;
-    const srh_type_for_stp = srh500m > 0 ? '0-500m' : '0-1km';
+    // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
+    const srh1km = calcSRH(hour, '0-1km');
     
-   // Veering-with-Height Check: Wind muss mit Höhe rechtdrehen (Veering) für
-    // positive SRH und Mesozyklonentwicklung
-    // Quelle: Markowski & Richardson (2010, Mesoscale Meteorology in Midlatitudes)
-    //   "Veering winds with height → warm air advection → cyclonic SRH"
-    // Jetzt mit 925 hPa: bodennaher Layer (1000→925) physikalisch am wichtigsten
-    // da dort die Tornadogenese-relevante Rotation initiiert wird
+    // STP berechnen (regionsspezifisch)
+    // Veer-with-Height Check: Winds müssen mit der Höhe drehen (backing am Boden → veering oben)
+    // Das ist physikalisch notwendig für positive SRH und Mesozyklonentwicklung
     const dir1000 = hour.windDir1000 ?? 0;
-    const dir925  = hour.windDir925  ?? 0;
-    const dir850  = hour.windDir850  ?? 0;
-    const dir700  = hour.windDir700  ?? 0;
+    const dir850 = hour.windDir850 ?? 0;
+    const dir700 = hour.windDir700 ?? 0;
 
-    // Drei Schichten: 1000→925 (bodennah, wichtigster Layer!), 925→850, 850→700
-    const veer925_1000 = veeringAngle(dir1000, dir925); // bodennah: höchste Gewichtung
-    const veer850_925  = veeringAngle(dir925,  dir850);
-    const veer700_850  = veeringAngle(dir850,  dir700);
+    function veeringAngle(d1, d2) {
+        let diff = (d2 - d1 + 360) % 360;
+        return diff > 180 ? diff - 360 : diff; // positiv = Veering, negativ = Backing
+    }
 
-    // Gewichtetes Veering: bodennahe Schicht (1000→925) doppelt gewichtet
-    // Physikalisch: Reibungsschicht-Veering entscheidend für Tornadogenese
-    // (Rasmussen 2003: low-level wind shear/veer primary discriminator)
-    const totalVeering = (veer925_1000 * 2.0 + veer850_925 * 1.0 + veer700_850 * 0.5) / 3.5;
+    const veer850_1000 = veeringAngle(dir1000, dir850);
+    const veer700_850 = veeringAngle(dir850, dir700);
+    const totalVeering = veer850_1000 + veer700_850;
 
-    // Veeringfaktor: Backing (negativ) reduziert Tornadopotential stark,
-    // starkes Veering (> 30°) erhöht es leicht
     let veeringFactor = 1.0;
-    if      (totalVeering < -20) veeringFactor = 0.25; // starkes Backing → antizyklonisch
-    else if (totalVeering < -10) veeringFactor = 0.50;
-    else if (totalVeering <   0) veeringFactor = 0.75;
-    else if (totalVeering >= 35) veeringFactor = 1.25; // starkes Veering → sehr günstig
-    else if (totalVeering >= 20) veeringFactor = 1.15;
-    else if (totalVeering >= 10) veeringFactor = 1.05;
+    if (totalVeering < -20) veeringFactor = 0.3;
+    else if (totalVeering < 0) veeringFactor = 0.6;
+    else if (totalVeering >= 30) veeringFactor = 1.2;
+    else if (totalVeering >= 15) veeringFactor = 1.1;
 
-    const stp = calcSTP(cape, srh_for_stp, shear, liftedIndex, cin, region, temp2m, dew, srh_type_for_stp) * veeringFactor;
+    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
     
     // Basis-Score für Tornado-Wahrscheinlichkeit
     let score = 0;
@@ -1569,41 +1133,23 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const highThresholdRegions = ['usa', 'south_africa', 'south_america', 'australia'];
     const isHighThreshold = highThresholdRegions.includes(region);
     
-    // STP-Schwellenwerte für Tornado-Wahrscheinlichkeit
-    // Quellen:
-    // - Thompson et al. (2012): STP > 1 → sig. Tornados wahrscheinlicher als nontornadic
-    // - Taszarek BAMS 2021: Europa effektive Schwelle STP = 0.75 (statt 1.0 USA)
-    // - Coffer et al. (2019): Medianwert sig. tornadic Superzellen: STP500 ≈ 2.5-3.0 (USA)
-    // - Púčik 2015: Europa sig. Tornados bei STP oft 0.5-1.5 → niedrigere Basis-Schwelle
-    //
-    // Regionen mit USA-ähnlichem Klima (isHighThreshold): USA, Kanada, Südamerika,
-    //   Australien, Südafrika — SPC-Klimatologie direkt anwendbar
-    // Andere Regionen: Taszarek 2021 — STP-Schwellen ~25-40% niedriger
     if (isHighThreshold) {
-        // USA/Plains-Klimatologie (Thompson 2012, Coffer 2019)
-        // STP ≥ 1: Mehrheit sig. Tornados in SPC-Proximitätsdaten
-        // STP ≥ 3: Sehr hohe Wahrscheinlichkeit sig. Tornado
-        if      (stp >= 4.0) score = 92;
-        else if (stp >= 3.0) score = 82;
-        else if (stp >= 2.0) score = 68;
-        else if (stp >= 1.5) score = 55;
-        else if (stp >= 1.0) score = 40;
-        else if (stp >= 0.7) score = 28;
-        else if (stp >= 0.5) score = 18;
-        else if (stp >= 0.3) score = 10;
-        else if (stp >  0.0) score = 4;
-    } else {
-        // Europa + andere Regionen: Schwellen nach Taszarek 2021 (STP-Schwelle 0.75)
-        // Púčik 2015: sig. Tornados Europa bei STP 0.5-1.5 häufig
-        // Grünwald & Brooks 2011: Europa-Tornados bei strukturell niedrigeren Werten
-        if      (stp >= 3.0) score = 88;
-        else if (stp >= 2.0) score = 75;
-        else if (stp >= 1.5) score = 62;
-        else if (stp >= 1.0) score = 50;  // Taszarek 2021: sig. Tornado möglich
-        else if (stp >= 0.75)score = 38;  // Taszarek 2021: effektive Europa-Schwelle
+        if (stp >= 3.0) score = 95;
+        else if (stp >= 2.0) score = 85;
+        else if (stp >= 1.5) score = 70;
+        else if (stp >= 1.0) score = 55;
+        else if (stp >= 0.7) score = 40;
         else if (stp >= 0.5) score = 25;
-        else if (stp >= 0.3) score = 14;
-        else if (stp >  0.0) score = 5;
+        else if (stp >= 0.3) score = 12;
+        else if (stp > 0) score = 5;
+    } else {
+        if (stp >= 2.0) score = 85;
+        else if (stp >= 1.5) score = 70;
+        else if (stp >= 1.0) score = 55;
+        else if (stp >= 0.7) score = 40;
+        else if (stp >= 0.5) score = 25;
+        else if (stp >= 0.3) score = 12;
+        else if (stp > 0) score = 5;
     }
     
     // Zusätzliche Faktoren (regionsspezifisch)
@@ -1752,78 +1298,79 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
         }
     }
 
-    // Minimale Anforderungen für plausible Tornadogefahr
-    // Quellen:
-    // - Thompson et al. 2003/2012 (SPC): 25. Perzentil sig. Tornado-Proximity-Soundings USA
-    // - Púčik 2015 (MWR): Europa — DLS entscheidend, CAPE ähnlich non-severe
-    // - Sherburn & Parker 2014: HSLC-Tornados bei Shear ≥ 18 m/s, CAPE < 500 J/kg REAL
-    // - SPC-STP Formel: Shear < 12.5 m/s → STP = 0 (hartes Cutoff bleibt)
-    // - Zhang 2023 (China): sig. Tornados bei niedrigeren Werten als US-Klimatologie
+    // Minimalanforderungen – nur noch für Grenzfälle die STP-Filter passiert haben
     const minReqs = {
-        // USA SPC-Klimatologie: 25. Perzentil ~CAPE 500, Shear 12 m/s, SRH 100 m²/s²
-        // HSLC-Exception: Bei Shear ≥ 18 m/s gilt minCAPE = 100 (Sherburn 2014)
-        'usa':               { minCAPE: 400, minShear: 12.5, minSRH: 80  },
-        // Kanada: etwas niedrigere Werte als USA (Bunkers 2014)
-        'canada':            { minCAPE: 300, minShear: 11.0, minSRH: 60  },
-        // Europa: Púčik 2015 — CAPE ähnlich non-severe, DLS entscheidend
-        // Grünwald 2011: Europa-Tornados bei niedrigerer CAPE+LCL
-        // Taszarek 2021: Effektive STP-Schwelle 0.75 → kompatibel mit niedrigeren Minima
-        'europe':            { minCAPE: 150, minShear: 10.0, minSRH: 40  },
-        // Russland/Zentralasien: wie Europa
-        'russia_central_asia':{ minCAPE: 150, minShear: 10.0, minSRH: 40  },
-        // Ostasien: Zhang 2023 (China) + Japan-Klimatologie
-        'east_asia':         { minCAPE: 200, minShear: 10.0, minSRH: 50  },
-        // Neuseeland: HSLC-Regime möglich
-        'new_zealand':       { minCAPE: 150, minShear: 10.0, minSRH: 40  },
-        // Südamerika: ähnlich USA Plains (Taszarek 2020)
-        'south_america':     { minCAPE: 350, minShear: 12.0, minSRH: 70  },
-        // Australien: ähnlich USA Plains (Allen et al. 2011)
-        'australia':         { minCAPE: 350, minShear: 12.0, minSRH: 80  },
-        // Südafrika (Highveld)
-        'south_africa':      { minCAPE: 400, minShear: 12.0, minSRH: 80  },
-        // Naher Osten: mediterran, selten
-        'middle_east':       { minCAPE: 200, minShear: 9.0,  minSRH: 40  },
-        // Nordafrika
-        'north_africa':      { minCAPE: 200, minShear: 9.0,  minSRH: 40  },
-        // Südasien (Nor'westers Bengalen)
-        'south_asia':        { minCAPE: 250, minShear: 8.0,  minSRH: 40  },
-        // Südostasien: sehr selten, CAPE hoch aber Shear niedrig
-        'southeast_asia':    { minCAPE: 250, minShear: 7.0,  minSRH: 30  },
-        // Zentralamerika
-        'central_america':   { minCAPE: 200, minShear: 8.0,  minSRH: 35  },
-        // Ostafrika
-        'east_africa':       { minCAPE: 200, minShear: 7.0,  minSRH: 30  },
-        // Zentralafrika + Westafrika: MCS-Tornados möglich
-        'central_africa':    { minCAPE: 200, minShear: 6.0,  minSRH: 25  },
-        'west_africa':       { minCAPE: 200, minShear: 6.0,  minSRH: 30  },
+        // SPC Thompson 2003/2012: sig. Tornados USA median CAPE ~1000-2000 J/kg,
+        // 0-6km Shear median ~20 m/s, 0-1km SRH median ~150-200 m²/s²
+        // Minimums aus dem 25. Perzentil der SPC-Proximity-Sounding-Datenbank
+        'usa': { minCAPE: 500, minShear: 12, minSRH: 100 },   // Shear 10→12 (SPC: <12.5 = STP-Cutoff)
+
+        // Ähnlich USA aber kältere Umgebung, Bunkers 2014 Alberta-Studie: sig. Tornados ab ~400 J/kg
+        'canada': { minCAPE: 350, minShear: 10, minSRH: 70 }, // CAPE 400→350
+
+        // Púčik 2015 (ESSL): sig. Tornados Europa — CAPE ähnlich nonsevere, DLS entscheidend
+        // Taszarek 2017 MWR: severe winds Europa ab CAPE ~200 J/kg + hohem Shear
+        // Taszarek 2020: Europa CAPE tail 3000-4000 J/kg (viel niedriger als USA)
+        'europe': { minCAPE: 200, minShear: 8, minSRH: 50 },  // CAPE 400→200, Shear 8 bleibt, SRH 60→50
+
+        // Gatzen 2020 (derechos Deutschland): warm-season Typ MLCAPE median ~500 J/kg, Shear 15-20 m/s
+        // Cold-season Typ: CAPE fast 0, Shear > 20 m/s → deshalb minCAPE nicht zu hoch
+        'russia_central_asia': { minCAPE: 300, minShear: 8, minSRH: 50 }, // CAPE 300→300 (bleibt), SRH 50→50
+
+        // Taszarek 2020 Part II: Südamerika (Argentinien) ähnlich USA Plains, CAPE höher
+        // Brooks et al. 2003: globale Schwelle für WMAXSHEAR > 500 = schweres Gewitter
+        'south_america': { minCAPE: 400, minShear: 10, minSRH: 70 },  // CAPE 450→400
+
+        // Taszarek 2021 npj: Australien ähnlich USA Plains klimatologisch
+        'australia': { minCAPE: 400, minShear: 10, minSRH: 80 },       // CAPE 450→400
+
+        // Taszarek 2020: Südafrika (Highveld) ähnlich USA, CAPE hoch, Shear moderat-stark
+        'south_africa': { minCAPE: 450, minShear: 12, minSRH: 90 },    // CAPE 500→450
+
+        // Taszarek 2021 npj: Ostasien (China, Japan) ähnlich Europa klimatologisch
+        'east_asia': { minCAPE: 350, minShear: 9, minSRH: 60 },        // CAPE 400→350, Shear 10→9
+
+        // Taszarek 2021: Südasien (Indien, Pakistan) monsunbeeinflusst, CAPE hoch aber Shear niedrig
+        'south_asia': { minCAPE: 350, minShear: 7, minSRH: 50 },       // CAPE 400→350, SRH 60→50
+
+        // Taszarek 2021: Südostasien, tropisch, sehr hohe CAPE, niedriger Shear typisch
+        'southeast_asia': { minCAPE: 300, minShear: 5, minSRH: 40 },   // Shear 6→5
+
+        // Púčik 2015 / Taszarek 2017: Zentralamerika ähnlich SE-Asien, CAPE hoch
+        'central_america': { minCAPE: 300, minShear: 7, minSRH: 45 },  // CAPE 350→300
+
+        // Taszarek 2017: Nordafrika (Maghreb) ähnlich Mittelmeer-Europa
+        'north_africa': { minCAPE: 300, minShear: 7, minSRH: 45 },     // CAPE 350→300, Shear 8→7
+
+        // Taszarek 2021: Ostafrika hochgelegen (z.B. Äthiopien-Hochland), CAPE moderiert durch Höhe
+        'east_africa': { minCAPE: 300, minShear: 6, minSRH: 40 },      // CAPE 350→300, Shear 7→6
+
+        // Zentralafrika: tropische Konvektion, CAPE hoch, Shear niedrig (ITCZ-dominiert)
+        'central_africa': { minCAPE: 250, minShear: 5, minSRH: 30 },   // CAPE 300→250
+
+        // Westafrika: ähnlich Zentralafrika, Sahel-Linie kann MCS produzieren
+        'west_africa': { minCAPE: 250, minShear: 5, minSRH: 35 },      // CAPE 300→250
+
+        // Mittlerer Osten: Frühjahr-Konvektion, CAPE niedriger als Tropen
+        'middle_east': { minCAPE: 300, minShear: 7, minSRH: 45 },      // CAPE 350→300, Shear 8→7
+
+        // Neuseeland: HSLC-Regime möglich (wie Europa Kalt-Saison), aber seltener
+        'new_zealand': { minCAPE: 250, minShear: 6, minSRH: 40 },      // CAPE 300→250, Shear 7→6
     };
 
     const mr = minReqs[region] || minReqs['europe'];
 
-    // HSLC-Ausnahme nach Sherburn & Parker (2014, WAF):
-    // "HSLC = CAPE ≤ 500 J/kg + 0-6km Shear ≥ 18 m/s"
-    // In HSLC-Umgebungen sind klassische CAPE-basierte Parameter unzuverlässig.
-    // Reale signifikante Tornados (EF2+) treten auf trotz niedrigem STP.
-    // → Bei Shear ≥ 18 m/s: minCAPE-Anforderung auf 100 J/kg absenken
-    const isHSLC = shear >= 18.0 && cape <= 500;
-    const effectiveMrCAPE = isHSLC ? Math.min(mr.minCAPE, 150) : mr.minCAPE;
-
-    // Gestufter Penalty bei Verfehlen der Mindestanforderungen
-    // Logik: Bei HSLC-Umgebungen ist minCAPE weniger relevant (Sherburn 2014)
+    // Kombinierte Penalty statt dreifach unabhängiger Reduktion:
+    // Zähle wie viele Mindestanforderungen verfehlt werden
     let failCount = 0;
-    if (cape  < effectiveMrCAPE && score > 15) failCount++;
-    if (shear < mr.minShear     && score > 10) failCount++;
-    if (srh   < mr.minSRH       && score > 10) failCount++;
+    if (cape  < mr.minCAPE  && score > 15) failCount++;
+    if (shear < mr.minShear && score > 10) failCount++;
+    if (srh   < mr.minSRH   && score > 10) failCount++;
 
-    // HSLC-Bonus: Bei hohem Shear (≥ 18 m/s) schwächerer Penalty
-    // Physikalisch: Dynamischer Auftrieb kann thermodynamisches Defizit teilweise kompensieren
-    const penaltyFactors = isHSLC
-        ? [1.0, 0.65, 0.50]  // HSLC: weniger streng
-        : [1.0, 0.55, 0.35]; // Standard
-
-    if      (failCount === 3) score = Math.round(score * penaltyFactors[2]);
-    else if (failCount === 2) score = Math.round(score * penaltyFactors[1]);
-    else if (failCount === 1) score = Math.round(score * penaltyFactors[0]);
+    // Eine gestufte Gesamtreduktion statt kumulativer Einzelreduktionen
+    if      (failCount === 3) score = Math.round(score * 0.35); // alle drei fehlen: stark reduzieren
+    else if (failCount === 2) score = Math.round(score * 0.55); // zwei fehlen: moderat
+    else if (failCount === 1) score = Math.round(score * 0.75); // einer fehlt: leicht reduzieren
 
     return Math.min(100, Math.max(0, Math.round(score)));
 }
