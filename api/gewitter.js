@@ -632,41 +632,6 @@ function calcSTP(cape, srh, shear, liftedIndex, cin, temp2m = null, dew2m = null
     return Math.max(0, capeTerm * srhTerm * shearTerm * lclTerm * cinTerm);
 }
 
-// Verbesserte LCL-Berechnung nach Bolton (1980) - präziser für Europa
-function calcLCLHeight(temp2m, dew2m) {
-    if (temp2m <= 0 || dew2m <= 0) return 2000; // Fallback: hohes LCL
-    const T = temp2m + 273.15;
-    const Td = dew2m + 273.15;
-    const LCL = 125 * (temp2m - dew2m); // Vereinfachte Bolton-Formel
-    return Math.max(0, LCL);
-}
-
-// Mid-Level Lapse Rate (700-500 hPa) - wichtig für Europa
-function calcMidLevelLapseRate(temp700, temp500) {
-    // Höhendifferenz 700-500 hPa ≈ 2000 m
-    const dz = 2000;
-    if (dz <= 0) return 0;
-    return (temp700 - temp500) / (dz / 1000); // K/km
-}
-
-// Moisture Depth (850-700 hPa) - Feuchtigkeitstiefe für Konvektion
-function calcMoistureDepth(dew850, dew700, temp850, temp700) {
-    const rh850 = calcRelHum(temp850, dew850);
-    const rh700 = calcRelHum(temp700, dew700);
-    // Durchschnittliche relative Feuchte in der Schicht
-    return (rh850 + rh700) / 2;
-}
-
-// Effective Layer Instability (ELI) - ESSL-Methodik für Europa
-function calcELI(cape, cin, pblHeight) {
-    // ELI berücksichtigt CAPE, CIN und Boundary Layer Height
-    // Höhere PBL = bessere Durchmischung = höheres ELI
-    if (cape < 50) return 0;
-    const pblFactor = pblHeight > 1500 ? 1.2 : pblHeight > 1000 ? 1.0 : pblHeight > 500 ? 0.8 : 0.6;
-    const cinFactor = cin < 25 ? 1.0 : cin < 50 ? 0.9 : cin < 100 ? 0.7 : cin < 150 ? 0.5 : 0.3;
-    return cape * pblFactor * cinFactor;
-}
-
 // Hauptfunktion für Wahrscheinlichkeitsberechnung (verbessert nach ESSL/European Forecast Experiment)
 function calculateProbability(hour) {
     const temp2m = hour.temperature ?? 0;
