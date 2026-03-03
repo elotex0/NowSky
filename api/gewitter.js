@@ -466,7 +466,6 @@ function calcThetaE(temp, dew, pressure = 1000) {
 // Verwendet Bolton (1980) für ThetaE und skaliert CAPE basierend auf dem Lifted Index
 function calcMUCAPE(hour) {
     const sbCAPE = Math.max(0, hour.cape ?? 0);
-    const sbLI = hour.liftedIndex ?? 0;
     const temp500 = hour.temp500 ?? -20;
     const rh500 = hour.rh500 ?? 50;
 
@@ -475,20 +474,23 @@ function calcMUCAPE(hour) {
     const thetaE500 = calcThetaE(temp500, dew500, 500);
 
     // Hilfsfunktion zur CAPE-Schätzung eines Pakets
-    const estimateCAPE = (pTemp, pDew, pPres) => {
+    const estimateCAPE = (pTemp, pDew, pPres, layerType = 'elevated') => {
+        // Feuchte-Check: Zu trockene Schichten produzieren keine Konvektion
+        const dewDepression = pTemp - pDew;
+        if (dewDepression > 8) return 0; 
+
         const thetaEP = calcThetaE(pTemp, pDew, pPres);
         if (thetaEP <= thetaE500) return 0;
 
         // Paket-Temperatur auf 500hPa schätzen (Bolton-Approximation)
-        // Delta_T_500hPa \approx 0.5 * Delta_ThetaE
         const pTemp500 = temp500 + 0.5 * (thetaEP - thetaE500);
         const pLI = temp500 - pTemp500;
 
         if (pLI >= 0) return 0;
 
-        // Skalierung: 1 Grad LI entspricht ca. 150-250 J/kg CAPE (je nach Feuchte)
-        // Wir nehmen 200 als stabilen globalen Durchschnitt
-        return Math.abs(pLI) * 200;
+        // Skalierung: 1 Grad LI entspricht physikalisch ca. 100-150 J/kg CAPE
+        // (je nach Schichtdicke und Feuchteprofil). 125 ist ein realistischer Mittelwert.
+        return Math.abs(pLI) * 125; 
     };
 
     // Teste verschiedene Pakete
@@ -501,11 +503,10 @@ function calcMUCAPE(hour) {
     // MUCAPE ist das Maximum aus Surface und Elevated
     const mucape = Math.max(sbCAPE, elevated_925, elevated_850);
 
-    // isElevated: wenn elevated Parcel deutlich mehr CAPE hat als Boden
-    // Typisch bei nächtlicher Inversion oder Warmfronten
-    const isElevated = (elevated_925 > sbCAPE * 1.3 || elevated_850 > sbCAPE * 1.3) && sbCAPE < 500;
+    // isElevated: wenn elevated Parcel signifikant mehr CAPE hat als Boden
+    const isElevated = (elevated_925 > sbCAPE + 100 || elevated_850 > sbCAPE + 100) && sbCAPE < 500;
 
-    // LLJ-Check: 925 hPa Wind > 12 m/s (leicht gesenkt für bessere Erfassung)
+    // LLJ-Check: 925 hPa Wind > 12 m/s
     const ws925_ms = (hour.wind_speed_925hPa ?? 0) / 3.6;
     const hasLLJ = ws925_ms >= 12;
 
