@@ -189,7 +189,7 @@ export default async function handler(req, res) {
                     mucape: hour.mucape,
                     shear: shear,
                     srh: srh,
-                    dcape: calcDCAPE(hour),
+                    dcape: calcDCAPE(hour, region),
                     wmaxshear: calcWMAXSHEAR(Math.max(hour.sbcape, hour.mucape ?? 0), shear),
                 };
             });
@@ -495,14 +495,35 @@ function calcSCP(cape, shear, srh, cin, region = 'europe') {
 // DCAPE (Downdraft CAPE) nach Gilmore & Wicker (1998)
 // Approximation über 700-500 hPa Schicht
 // Hoher DCAPE → starke Downbursts, Hagel, Sturmböen
-function calcDCAPE(hour) {
+function calcDCAPE(hour, region = 'europe') {
     const temp700 = hour.temp700 ?? 0;
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
     const sbcape = hour.sbcape ?? 0;
 
     // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
-    if (sbcape < 100) return 0;
+    // DCAPE-Mindestschwelle regionsspezifisch (sbcape muss ausreichend sein)
+    const dcapeMinCAPE = {
+        'usa': 300,
+        'canada': 250,
+        'south_america': 300,
+        'south_africa': 300,
+        'australia': 300,
+        'europe': 200,          // Europa: niedrigere CAPE-Klimatologie
+        'russia_central_asia': 200,
+        'east_asia': 200,
+        'new_zealand': 150,
+        'middle_east': 200,
+        'north_africa': 200,
+        'east_africa': 250,
+        'central_africa': 250,
+        'west_africa': 250,
+        'south_asia': 300,
+        'southeast_asia': 300,
+        'central_america': 250,
+    }[region] ?? 200;
+
+    if (sbcape < dcapeMinCAPE) return 0;
 
     const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
     const tempDiff = wetBulb700 - temp500;
@@ -1056,7 +1077,7 @@ function calculateProbability(hour, region = 'europe') {
 
     // DCAPE: Downdraft-Potential (Gilmore & Wicker 1998)
     // Hoher DCAPE verstärkt Böen, Hagel, MCS-Aktivität
-    const dcape = calcDCAPE(hour);
+    const dcape = calcDCAPE(hour, region);
     if (isHighThreshold) {
         if (dcape >= 1000 && cape >= 500) score += 6;
         else if (dcape >= 700 && cape >= 400) score += 4;
