@@ -1149,6 +1149,10 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     
     // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
     const srh1km = calcSRH(hour, '0-1km');
+    const srh3km = calcSRH(hour, '0-3km');
+    // 850 hPa ≈ 1500m statt 1000m → srh1km systematisch unterschätzt
+    // Gewichteter Mix korrigiert die Drucklevel-Approximation (gilt global)
+    const srhForSTP = srh1km * 0.5 + srh3km * 0.5;
     
     // STP berechnen (regionsspezifisch)
     // Veer-with-Height Check: Winds müssen mit der Höhe drehen (backing am Boden → veering oben)
@@ -1166,7 +1170,7 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const veer700_850 = veeringAngle(dir850, dir700);
     const totalVeering = veer850_1000 + veer700_850;
 
-    const stp = calcSTP(sbcape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
+    const stp = calcSTP(sbcape, srhForSTP, shear, liftedIndex, cin, region, temp2m, dew);
 
     let veeringBonus = 0;
     if (totalVeering < -20) veeringBonus = -20;
