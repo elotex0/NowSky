@@ -743,7 +743,7 @@ function calculateProbability(hour, region = 'europe') {
     
     // Kombinierte Indizes (bewährte meteorologische Parameter)
     const ehi = (cape * srh) / 160000;
-    const scp = calcSCP(cape, shear, srh, cin, region);
+    const scp = calcSCP(mucape || cape, shear, srh, cin, region);
     const stp = calcSTP(sbcape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
     const wmaxshear = calcWMAXSHEAR(cape, shear);
     
