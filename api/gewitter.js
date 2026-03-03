@@ -175,6 +175,9 @@ export default async function handler(req, res) {
 
         // Tage gruppieren
         // Tage gruppieren (alle Tage: past + heute + forecast)
+    
+    
+    // Tage gruppieren (past + heute + forecast)
     const daysMap = new Map();
     
     hours.forEach(h => {
@@ -188,13 +191,13 @@ export default async function handler(req, res) {
         if (!daysMap.has(datePart)) {
             daysMap.set(datePart, {
                 date: datePart,
-                maxProbability: probability,
-                maxTornadoProbability: tornadoProb
+                probability: probability,
+                tornadoProbability: tornadoProb
             });
         } else {
             const dayData = daysMap.get(datePart);
-            dayData.maxProbability = Math.max(dayData.maxProbability, probability);
-            dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
+            dayData.probability = Math.max(dayData.probability, probability);
+            dayData.tornadoProbability = Math.max(dayData.tornadoProbability, tornadoProb);
         }
     });
     
@@ -202,21 +205,13 @@ export default async function handler(req, res) {
     const days = Array.from(daysMap.values())
         .sort((a, b) => a.date.localeCompare(b.date));
     
-        const nextDays = Array.from(daysMap.values())
-            .sort((a, b) => a.date.localeCompare(b.date))
-            .map(day => ({ 
-                date: day.date, 
-                probability: day.maxProbability,
-                tornadoProbability: day.maxTornadoProbability
-            }));
-
-        return res.status(200).json({
-            timezone: timezone,
-            region: region,
-            hours: nextHours,
-            days
-            hasEnsemble: hasEnsemble
-        });
+    return res.status(200).json({
+        timezone,
+        region,
+        hours: nextHours,   // falls du die noch brauchst
+        days,               // ← hier KEIN nextDays mehr
+        hasEnsemble
+    });
 
     } catch (error) {
         console.error('Fehler:', error);
