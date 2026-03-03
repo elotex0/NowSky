@@ -784,9 +784,13 @@ function calculateProbability(hour, region = 'europe') {
     
     // Regionsspezifische Filter für Fehlalarme
     const p = getProbabilityParams(region);
-    if (temp2m < p.minTemp) return 0; // Zu kalt für Gewitter
-    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
-    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
+    if (temp2m < p.minTemp) {
+        // Ausnahme: echte elevated Konvektion trotzdem bewerten
+        if (!isElevated || mucape < 500) return 0;
+        // isElevated + hohe MUCAPE → weitermachen, wird später durch Temp-Reduktion gedämpft
+    }
+    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5) && !isElevated) return 0;
+    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20 && !isElevated) return 0;
     
     // Berechne Indizes
     const shear = calcShear(hour);
@@ -1159,10 +1163,10 @@ function calculateProbability(hour, region = 'europe') {
     
     // Mindestanforderungen für Gewitter (regionsspezifisch)
     if (region === 'usa') {
-        if (score > 0 && cape < 500) {
-            score = Math.max(0, score - 10);
-        }
-        if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15);
+    if (score > 0 && cape < 500 && !isElevated) {
+        score = Math.max(0, score - 10);
+    }
+    if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15);
     } else {
         // Europa: Nur bei sehr niedrigem CAPE (< 200) leicht reduzieren
         if (score > 0 && cape < 200) {
