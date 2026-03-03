@@ -174,28 +174,34 @@ export default async function handler(req, res) {
             });
 
         // Tage gruppieren
-        const daysMap = new Map();
-        hours.forEach(h => {
-            const [datePart] = h.time.split('T');
-            if (datePart >= currentDateStr) {
-                const probability = calculateProbability(h, region);
-                const shear = calcShear(h);
-                const srh = calcSRH(h);
-                const tornadoProb = calculateTornadoProbability(h, shear, srh, region);
-                if (!daysMap.has(datePart)) {
-                    daysMap.set(datePart, { 
-                        date: datePart, 
-                        maxProbability: probability,
-                        maxTornadoProbability: tornadoProb
-                    });
-                } else {
-                    const dayData = daysMap.get(datePart);
-                    dayData.maxProbability = Math.max(dayData.maxProbability, probability);
-                    dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
-                }
-            }
-        });
-
+        // Tage gruppieren (alle Tage: past + heute + forecast)
+    const daysMap = new Map();
+    
+    hours.forEach(h => {
+        const [datePart] = h.time.split('T');
+    
+        const probability = calculateProbability(h, region);
+        const shear = calcShear(h);
+        const srh = calcSRH(h);
+        const tornadoProb = calculateTornadoProbability(h, shear, srh, region);
+    
+        if (!daysMap.has(datePart)) {
+            daysMap.set(datePart, {
+                date: datePart,
+                maxProbability: probability,
+                maxTornadoProbability: tornadoProb
+            });
+        } else {
+            const dayData = daysMap.get(datePart);
+            dayData.maxProbability = Math.max(dayData.maxProbability, probability);
+            dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
+        }
+    });
+    
+    // Alle Tage sortiert zurückgeben
+    const days = Array.from(daysMap.values())
+        .sort((a, b) => a.date.localeCompare(b.date));
+    
         const nextDays = Array.from(daysMap.values())
             .sort((a, b) => a.date.localeCompare(b.date))
             .map(day => ({ 
@@ -208,7 +214,7 @@ export default async function handler(req, res) {
             timezone: timezone,
             region: region,
             hours: nextHours,
-            days: nextDays,
+            days
             hasEnsemble: hasEnsemble
         });
 
