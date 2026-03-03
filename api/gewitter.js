@@ -472,14 +472,24 @@ function calcShear(hour) {
     // Schicht 1: 1000→925 hPa (0-760 m) — bodennahe Rotation
     // Schicht 2: 925→850 hPa (760-1460 m) — Übergangsschicht
     // Gesamt: 1000→850 hPa mit 925 als Stützpunkt (vektorielle Summe)
+    // Teilschichten für LLJ-Diagnostik
     const llShear_1000_925 = Math.hypot(w925.u - w1000.u, w925.v - w1000.v);
     const llShear_925_850  = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
-    // Gesamter 0-1 km Shear: Vektordifferenz 1000→850 (nicht Summe der Beträge!)
+    // Gesamter 0-1 km Shear: Vektordifferenz 1000→850 (vektoriell korrekt)
     const lowLevelShear = Math.hypot(w850.u - w1000.u, w850.v - w1000.v);
 
-    // Kombinierter Shear-Index: 0-6 km dominant, 0-1 km als Qualitätsfaktor
-    // Subschichten (llShear_1000_925, llShear_925_850) für spätere Diagnostik verfügbar
-    return Math.round((bulkShear * 0.75 + lowLevelShear * 0.25) * 10) / 10;
+    // LLJ-Fingerprint nach Bonner (1968) & Stull (1988):
+    // Starker Shear im untersten Layer (1000→925 hPa, 0-760 m) aber
+    // deutlich schwächerer Shear in der Übergangsschicht (925→850 hPa, 760-1460 m)
+    // → klassisches LLJ-Profil mit bodennahem Windmaximum
+    // Schwelle: unterer Layer ≥ 1.5x oberer Layer UND Mindestbetrag > 4 m/s
+    const isLLJ = llShear_1000_925 > llShear_925_850 * 1.5 && llShear_1000_925 > 4.0;
+
+    // Kombinierter Shear-Index: 0-6 km dominant (75%), 0-1 km als Qualitätsfaktor (25%)
+    // LLJ-Bonus: Bei aktivem LLJ bodennahen Shear stärker gewichten
+    // Physikalisch: LLJ-induzierter Shear erhöht SRH und Tornadopotential (Markowski 2003)
+    const weight = isLLJ ? { bulk: 0.65, ll: 0.35 } : { bulk: 0.75, ll: 0.25 };
+    return Math.round((bulkShear * weight.bulk + lowLevelShear * weight.ll) * 10) / 10;
 }
 
 // Verbesserte meteorologische Indizes
@@ -1103,30 +1113,42 @@ function calculateProbability(hour, region = 'europe') {
     
     // Feuchtigkeit und Temperatur (regionsspezifisch)
     if (region === 'usa') {
-        if (cape >= 600) {
-            if (dew >= 18 && temp2m >= 20) score += 5;
-            else if (dew >= 16 && temp2m >= 18) score += 3;
-            else if (dew >= 14 && temp2m >= 16) score += 2;
-            
-            if (relHum2m >= 70 && temp2m >= 20) score += 4;
-            else if (relHum2m >= 65 && temp2m >= 18) score += 2;
-        } else if (cape >= 500) {
-            if (dew >= 16 && temp2m >= 18) score += 2;
-            if (relHum2m >= 70 && temp2m >= 18) score += 1;
+        if (isDaytime && temp2m >= 18 && cape >= 600) {
+            if (hour.directRadiation >= 600) score += 5;
+            else if (hour.directRadiation >= 400) score += 3;
+        } else if (isNight) {
+            // LLJ-Check: präziser via Windprofil-Struktur (Bonner 1968)
+            // Starker Shear im untersten Layer (1000→925 hPa) aber schwächerer
+            // Shear in der Übergangsschicht (925→850 hPa) = klassisches LLJ-Profil
+            const w1000 = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
+            const w925  = windToUV((hour.wind_speed_925hPa  ?? 0) / 3.6, hour.windDir925  ?? 0);
+            const w850  = windToUV((hour.wind_speed_850hPa  ?? 0) / 3.6, hour.windDir850  ?? 0);
+            const llShear_low = Math.hypot(w925.u - w1000.u, w925.v - w1000.v);
+            const llShear_mid = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
+            // Quelle: Bonner 1968, Hanesiak 2024, Climate Central 2025
+            const llj_active = llShear_low > llShear_mid * 1.5 && llShear_low > 4.0 && srh >= 100;
+
+            if (!llj_active && shear < 12 && cape < 1000) score -= 5;
+            if (llj_active && cape >= 800) score += 4;   // LLJ-Bonus
+            else if (cape >= 1200 && srh >= 150) score += 2;
         }
     } else {
-        // Europa: Auch bei niedrigem CAPE
-        if (cape >= 400) {
-            if (dew >= 16 && temp2m >= 16) score += 4;
-            else if (dew >= 13 && temp2m >= 13) score += 2;
-            
-            if (relHum2m >= 65 && temp2m >= 18) score += 3;
-        } else if (cape >= 200) {
-            // Europa: Feuchtigkeit auch bei niedrigem CAPE wichtig
-            if (dew >= 15 && temp2m >= 15) score += 3;
-            else if (dew >= 13 && temp2m >= 13) score += 2;
-            
-            if (relHum2m >= 70 && temp2m >= 18) score += 2;
+        if (isDaytime && temp2m >= 12 && cape >= 300) {
+            if (hour.directRadiation >= 500) score += 4;
+            else if (hour.directRadiation >= 300) score += 2;
+            else if (hour.directRadiation >= 200) score += 1;
+        } else if (isNight) {
+            // LLJ-Check Europa: niedrigere Schwellen (Taszarek 2019)
+            const w1000 = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
+            const w925  = windToUV((hour.wind_speed_925hPa  ?? 0) / 3.6, hour.windDir925  ?? 0);
+            const w850  = windToUV((hour.wind_speed_850hPa  ?? 0) / 3.6, hour.windDir850  ?? 0);
+            const llShear_low = Math.hypot(w925.u - w1000.u, w925.v - w1000.v);
+            const llShear_mid = Math.hypot(w850.u - w925.u,  w850.v - w925.v);
+            const llj_active = llShear_low > llShear_mid * 1.5 && llShear_low > 4.0 && srh >= 75;
+
+            if (!llj_active && shear < 10 && cape < 500) score -= 3;
+            if (llj_active && cape >= 600) score += 3;   // LLJ-Bonus
+            else if (cape >= 800 && srh >= 100) score += 2;
         }
     }
     
