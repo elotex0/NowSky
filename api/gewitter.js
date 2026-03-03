@@ -46,10 +46,17 @@ export default async function handler(req, res) {
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
                     `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
-        const [response, ensembleResponse] = await Promise.all([
+        const mucapeUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
+                    `&hourly=mucape&forecast_days=16&models=ecmwf_ifs025&timezone=auto`;
+
+        const [response, ensembleResponse, mucapeResponse] = await Promise.all([
             fetch(url),
             fetch(ensembleUrl).catch(err => {
                 console.warn('Ensemble-API-Fehler:', err);
+                return { ok: false, json: () => Promise.resolve({ error: true }) };
+            }),
+            fetch(mucapeUrl).catch(err => {
+                console.warn('MUCAPE-API-Fehler:', err);
                 return { ok: false, json: () => Promise.resolve({ error: true }) };
             })
         ]);
@@ -58,6 +65,18 @@ export default async function handler(req, res) {
         let ensembleData = null;
         if (ensembleResponse.ok) {
             ensembleData = await ensembleResponse.json();
+        }
+
+        let mucapeData = null;
+        if (mucapeResponse.ok) {
+            const mucapeJson = await mucapeResponse.json();
+            if (!mucapeJson.error && mucapeJson?.hourly?.cape?.length) {
+                // Index-Map aufbauen: time → mucape-Wert für schnellen Lookup
+                mucapeData = new Map();
+                mucapeJson.hourly.time.forEach((t, i) => {
+                    mucapeData.set(t, mucapeJson.hourly.cape[i]);
+                });
+            }
         }
 
         if (data.error) {
@@ -108,6 +127,7 @@ export default async function handler(req, res) {
                 pblHeight: data.hourly.boundary_layer_height?.[i] ?? 0,
                 directRadiation: data.hourly.direct_radiation?.[i] ?? 0,
                 precipAcc: data.hourly.precipitation?.[i] ?? 0,
+                mucape: mucapeData?.get(t) ?? data.hourly.cape?.[i] ?? 0,
             };
 
             // Ensemble-Daten kompakt hinzufügen
@@ -165,7 +185,7 @@ export default async function handler(req, res) {
                     probability: calculateProbability(hour, region),
                     tornadoProbability: calculateTornadoProbability(hour, shear, srh, region),
                     temperature: hour.temperature,
-                    cape: hour.cape,
+                    cape: Math.max(hour.cape, hour.mucape ?? 0),  // für die API-Antwort
                     shear: shear,
                     srh: srh,
                     dcape: calcDCAPE(hour),
@@ -700,7 +720,7 @@ function getProbabilityParams(region) {
 function calculateProbability(hour, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
-    const cape = Math.max(0, hour.cape ?? 0);
+    const cape = Math.max(hour.cape ?? 0, hour.mucape ?? 0);
     const cin = Math.abs(hour.cin ?? 0);
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
@@ -1065,7 +1085,7 @@ function calculateProbability(hour, region = 'europe') {
 function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
-    const cape = Math.max(0, hour.cape ?? 0);
+    const cape = Math.max(hour.cape ?? 0, hour.mucape ?? 0);  // bestes CAPE
     const cin = Math.abs(hour.cin ?? 0);
     const { liftedIndex } = calcIndices(hour);
     
