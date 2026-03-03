@@ -241,96 +241,110 @@ export default async function handler(req, res) {
 
 // Hilfsfunktionen
 function getRegion(lat, lon) {
-    // Normalisiere lon auf -180..180
+    // Lon normalisieren
     while (lon > 180)  lon -= 360;
     while (lon < -180) lon += 360;
 
-    // Priorität: spezifischere Regionen VOR größeren Boxen prüfen!
+    // ─────────────────────────────────────
+    // AMERIKA
+    // ─────────────────────────────────────
 
-    // ── Amerika ──────────────────────────────────────────────────────────────
-    // Kanada: 50°N–70°N, -140–-50°W (oberhalb USA)
-    if (lat >= 50 && lat <= 70 && lon >= -140 && lon <= -50)
+    // Kanada (inkl. Toronto)
+    if (lat >= 41 && lat <= 83 && lon >= -141 && lon <= -52)
         return 'canada';
 
-    // USA: 25°N–50°N, -125–-65°W
-    // Mexiko (< 30°N) und Karibik/Mittelamerika raushalten
-    if (lat >= 30 && lat <= 50 && lon >= -125 && lon <= -65)
+    // USA (ohne Kanada & Mexiko)
+    if (lat >= 30 && lat < 41 && lon >= -125 && lon <= -65)
         return 'usa';
 
-    // Mexiko + Mittelamerika: 10°N–30°N, -120–-60°W
-    if (lat >= 10 && lat <= 30 && lon >= -120 && lon <= -60)
+    // Mexiko + Mittelamerika (inkl. Panama)
+    if (lat >= 5 && lat < 30 && lon >= -120 && lon <= -60)
         return 'central_america';
 
-    // Südamerika: 5°N–60°S, -85–-30°W (großzügige Box für ganzen Kontinent)
-    if (lat >= -60 && lat <= 5 && lon >= -85 && lon <= -30)
+    // Südamerika
+    if (lat >= -60 && lat < 5 && lon >= -85 && lon <= -30)
         return 'south_america';
 
-    // ── Europa ───────────────────────────────────────────────────────────────
-    // Europa: 35°N–72°N, -25°W–40°E — aber Türkei/Kaukasus exkludieren (lon < 36°E für 36°N+)
-    if (lat >= 35 && lat <= 72 && lon >= -25 && lon <= 40) {
-        // Türkei, Syrien, Libanon, Israel, Irak-West → middle_east (südlich 42°N, östlich 26°E)
-        if (lat < 42 && lon > 26) return 'middle_east';
-        return 'europe';
-    }
 
-    // Island, Färöer, Svalbard
-    if (lat >= 60 && lat <= 90 && lon >= -30 && lon <= 40)
-        return 'europe';
+    // ─────────────────────────────────────
+    // AFRIKA (VOR EUROPA & MIDDLE EAST!)
+    // ─────────────────────────────────────
 
-    // ── Naher Osten ──────────────────────────────────────────────────────────
-    // Naher Osten: 12°N–42°N, 25°E–65°E
-    if (lat >= 12 && lat <= 42 && lon >= 25 && lon <= 65)
-        return 'middle_east';
-
-    // ── Afrika ───────────────────────────────────────────────────────────────
-    // Nordafrika (Sahara, Maghreb): 15°N–37°N, -20–42°E
+    // Nordafrika
     if (lat >= 15 && lat <= 37 && lon >= -20 && lon <= 42)
         return 'north_africa';
 
-    // Westafrika: 0°N–15°N, -20–10°E
-    if (lat >= 0 && lat <= 15 && lon >= -20 && lon <= 10)
+    // Westafrika
+    if (lat >= 0 && lat < 15 && lon >= -20 && lon <= 10)
         return 'west_africa';
 
-    // Zentralafrika: 5°S–10°N, 10°E–35°E
-    if (lat >= -5 && lat <= 10 && lon >= 10 && lon <= 35)
+    // Zentralafrika
+    if (lat >= -5 && lat < 10 && lon > 10 && lon <= 35)
         return 'central_africa';
 
-    // Ostafrika: 12°S–15°N, 30°E–52°E
-    if (lat >= -12 && lat <= 15 && lon >= 30 && lon <= 52)
+    // Ostafrika
+    if (lat >= -12 && lat < 15 && lon > 35 && lon <= 52)
         return 'east_africa';
 
-    // Südafrika + Madagaskar: 35°S–15°S, 10°E–55°E
-    if (lat >= -35 && lat <= -15 && lon >= 10 && lon <= 55)
+    // Südliches Afrika
+    if (lat >= -35 && lat < -12 && lon >= 10 && lon <= 55)
         return 'south_africa';
 
-    // ── Asien ─────────────────────────────────────────────────────────────────
-    // Russland/Zentralasien: 40°N–75°N, 40°E–180°E
-    if (lat >= 40 && lat <= 75 && lon >= 40 && lon <= 180)
+
+    // ─────────────────────────────────────
+    // NAHER OSTEN
+    // ─────────────────────────────────────
+
+    if (lat >= 12 && lat <= 42 && lon > 42 && lon <= 65)
+        return 'middle_east';
+
+
+    // ─────────────────────────────────────
+    // RUSSLAND / ZENTRALASIEN
+    // ─────────────────────────────────────
+
+    // weiter nach Westen gezogen → Moskau passt jetzt
+    if (lat >= 40 && lat <= 75 && lon >= 30 && lon <= 180)
         return 'russia_central_asia';
 
-    // Südasien (Indien, Pakistan, Bangladesch, Sri Lanka): 5°N–35°N, 60°E–100°E
-    if (lat >= 5 && lat <= 35 && lon >= 60 && lon <= 100)
+
+    // ─────────────────────────────────────
+    // EUROPA (kommt NACH Afrika & Russland)
+    // ─────────────────────────────────────
+
+    if (lat >= 35 && lat <= 72 && lon >= -25 && lon < 30)
+        return 'europe';
+
+
+    // ─────────────────────────────────────
+    // ASIEN
+    // ─────────────────────────────────────
+
+    if (lat >= 5 && lat <= 35 && lon > 60 && lon <= 100)
         return 'south_asia';
 
-    // Südostasien: 10°S–25°N, 90°E–145°E (inkl. Philippinen, Indonesien bis Maluku)
-    if (lat >= -10 && lat <= 25 && lon >= 90 && lon <= 145)
+    if (lat >= -10 && lat <= 25 && lon > 100 && lon <= 145)
         return 'southeast_asia';
 
-    // Ostasien (China, Japan, Korea, Taiwan): 20°N–50°N, 100°E–150°E
-    // Japan bis 146°E, Kurilen bis ~155°E → erweiterte Box
-    if (lat >= 20 && lat <= 55 && lon >= 100 && lon <= 155)
+    if (lat >= 20 && lat <= 55 && lon > 100 && lon <= 155)
         return 'east_asia';
 
-    // ── Australien & Ozeanien ─────────────────────────────────────────────────
-    // Australien: 10°S–45°S, 110°E–155°E
+
+    // ─────────────────────────────────────
+    // AUSTRALIEN & OZEANIEN
+    // ─────────────────────────────────────
+
     if (lat >= -45 && lat <= -10 && lon >= 110 && lon <= 155)
         return 'australia';
 
-    // Neuseeland: 33°S–48°S, 165°E–180° und -180°–-165°W
     if (lat >= -48 && lat <= -33 && (lon >= 165 || lon <= -165))
         return 'new_zealand';
 
-    // ── Fallback ──────────────────────────────────────────────────────────────
+
+    // ─────────────────────────────────────
+    // FALLBACK
+    // ─────────────────────────────────────
+
     return 'europe';
 }
 
