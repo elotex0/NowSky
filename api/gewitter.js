@@ -121,7 +121,7 @@ export default async function handler(req, res) {
                 dew850: data.hourly.dew_point_850hPa?.[i] ?? 0,
                 dew700: data.hourly.dew_point_700hPa?.[i] ?? 0,
                 rh500: data.hourly.relative_humidity_500hPa?.[i] ?? 0,
-                cape: data.hourly.cape?.[i] ?? 0,
+                sbcape: data.hourly.cape?.[i] ?? 0,
                 cin: data.hourly.convective_inhibition?.[i] ?? 0,
                 liftedIndex: data.hourly.lifted_index?.[i] ?? 0,
                 pblHeight: data.hourly.boundary_layer_height?.[i] ?? 0,
@@ -185,11 +185,12 @@ export default async function handler(req, res) {
                     probability: calculateProbability(hour, region),
                     tornadoProbability: calculateTornadoProbability(hour, shear, srh, region),
                     temperature: hour.temperature,
-                    cape: Math.max(hour.cape, hour.mucape ?? 0),  // für die API-Antwort
+                    sbcape: hour.sbcape,
+                    mucape: hour.mucape,
                     shear: shear,
                     srh: srh,
                     dcape: calcDCAPE(hour),
-                    wmaxshear: calcWMAXSHEAR(Math.max(hour.cape, hour.mucape ?? 0), shear),
+                    wmaxshear: calcWMAXSHEAR(Math.max(hour.sbcape, hour.mucape ?? 0), shear),
                 };
             });
 
@@ -471,7 +472,7 @@ function calcDCAPE(hour) {
     const temp700 = hour.temp700 ?? 0;
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
-    const sbcape = hour.cape ?? 0;
+    const sbcape = hour.sbcape ?? 0;
 
     // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
     if (sbcape < 100) return 0;
@@ -481,7 +482,6 @@ function calcDCAPE(hour) {
     if (tempDiff <= 0) return 0;
 
     // Physikalisch: DCAPE nur relevant wenn Feuchteparzel wärmer als Umgebung
-    // Trockenheit 700 hPa dämpft DCAPE stark (kein Verdunstungsantrieb)
     const dewDepression700 = temp700 - dew700;
     const moistFactor = dewDepression700 > 20 ? 0.2        // sehr trocken = kaum Evaporation
                       : dewDepression700 > 10 ? 0.5
@@ -493,7 +493,6 @@ function calcDCAPE(hour) {
     const dcape = Math.max(0, (tempDiff / T_env_kelvin) * 9.81 * dz * moistFactor);
     return Math.round(dcape);
 }
-
 // WMAXSHEAR – bester globaler Prädiktor für schwere Gewitter
 // Quelle: Taszarek et al. (2020, J. Climate Part II), Brooks et al. (2003)
 // WMAXSHEAR = sqrt(2 * CAPE) * BS06
@@ -720,7 +719,7 @@ function getProbabilityParams(region) {
 function calculateProbability(hour, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
-    const sbcape = Math.max(0, hour.cape ?? 0);
+    const sbcape = Math.max(0, hour.sbcape ?? 0);
     const mucape = Math.max(0, hour.mucape ?? 0);
     const cape = Math.max(sbcape, mucape); // MUCAPE-dominiert für Scoring (Taszarek 2020)
     const cin = Math.abs(hour.cin ?? 0);
@@ -1087,8 +1086,8 @@ function calculateProbability(hour, region = 'europe') {
 function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
-    const sbcape = Math.max(0, hour.cape ?? 0);
-    const cape = Math.max(hour.cape ?? 0, hour.mucape ?? 0);  // bestes CAPE
+    const sbcape = Math.max(0, hour.sbcape ?? 0);
+    const cape = Math.max(hour.sbcape ?? 0, hour.mucape ?? 0);  // bestes CAPE
     const cin = Math.abs(hour.cin ?? 0);
     const { liftedIndex } = calcIndices(hour);
     
