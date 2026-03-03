@@ -34,7 +34,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `precipitation&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
+                    `freezing_level_height,precipitation&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -93,6 +93,7 @@ export default async function handler(req, res) {
                 pblHeight: getMultiModelValue(data.hourly, 'boundary_layer_height', i),
                 directRadiation: getMultiModelValue(data.hourly, 'direct_radiation', i),
                 precipAcc: getMultiModelValue(data.hourly, 'precipitation', i, 'max'),
+                freezingLevel: getMultiModelValue(data.hourly, 'freezing_level_height', i),
             };
         });
 
@@ -118,6 +119,10 @@ export default async function handler(req, res) {
             .map(hour => {
                 const shear = calcShear(hour);
                 const srh = calcSRH(hour);
+                const dcape = calcDCAPE(hour);
+                const wmaxshear = calcWMAXSHEAR(hour.cape, shear);
+                const hailProb = calculateHailProbability(hour, wmaxshear, dcape);
+                const windProb = calculateWindProbability(hour, wmaxshear, dcape);
                 return {
                     timestamp: hour.time,
                     probability: calculateProbability(hour),
@@ -126,8 +131,10 @@ export default async function handler(req, res) {
                     cape: hour.cape,
                     shear: shear,
                     srh: srh,
-                    dcape: calcDCAPE(hour),
-                    wmaxshear: calcWMAXSHEAR(hour.cape, shear),
+                    dcape: dcape,
+                    wmaxshear: wmaxshear,
+                    hailProbability: hailProb,
+                    windProbability: windProb,
                 };
             });
 
@@ -139,17 +146,25 @@ export default async function handler(req, res) {
                 const probability = calculateProbability(h);
                 const shear = calcShear(h);
                 const srh = calcSRH(h);
+                const dcape = calcDCAPE(h);
+                const wmaxshear = calcWMAXSHEAR(h.cape, shear);
                 const tornadoProb = calculateTornadoProbability(h, shear, srh);
+                const hailProb = calculateHailProbability(h, wmaxshear, dcape);
+                const windProb = calculateWindProbability(h, wmaxshear, dcape);
                 if (!daysMap.has(datePart)) {
                     daysMap.set(datePart, { 
                         date: datePart, 
                         maxProbability: probability,
-                        maxTornadoProbability: tornadoProb
+                        maxTornadoProbability: tornadoProb,
+                        maxHailProbability: hailProb,
+                        maxWindProbability: windProb
                     });
                 } else {
                     const dayData = daysMap.get(datePart);
                     dayData.maxProbability = Math.max(dayData.maxProbability, probability);
                     dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
+                    dayData.maxHailProbability = Math.max(dayData.maxHailProbability, hailProb);
+                    dayData.maxWindProbability = Math.max(dayData.maxWindProbability, windProb);
                 }
             }
         });
@@ -157,7 +172,9 @@ export default async function handler(req, res) {
         const stunden = nextHours.map(h => ({
             timestamp: h.timestamp,
             gewitter: h.probability,
-            tornado: h.tornadoProbability
+            tornado: h.tornadoProbability,
+            hagel: h.hailProbability,
+            wind: h.windProbability
         }));
 
         const tage = Array.from(daysMap.values())
@@ -165,7 +182,9 @@ export default async function handler(req, res) {
             .map(day => ({
                 date: day.date,
                 gewitter: day.maxProbability,
-                tornado: day.maxTornadoProbability
+                tornado: day.maxTornadoProbability,
+                hagel: day.maxHailProbability,
+                wind: day.maxWindProbability
             }));
 
         return res.status(200).json({
@@ -367,6 +386,107 @@ function calcDCAPE(hour) {
 function calcWMAXSHEAR(cape, shear) {
     if (cape <= 0 || shear <= 0) return 0;
     return Math.round(Math.sqrt(2 * cape) * shear);
+}
+
+// Hagelwahrscheinlichkeit (Europa) aus CAPE/Shear, WMAXSHEAR, DCAPE und Freezing Level
+function calculateHailProbability(hour, wmaxshear, dcape) {
+    const cape = Math.max(0, hour.cape ?? 0);
+    const shear = calcShear(hour);
+    const temp500 = hour.temp500 ?? 0;
+    const freezingLevel = hour.freezingLevel ?? 4000; // m
+
+    // Basis-Filter: wenig CAPE oder sehr warm in 500 hPa → praktisch kein Hagel
+    if (cape < 100) return 0;
+
+    let score = 0;
+
+    // CAPE – starker Updraft als Grundvoraussetzung für großen Hagel
+    if (cape >= 2000) score += 30;
+    else if (cape >= 1200) score += 22;
+    else if (cape >= 800) score += 16;
+    else if (cape >= 400) score += 10;
+
+    // WMAXSHEAR – kombiniert Auftrieb und Deep-Layer-Shear (Taszarek / Brooks)
+    if (wmaxshear >= 1500) score += 30;
+    else if (wmaxshear >= 1000) score += 22;
+    else if (wmaxshear >= 700) score += 15;
+    else if (wmaxshear >= 500) score += 8;
+
+    // Deep-Layer-Shear direkt (Superzellen / langlebige Aufwinde)
+    if (shear >= 25) score += 12;
+    else if (shear >= 20) score += 8;
+    else if (shear >= 15) score += 4;
+
+    // Thermisches Profil: kalte 500 hPa-Schicht begünstigt Hagelbildung
+    if (temp500 <= -18) score += 8;
+    else if (temp500 <= -14) score += 5;
+    else if (temp500 <= -10) score += 2;
+
+    // DCAPE kann Downbursts mit Hagel unterstützen, leichte Gewichtung
+    if (dcape >= 800 && cape >= 600) score += 6;
+    else if (dcape >= 600 && cape >= 400) score += 4;
+    else if (dcape >= 400 && cape >= 300) score += 2;
+
+    // Freezing Level: je tiefer, desto mehr Hagel erreicht den Boden
+    // < 2000 m: kaum Schmelzweg → volle Punktzahl
+    // 2000–3000 m: leichte Reduktion
+    // 3000–4000 m: deutlich weniger Bodenhagel
+    // > 4000 m: starke Reduktion (viel schmilzt)
+    let flFactor = 1.0;
+    if (freezingLevel > 4000) flFactor = 0.5;
+    else if (freezingLevel > 3000) flFactor = 0.7;
+    else if (freezingLevel > 2000) flFactor = 0.85;
+
+    score = Math.round(score * flFactor);
+
+    // Leichte Mindestanforderungen, um „Pseudo-Hagel“ bei sehr schwachen Lagen zu vermeiden
+    if (cape < 300 || shear < 10 || wmaxshear < 400) {
+        score = Math.min(score, 20);
+    }
+
+    return Math.min(100, Math.max(0, score));
+}
+
+// Sturmböen / schwere Winde (Europa) aus DCAPE, WMAXSHEAR, CAPE und Böen
+function calculateWindProbability(hour, wmaxshear, dcape) {
+    const cape = Math.max(0, hour.cape ?? 0);
+    const wind10m = hour.wind ?? 0;   // km/h
+    const gust = hour.gust ?? 0;      // km/h
+    const gustDiff = gust - wind10m;
+
+    // Basis-Filter: komplett stabile Luft ohne DCAPE und ohne WMAXSHEAR → kein Sturm
+    if (dcape < 200 && wmaxshear < 300 && gust < 40) return 0;
+
+    let score = 0;
+
+    // DCAPE – Haupttreiber für Downbursts und schwere Böen
+    if (dcape >= 1200) score += 40;
+    else if (dcape >= 900) score += 32;
+    else if (dcape >= 700) score += 24;
+    else if (dcape >= 500) score += 16;
+    else if (dcape >= 300) score += 8;
+
+    // WMAXSHEAR – organisiert Konvektion / MCS, unterstützt schwere Böen
+    if (wmaxshear >= 1500) score += 25;
+    else if (wmaxshear >= 1000) score += 18;
+    else if (wmaxshear >= 700) score += 12;
+    else if (wmaxshear >= 500) score += 6;
+
+    // Böenüberschuss gegenüber Mittelwind (Konvektion / Downbursts)
+    if (gustDiff >= 30) score += 15;
+    else if (gustDiff >= 20) score += 10;
+    else if (gustDiff >= 10) score += 5;
+
+    // Absolutes Böenniveau (Böenstärke am Boden)
+    if (gust >= 100) score += 15;       // ≥ 100 km/h
+    else if (gust >= 80) score += 10;   // ≥ 80 km/h
+    else if (gust >= 60) score += 6;    // ≥ 60 km/h
+    else if (gust >= 50) score += 3;    // ≥ 50 km/h
+
+    // Ein bisschen CAPE hilft, damit DCAPE nicht rein trocken-subsidente Lagen überbewertet
+    if (cape < 100 && dcape < 800) score = Math.min(score, 20);
+
+    return Math.min(100, Math.max(0, Math.round(score)));
 }
 
 // STP (Significant Tornado Parameter) - nach Thompson et al. (2012) / SPC fixed-layer
