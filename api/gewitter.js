@@ -189,7 +189,7 @@ export default async function handler(req, res) {
                     shear: shear,
                     srh: srh,
                     dcape: calcDCAPE(hour),
-                    wmaxshear: calcWMAXSHEAR(hour.cape, shear),
+                    wmaxshear: calcWMAXSHEAR(Math.max(hour.cape, hour.mucape ?? 0), shear),
                 };
             });
 
@@ -471,10 +471,10 @@ function calcDCAPE(hour) {
     const temp700 = hour.temp700 ?? 0;
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
-    const cape = hour.cape ?? 0;
+    const sbcape = hour.cape ?? 0;
 
     // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
-    if (cape < 100) return 0;
+    if (sbcape < 100) return 0;
 
     const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
     const tempDiff = wetBulb700 - temp500;
@@ -720,7 +720,9 @@ function getProbabilityParams(region) {
 function calculateProbability(hour, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
-    const cape = Math.max(hour.cape ?? 0, hour.mucape ?? 0);
+    const sbcape = Math.max(0, hour.cape ?? 0);
+    const mucape = Math.max(0, hour.mucape ?? 0);
+    const cape = Math.max(sbcape, mucape); // MUCAPE-dominiert für Scoring (Taszarek 2020)
     const cin = Math.abs(hour.cin ?? 0);
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
@@ -742,7 +744,7 @@ function calculateProbability(hour, region = 'europe') {
     // Kombinierte Indizes (bewährte meteorologische Parameter)
     const ehi = (cape * srh) / 160000;
     const scp = calcSCP(cape, shear, srh, cin, region);
-    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
+    const stp = calcSTP(sbcape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
     const wmaxshear = calcWMAXSHEAR(cape, shear);
     
     // Basis-Score basierend auf kombinierten Indizes (regionsspezifisch)
@@ -1066,16 +1068,15 @@ function calculateProbability(hour, region = 'europe') {
     
     // Mindestanforderungen für Gewitter (regionsspezifisch)
     if (region === 'usa') {
-        if (score > 0 && cape < 500) {
+        if (score > 0 && sbcape < 500) {
             score = Math.max(0, score - 10);
         }
-        if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15);
+        if (score > 0 && cin > 150 && sbcape < 1500) score = Math.max(0, score - 15);
     } else {
-        // Europa: Nur bei sehr niedrigem CAPE (< 200) leicht reduzieren
-        if (score > 0 && cape < 200) {
+        if (score > 0 && sbcape < 200) {
             score = Math.max(0, score - 5);
         }
-        if (score > 0 && cin > 150 && cape < 1200) score = Math.max(0, score - 15);
+        if (score > 0 && cin > 150 && sbcape < 1200) score = Math.max(0, score - 15);
     }
     
     return Math.min(100, Math.max(0, Math.round(score)));
@@ -1085,6 +1086,7 @@ function calculateProbability(hour, region = 'europe') {
 function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
+    const sbcape = Math.max(0, hour.cape ?? 0);
     const cape = Math.max(hour.cape ?? 0, hour.mucape ?? 0);  // bestes CAPE
     const cin = Math.abs(hour.cin ?? 0);
     const { liftedIndex } = calcIndices(hour);
@@ -1140,8 +1142,8 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     else if (totalVeering >= 30) veeringFactor = 1.2;
     else if (totalVeering >= 15) veeringFactor = 1.1;
 
-    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
-    
+    const stp = calcSTP(sbcape, srh1km, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
+
     // Basis-Score für Tornado-Wahrscheinlichkeit
     let score = 0;
     
