@@ -177,7 +177,7 @@ export default async function handler(req, res) {
                     shear: shear,
                     srh: srh,
                     dcape: calcDCAPE(hour),
-                    wmaxshear: calcWMAXSHEAR(hour.cape, shear),
+                    wmaxshear: calcWMAXSHEAR(calcMUCAPE(hour).mucape, shear),
                 };
             });
 
@@ -1181,6 +1181,7 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const { mucape, isElevated } = calcMUCAPE(hour);
     const cape = mucape;
     const cin = isElevated ? 0 : Math.abs(hour.cin ?? 0);
+    if (cin > 200) return 0; // Zu stabil für Tornado, unabhängig von anderen Faktoren
     const { liftedIndex } = calcIndices(hour);
     
     // Basis-Filter: Zu kalt oder keine Instabilität = kein Tornado (regionsspezifisch)
@@ -1206,8 +1207,7 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     
     const t = tornadoThresholds[region] || tornadoThresholds['europe'];
     if (temp2m < t.minTemp) return 0;
-    if (cape < t.minCAPE) return 0;
-    if (cin > 200) return 0;
+    if (sbCAPE < t.minCAPE) return 0;
     
     // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
     const srh1km = calcSRH(hour, '0-1km');
@@ -1473,7 +1473,7 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     // Kombinierte Penalty statt dreifach unabhängiger Reduktion:
     // Zähle wie viele Mindestanforderungen verfehlt werden
     let failCount = 0;
-    if (cape  < mr.minCAPE  && score > 15) failCount++;
+    if (sbCAPE < mr.minCAPE && score > 15) failCount++;
     if (shear < mr.minShear && score > 10) failCount++;
     if (srh   < mr.minSRH   && score > 10) failCount++;
 
