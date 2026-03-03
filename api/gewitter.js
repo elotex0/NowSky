@@ -1046,7 +1046,7 @@ function calculateProbability(hour, region = 'europe') {
 
         // Mittelmeer / Nahost / Nordafrika: wärmer, aber synoptisch ähnlich Europa
         middle_east:       { mu: 220, shear: 16, temp: 6 },
-        north_africa:      { mu: 220, shear: 16, temp: 6 },
+        north_africa:      { mu: 220, shear: 15, temp: 6 },
 
         // Tropen / Subtropen: häufig hohe muCAPE, Shear limitierend → strenger Shear-Fokus
         central_america:   { mu: 300, shear: 18, temp: 8 },
