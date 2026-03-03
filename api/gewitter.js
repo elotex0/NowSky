@@ -31,10 +31,9 @@ export default async function handler(req, res) {
                     `cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability,` +
                     `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
-                    `temperature_500hPa,temperature_850hPa,temperature_700hPa,temperature_925hPa,` +
+                    `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
-                    `dew_point_850hPa,dew_point_700hPa,dew_point_925hPa,boundary_layer_height,direct_radiation,` +
-                    `wind_speed_925hPa,wind_direction_925hPa,` +
+                    `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
                     `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
         const ensembleUrl = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}` +
@@ -42,10 +41,9 @@ export default async function handler(req, res) {
                     `cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability,` +
                     `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
-                    `temperature_500hPa,temperature_850hPa,temperature_700hPa,temperature_925hPa,` +
+                    `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
-                    `dew_point_850hPa,dew_point_700hPa,dew_point_925hPa,boundary_layer_height,direct_radiation,` +
-                    `wind_speed_925hPa,wind_direction_925hPa,` +
+                    `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
                     `precipitation&forecast_days=16&models=best_match&timezone=auto`;
 
         const [response, ensembleResponse] = await Promise.all([
@@ -110,10 +108,6 @@ export default async function handler(req, res) {
                 pblHeight: data.hourly.boundary_layer_height?.[i] ?? 0,
                 directRadiation: data.hourly.direct_radiation?.[i] ?? 0,
                 precipAcc: data.hourly.precipitation?.[i] ?? 0,
-                temp925: data.hourly.temperature_925hPa?.[i] ?? null,
-                dew925: data.hourly.dew_point_925hPa?.[i] ?? null,
-                wind_speed_925hPa: data.hourly.wind_speed_925hPa?.[i] ?? 0,
-                windDir925: data.hourly.wind_direction_925hPa?.[i] ?? 0,
             };
 
             // Ensemble-Daten kompakt hinzufügen
@@ -127,9 +121,8 @@ export default async function handler(req, res) {
                 const ensembleParams = [
                     'temperature_2m', 'dew_point_2m', 'wind_speed_10m', 'wind_gusts_10m',
                     'precipitation_probability', 'precipitation', 'direct_radiation', 'boundary_layer_height',
-                    'temperature_500hPa', 'temperature_700hPa', 'temperature_850hPa', 'temperature_925hPa',
-                    'wind_speed_300hPa', 'wind_speed_500hPa', 'wind_speed_700hPa', 'wind_speed_850hPa', 'wind_speed_1000hPa', 'wind_speed_925hPa',
-                    'dew_point_850hPa', 'dew_point_700hPa', 'dew_point_925hPa',
+                    'temperature_500hPa', 'temperature_700hPa', 'temperature_850hPa',
+                    'wind_speed_300hPa', 'wind_speed_500hPa', 'wind_speed_700hPa', 'wind_speed_850hPa', 'wind_speed_1000hPa',
                     'relative_humidity_500hPa', 'cape', 'convective_inhibition', 'lifted_index'
                 ];
 
@@ -173,11 +166,10 @@ export default async function handler(req, res) {
                     tornadoProbability: calculateTornadoProbability(hour, shear, srh, region),
                     temperature: hour.temperature,
                     cape: hour.cape,
-                    mucape: calcMUCAPE(hour),
                     shear: shear,
                     srh: srh,
                     dcape: calcDCAPE(hour),
-                    wmaxshear: calcWMAXSHEAR(calcMUCAPE(hour).mucape, shear),
+                    wmaxshear: calcWMAXSHEAR(hour.cape, shear),
                 };
             });
 
@@ -452,67 +444,6 @@ function calcSCP(cape, shear, srh, cin, region = 'europe') {
     return Math.max(0, capeTerm * srhTerm * shearTerm * cinTerm * regionScale);
 }
 
-// ThetaE nach Bolton (1980)
-function calcThetaE(temp, dew, pressure = 1000) {
-    const Lv = 2500;
-    const cp = 1004;
-    const T_K = temp + 273.15;
-    const e = 6.112 * Math.exp((17.67 * dew) / (dew + 243.5));
-    const w = 0.622 * (e / (pressure - e));
-    return T_K * Math.exp((Lv * w) / (cp * T_K));
-}
-
-// MUCAPE-Approximation: Findet das instabilste Paket in der untersten Schicht (0-300 hPa)
-// Verwendet Bolton (1980) für ThetaE und skaliert CAPE basierend auf dem Lifted Index
-function calcMUCAPE(hour) {
-    const sbCAPE = Math.max(0, hour.cape ?? 0);
-    const temp500 = hour.temp500 ?? -20;
-    const rh500 = hour.rh500 ?? 50;
-
-    // Taupunkt auf 500hPa schätzen (für Umgebungs-ThetaE)
-    const dew500 = temp500 - ((100 - rh500) / 5); 
-    const thetaE500 = calcThetaE(temp500, dew500, 500);
-
-    // Hilfsfunktion zur CAPE-Schätzung eines Pakets
-    const estimateCAPE = (pTemp, pDew, pPres, layerType = 'elevated') => {
-        // Feuchte-Check: Zu trockene Schichten produzieren keine Konvektion
-        const dewDepression = pTemp - pDew;
-        if (dewDepression > 8) return 0; 
-
-        const thetaEP = calcThetaE(pTemp, pDew, pPres);
-        if (thetaEP <= thetaE500) return 0;
-
-        // Paket-Temperatur auf 500hPa schätzen (Bolton-Approximation)
-        const pTemp500 = temp500 + 0.5 * (thetaEP - thetaE500);
-        const pLI = temp500 - pTemp500;
-
-        if (pLI >= 0) return 0;
-
-        // Skalierung: 1 Grad LI entspricht physikalisch ca. 100-150 J/kg CAPE
-        // (je nach Schichtdicke und Feuchteprofil). 125 ist ein realistischer Mittelwert.
-        return Math.abs(pLI) * 125; 
-    };
-
-    // Teste verschiedene Pakete
-    const elevated_925 = (hour.temp925 !== null && hour.dew925 !== null) 
-        ? estimateCAPE(hour.temp925, hour.dew925, 925) : 0;
-    
-    const elevated_850 = (hour.temp850 !== null && hour.dew850 !== null)
-        ? estimateCAPE(hour.temp850, hour.dew850, 850) : 0;
-
-    // MUCAPE ist das Maximum aus Surface und Elevated
-    const mucape = Math.max(sbCAPE, elevated_925, elevated_850);
-
-    // isElevated: wenn elevated Parcel signifikant mehr CAPE hat als Boden
-    const isElevated = (elevated_925 > sbCAPE + 100 || elevated_850 > sbCAPE + 100) && sbCAPE < 500;
-
-    // LLJ-Check: 925 hPa Wind > 12 m/s
-    const ws925_ms = (hour.wind_speed_925hPa ?? 0) / 3.6;
-    const hasLLJ = ws925_ms >= 12;
-
-    return { mucape: Math.round(mucape), sbCAPE, isElevated, hasLLJ };
-}
-
 // DCAPE (Downdraft CAPE) nach Gilmore & Wicker (1998)
 // Approximation über 700-500 hPa Schicht
 // Hoher DCAPE → starke Downbursts, Hagel, Sturmböen
@@ -521,10 +452,9 @@ function calcDCAPE(hour) {
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
     const cape = hour.cape ?? 0;
-    const { mucape } = calcMUCAPE(hour);
 
     // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
-    if (cape < 100 && mucape < 200) return 0;
+    if (cape < 100) return 0;
 
     const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
     const tempDiff = wetBulb700 - temp500;
@@ -770,22 +700,16 @@ function getProbabilityParams(region) {
 function calculateProbability(hour, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
-    const sbCAPE = Math.max(0, hour.cape ?? 0);
-    const { mucape, isElevated, hasLLJ } = calcMUCAPE(hour);
-    const cape = mucape; // MUCAPE statt surface-based CAPE
-    const cin = isElevated ? 0 : Math.abs(hour.cin ?? 0); // kein CIN-Penalty bei elevated
+    const cape = Math.max(0, hour.cape ?? 0);
+    const cin = Math.abs(hour.cin ?? 0);
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
     
     // Regionsspezifische Filter für Fehlalarme
     const p = getProbabilityParams(region);
-    if (temp2m < p.minTemp) {
-        // Ausnahme: echte elevated Konvektion trotzdem bewerten
-        if (!isElevated || mucape < 500) return 0;
-        // isElevated + hohe MUCAPE → weitermachen, wird später durch Temp-Reduktion gedämpft
-    }
-    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5) && !isElevated) return 0;
-    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20 && !isElevated) return 0;
+    if (temp2m < p.minTemp) return 0; // Zu kalt für Gewitter
+    if (temp2m < p.minTempWithCAPE && cape < (p.minCAPE * 1.5)) return 0; // Kalt und keine hohe Instabilität
+    if (cape < p.minCAPEWithPrecip && precipAcc < 0.2 && precipProb < 20) return 0; // Keine Instabilität und kein Niederschlag
     
     // Berechne Indizes
     const shear = calcShear(hour);
@@ -798,7 +722,7 @@ function calculateProbability(hour, region = 'europe') {
     // Kombinierte Indizes (bewährte meteorologische Parameter)
     const ehi = (cape * srh) / 160000;
     const scp = calcSCP(cape, shear, srh, cin, region);
-    const stp = calcSTP(sbCAPE, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
+    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew);
     const wmaxshear = calcWMAXSHEAR(cape, shear);
     
     // Basis-Score basierend auf kombinierten Indizes (regionsspezifisch)
@@ -1040,11 +964,12 @@ function calculateProbability(hour, region = 'europe') {
             if (hour.directRadiation >= 600) score += 5;
             else if (hour.directRadiation >= 400) score += 3;
         } else if (isNight) {
-            const llj_active = (srh >= 150 && shear >= 12) || hasLLJ;
-            if (!llj_active && !isElevated && shear < 12 && cape < 1000) score -= 5;
-            if (llj_active && cape >= 800) score += 4;
+            // Low-Level-Jet Check: hohes SRH nachts = LLJ aktiv → kein Pauschalabzug
+            // Quelle: Hanesiak 2024, Climate Central 2025
+            const llj_active = srh >= 150 && shear >= 12;
+            if (!llj_active && shear < 12 && cape < 1000) score -= 5; // vorher -7
+            if (llj_active && cape >= 800) score += 4;  // LLJ-Bonus
             else if (cape >= 1200 && srh >= 150) score += 2;
-            if (isElevated && cape >= 200) score += 6; // elevated convection bonus nachts
         }
     } else {
         if (isDaytime && temp2m >= 12 && cape >= 300) {
@@ -1052,11 +977,10 @@ function calculateProbability(hour, region = 'europe') {
             else if (hour.directRadiation >= 300) score += 2;
             else if (hour.directRadiation >= 200) score += 1;
         } else if (isNight) {
-            const llj_active = (srh >= 100 && shear >= 10) || hasLLJ;
-            if (!llj_active && !isElevated && shear < 10 && cape < 500) score -= 3;
-            if (llj_active && cape >= 600) score += 3;
+            const llj_active = srh >= 100 && shear >= 10;
+            if (!llj_active && shear < 10 && cape < 500) score -= 3; // vorher -4
+            if (llj_active && cape >= 600) score += 3;  // LLJ-Bonus
             else if (cape >= 800 && srh >= 100) score += 2;
-            if (isElevated && cape >= 200) score += 5; // elevated convection bonus nachts
         }
     }
     
@@ -1095,60 +1019,24 @@ function calculateProbability(hour, region = 'europe') {
     }
     
     // Ensemble-Daten (falls verfügbar, regionsspezifisch)
-    // Ensemble-Daten (falls verfügbar, regionsspezifisch)
     if (hour.ensemble) {
         const MIN_PROB = 0.6;
         const capeThreshold = isHighThreshold ? 800 : 600;
         const capeMinCAPE = isHighThreshold ? 600 : 400;
-
-        // CAPE Ensemble
+        
         const capeProb = getEnsembleProb(hour.ensemble, 'cape', capeThreshold, 'above');
         if (capeProb !== null && capeProb >= MIN_PROB) {
             score += Math.round((isHighThreshold ? 10 : 8) * capeProb);
         }
-
-        // Lifted Index Ensemble
+        
         const liProb = getEnsembleProb(hour.ensemble, 'lifted_index', -3, 'below');
         if (liProb !== null && liProb >= MIN_PROB && cape >= capeMinCAPE) {
             score += Math.round((isHighThreshold ? 5 : 4) * liProb);
         }
-
-        // Niederschlag Ensemble
-        const precipEnsProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
-        if (precipEnsProb !== null && precipEnsProb >= MIN_PROB && cape >= capeMinCAPE) {
-            score += Math.round((isHighThreshold ? 4 : 3) * precipEnsProb);
-        }
-
-        // 850hPa Temperatur Ensemble (Lapse Rate Proxy)
-        const t850Prob = getEnsembleProb(hour.ensemble, 'temperature_850hPa', 5, 'above');
-        if (t850Prob !== null && t850Prob >= MIN_PROB && cape >= capeMinCAPE) {
-            score += Math.round(3 * t850Prob);
-        }
-
-        // 925hPa Temperatur Ensemble (elevated parcel Proxy)
-        const t925Prob = getEnsembleProb(hour.ensemble, 'temperature_925hPa', 8, 'above');
-        if (t925Prob !== null && t925Prob >= MIN_PROB && isElevated) {
-            score += Math.round(4 * t925Prob); // elevated bonus nur wenn wirklich elevated
-        }
-
-        // Dewpoint 925hPa Ensemble (Feuchte für elevated parcel)
-        const dew925Prob = getEnsembleProb(hour.ensemble, 'dew_point_925hPa', 5, 'above');
-        if (dew925Prob !== null && dew925Prob >= MIN_PROB && isElevated) {
-            score += Math.round(3 * dew925Prob);
-        }
-
-        // CIN Ensemble — hohe CIN-Wahrscheinlichkeit reduziert Score
-        if (!isElevated) {
-            const cinProb = getEnsembleProb(hour.ensemble, 'convective_inhibition', -100, 'below');
-            if (cinProb !== null && cinProb >= MIN_PROB) {
-                score -= Math.round(6 * cinProb);
-            }
-        }
-
-        // 925hPa Wind Ensemble (LLJ-Stärke)
-        const ws925Prob = getEnsembleProb(hour.ensemble, 'wind_speed_925hPa', 15, 'above');
-        if (ws925Prob !== null && ws925Prob >= MIN_PROB) {
-            score += Math.round(3 * ws925Prob); // LLJ-Bonus aus Ensemble
+        
+        const precipProb = getEnsembleProb(hour.ensemble, 'precipitation', 1, 'above');
+        if (precipProb !== null && precipProb >= MIN_PROB && cape >= capeMinCAPE) {
+            score += Math.round((isHighThreshold ? 4 : 3) * precipProb);
         }
     }
     
@@ -1158,10 +1046,10 @@ function calculateProbability(hour, region = 'europe') {
     
     // Mindestanforderungen für Gewitter (regionsspezifisch)
     if (region === 'usa') {
-    if (score > 0 && cape < 500 && !isElevated) {
-        score = Math.max(0, score - 10);
-    }
-    if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15);
+        if (score > 0 && cape < 500) {
+            score = Math.max(0, score - 10);
+        }
+        if (score > 0 && cin > 150 && cape < 1500) score = Math.max(0, score - 15);
     } else {
         // Europa: Nur bei sehr niedrigem CAPE (< 200) leicht reduzieren
         if (score > 0 && cape < 200) {
@@ -1177,41 +1065,35 @@ function calculateProbability(hour, region = 'europe') {
 function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
-    const { mucape, sbCAPE, isElevated } = calcMUCAPE(hour);
-    const cape = sbCAPE; // Tornados sind an bodengebundene Instabilität gebunden
-    
-    // Hartes Aus für elevated Convection bei Tornados (physikalisch begründet)
-    if (isElevated && sbCAPE < 200) return 0;
-
-    const cin = isElevated ? 0 : Math.abs(hour.cin ?? 0);
-    if (cin > 150 && sbCAPE < 1000) return 0; // Zu starker Deckel für Tornado-Entwicklung
-    
+    const cape = Math.max(0, hour.cape ?? 0);
+    const cin = Math.abs(hour.cin ?? 0);
     const { liftedIndex } = calcIndices(hour);
     
     // Basis-Filter: Zu kalt oder keine Instabilität = kein Tornado (regionsspezifisch)
     const tornadoThresholds = {
-        'usa': { minTemp: 12, minCAPE: 400 },
-        'canada': { minTemp: 10, minCAPE: 300 },
-        'south_africa': { minTemp: 12, minCAPE: 400 },
-        'south_america': { minTemp: 12, minCAPE: 400 },
-        'australia': { minTemp: 12, minCAPE: 400 },
-        'east_asia': { minTemp: 10, minCAPE: 300 },
+        'usa': { minTemp: 12, minCAPE: 500 },
+        'canada': { minTemp: 10, minCAPE: 400 },
+        'south_africa': { minTemp: 12, minCAPE: 500 },
+        'south_america': { minTemp: 12, minCAPE: 450 },
+        'australia': { minTemp: 12, minCAPE: 450 },
+        'east_asia': { minTemp: 10, minCAPE: 400 },
         'south_asia': { minTemp: 18, minCAPE: 400 },
         'southeast_asia': { minTemp: 20, minCAPE: 350 },
         'central_america': { minTemp: 18, minCAPE: 350 },
-        'europe': { minTemp: 8, minCAPE: 150 },
         'north_africa': { minTemp: 15, minCAPE: 350 },
         'east_africa': { minTemp: 18, minCAPE: 350 },
         'central_africa': { minTemp: 20, minCAPE: 300 },
         'west_africa': { minTemp: 22, minCAPE: 300 },
         'middle_east': { minTemp: 12, minCAPE: 350 },
         'new_zealand': { minTemp: 8, minCAPE: 300 },
-        'russia_central_asia': { minTemp: 8, minCAPE: 300 }
+        'russia_central_asia': { minTemp: 8, minCAPE: 300 },
+        'europe': { minTemp: 8, minCAPE: 400 }
     };
     
     const t = tornadoThresholds[region] || tornadoThresholds['europe'];
     if (temp2m < t.minTemp) return 0;
-    if (sbCAPE < t.minCAPE) return 0;
+    if (cape < t.minCAPE) return 0;
+    if (cin > 200) return 0;
     
     // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
     const srh1km = calcSRH(hour, '0-1km');
@@ -1238,7 +1120,7 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     else if (totalVeering >= 30) veeringFactor = 1.2;
     else if (totalVeering >= 15) veeringFactor = 1.1;
 
-    const stp = calcSTP(sbCAPE, srh1km, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
+    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, region, temp2m, dew) * veeringFactor;
     
     // Basis-Score für Tornado-Wahrscheinlichkeit
     let score = 0;
@@ -1477,7 +1359,7 @@ function calculateTornadoProbability(hour, shear, srh, region = 'europe') {
     // Kombinierte Penalty statt dreifach unabhängiger Reduktion:
     // Zähle wie viele Mindestanforderungen verfehlt werden
     let failCount = 0;
-    if (sbCAPE < mr.minCAPE && score > 15) failCount++;
+    if (cape  < mr.minCAPE  && score > 15) failCount++;
     if (shear < mr.minShear && score > 10) failCount++;
     if (srh   < mr.minSRH   && score > 10) failCount++;
 
