@@ -175,10 +175,10 @@ export default async function handler(req, res) {
             tornado: h.tornadoProbability,
             hagel: h.hailProbability,
             wind: h.windProbability,
-            gewitter_risk: categorizeLightningRisk(h.probability),
-            tornado_risk: categorizeSevereRisk(h.tornadoProbability),
-            hagel_risk: categorizeSevereRisk(h.hailProbability),
-            wind_risk: categorizeSevereRisk(h.windProbability)
+            gewitter_risk: categorizeRisk(h.probability),
+            tornado_risk: categorizeRisk(h.tornadoProbability),
+            hagel_risk: categorizeRisk(h.hailProbability),
+            wind_risk: categorizeRisk(h.windProbability)
         }));
 
         const tage = Array.from(daysMap.values())
@@ -189,10 +189,10 @@ export default async function handler(req, res) {
                 tornado: day.maxTornadoProbability,
                 hagel: day.maxHailProbability,
                 wind: day.maxWindProbability,
-                gewitter_risk: categorizeLightningRisk(day.maxProbability),
-                tornado_risk: categorizeSevereRisk(day.maxTornadoProbability),
-                hagel_risk: categorizeSevereRisk(day.maxHailProbability),
-                wind_risk: categorizeSevereRisk(day.maxWindProbability)
+                gewitter_risk: categorizeRisk(day.maxProbability),
+                tornado_risk: categorizeRisk(day.maxTornadoProbability),
+                hagel_risk: categorizeRisk(day.maxHailProbability),
+                wind_risk: categorizeRisk(day.maxWindProbability)
             }));
 
         return res.status(200).json({
@@ -396,46 +396,25 @@ function calcWMAXSHEAR(cape, shear) {
     return Math.round(Math.sqrt(2 * cape) * shear);
 }
 
-// Score (0–100) → Blitz-/Gewitterwahrscheinlichkeit in % (ESTOFEX-orientiert)
-// Kalibrierung:
-// - Score ≈ 25 → ca. 15 % (dünne gelbe ESTOFEX-Blitzlinie)
-// - Score ≈ 55 → ca. 50 % (dicke gelbe ESTOFEX-Blitzlinie)
-function scoreToLightningProb(score) {
-    const s = Math.max(0, Math.min(100, score ?? 0));
-    const a = 40; // Mittelpunkt der Logistic-Funktion
-    const b = 12; // Steilheit
-    const p = 1 / (1 + Math.exp(-(s - a) / b)); // 0..1
-    return p * 100;
-}
-
-// ESTOFEX-ähnliche Blitz-/Gewitter-Risikoklassifizierung (Europa):
-// 0 = none (<15%), 1 = Tstorm (15–49%), 2 = Tstorm-high (≥50%)
-function categorizeLightningRisk(prob) {
+// ESTOFEX-ähnliche Risikoklassifizierung (Europa):
+// 0 = none (<15%), 1 = Tstorm (15–39%), 2 = Level 1–2 (40–69%), 3 = Level 3 (≥70%)
+function categorizeRisk(prob) {
     const p = Math.max(0, Math.min(100, Math.round(prob ?? 0)));
+    let level = 0;
+    let label = 'none';
 
-    if (p >= 50) {
-        return { level: 2, label: 'tstorm_high' }; // dicke gelbe Linie
+    if (p >= 70) {
+        level = 3;
+        label = 'high';
+    } else if (p >= 40) {
+        level = 2;
+        label = 'moderate';
     } else if (p >= 15) {
-        return { level: 1, label: 'tstorm' };      // dünne gelbe Linie
+        level = 1;
+        label = 'tstorm';
     }
 
-    return { level: 0, label: 'none' };
-}
-
-// ESTOFEX-ähnliche Severe-Risikoklassifizierung (Hagel/Wind/Tornado):
-// 0 = none (<5%), 1 = low (5–14%), 2 = severe (15–49%), 3 = high (≥50%)
-function categorizeSevereRisk(prob) {
-    const p = Math.max(0, Math.min(100, Math.round(prob ?? 0)));
-
-    if (p >= 50) {
-        return { level: 3, label: 'severe_high' };
-    } else if (p >= 15) {
-        return { level: 2, label: 'severe' };
-    } else if (p >= 5) {
-        return { level: 1, label: 'severe_low' };
-    }
-
-    return { level: 0, label: 'none' };
+    return { level, label };
 }
 
 // Schwerer Hagel (>2cm) Wahrscheinlichkeit (Europa) – ESTOFEX/ESSL-Methodik
@@ -1036,13 +1015,8 @@ function calculateProbability(hour) {
     if (shear >= 20 && cape >= 150 && score < 30) {
         score = Math.min(score + 5, 35); // Leichter Boost für HSLC-Fälle
     }
-
-    // Zuerst physikalischen Score 0–100 begrenzen ...
-    const rawScore = Math.min(100, Math.max(0, Math.round(score)));
-    // ... und dann mittels Logistic-Funktion in Blitz-/Gewitterwahrscheinlichkeit mappen
-    const lightningProb = Math.round(scoreToLightningProb(rawScore));
-
-    return Math.min(100, Math.max(0, lightningProb));
+    
+    return Math.min(100, Math.max(0, Math.round(score)));
 }
 
 // Tornado-Wahrscheinlichkeitsberechnung (nur Europa)
