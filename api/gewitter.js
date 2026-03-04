@@ -88,7 +88,8 @@ export default async function handler(req, res) {
                 dew700: getMultiModelValue(data.hourly, 'dew_point_700hPa', i),
                 rh500: getMultiModelValue(data.hourly, 'relative_humidity_500hPa', i),
                 cape: getMultiModelValue(data.hourly, 'cape', i),
-                cin: Math.abs(getMultiModelValue(data.hourly, 'convective_inhibition', i)),
+                // CIN kommt von der API als negativer Wert (Stabilisierung). Wir speichern ihn mit Vorzeichen.
+                cin: getMultiModelValue(data.hourly, 'convective_inhibition', i),
                 liftedIndex: getMultiModelValue(data.hourly, 'lifted_index', i),
                 pblHeight: getMultiModelValue(data.hourly, 'boundary_layer_height', i),
                 directRadiation: getMultiModelValue(data.hourly, 'direct_radiation', i),
@@ -349,7 +350,9 @@ function calcSCP(cape, shear, srh, cin) {
     const capeTerm  = cape / 1000;
     const srhTerm   = Math.min(srh / 50, 4.0);
     const shearTerm = Math.min(shear / 12, 1.5);
-    const cinTerm   = cin < 40 ? 1.0 : Math.max(0.1, 1 - (cin - 40) / 200);
+    // CIN ist in Europa konventionsgemäß negativ. Wir arbeiten hier mit dem Betrag der Hemmung.
+    const magCin    = -Math.min(0, cin); // |CIN| für cin ≤ 0, sonst 0
+    const cinTerm   = magCin < 40 ? 1.0 : Math.max(0.1, 1 - (magCin - 40) / 200);
 
     // Europa-Scaling (Taszarek/ESTOFEX: etwas niedrigere Schwellen als USA)
     const europeScale = 0.85;
@@ -717,7 +720,13 @@ function calcELI(cape, cin, pblHeight) {
     // Höhere PBL = bessere Durchmischung = höheres ELI
     if (cape < 50) return 0;
     const pblFactor = pblHeight > 1500 ? 1.2 : pblHeight > 1000 ? 1.0 : pblHeight > 500 ? 0.8 : 0.6;
-    const cinFactor = cin < 25 ? 1.0 : cin < 50 ? 0.9 : cin < 100 ? 0.7 : cin < 150 ? 0.5 : 0.3;
+    // CIN negativ: je stärker (größerer Betrag), desto kleiner der Faktor
+    const magCin    = -Math.min(0, cin); // |CIN| für cin ≤ 0, sonst 0
+    const cinFactor = magCin < 25 ? 1.0
+        : magCin < 50 ? 0.9
+        : magCin < 100 ? 0.7
+        : magCin < 150 ? 0.5
+        : 0.3;
     return cape * pblFactor * cinFactor;
 }
 
@@ -756,11 +765,12 @@ function calcSTP(cape, srh, shear, liftedIndex, cin, temp2m = null, dew2m = null
     // *** 6BWD normiert mit 20 m/s (SPC-Standard), cap bei 1.5 für > 30 m/s ***
     const shearTerm = shear >= 30 ? 1.5 : (shear / 20);
 
-    // *** CIN: hartes Cutoff bei -200, set to 1 wenn > -50 J/kg (SPC-Standard) ***
+    // *** CIN: hartes Cutoff bei -200 J/kg, set to 1 wenn > -50 J/kg (SPC-Standard, CIN negativ) ***
+    // CIN ist hier negativ definiert (z.B. -50, -100, -200 J/kg)
     let cinTerm;
-    if (cin <= 50) cinTerm = 1.0;          // cin ist abs-Wert im Code, also cin < 50 = günstig
-    else if (cin >= 200) cinTerm = 0.0;    // hartes Cutoff
-    else cinTerm = (200 - cin) / 150;      // lineare Interpolation (200+(-cin))/150
+    if (cin >= -50) cinTerm = 1.0;            // schwache Hemmung (|CIN| ≤ 50)
+    else if (cin <= -200) cinTerm = 0.0;      // stark negative CIN → STP = 0
+    else cinTerm = (200 + cin) / 150;         // lineare Interpolation für -200 < CIN < -50
 
     return Math.max(0, capeTerm * srhTerm * shearTerm * lclTerm * cinTerm);
 }
@@ -770,7 +780,9 @@ function calculateProbability(hour) {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0;
     const cape = Math.max(0, hour.cape ?? 0);
-    const cin = Math.abs(hour.cin ?? 0);
+    // CIN wird negativ geliefert (z.B. -50, -100, -200 J/kg)
+    const cin = hour.cin ?? 0;
+    const magCin = -Math.min(0, cin); // Betrag der Hemmung |CIN| für cin ≤ 0
     const precipAcc = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
     const pblHeight = hour.pblHeight ?? 1000;
@@ -832,11 +844,12 @@ function calculateProbability(hour) {
     else if (eli >= 400) score += 3;
     
     // CIN-Bewertung (verbessert) - nicht nur Penalty, sondern auch positive Signale
-    if (cin < 25 && cape >= 300) score += 6; // Sehr günstig für Konvektion
-    else if (cin < 50 && cape >= 200) score += 3;
-    else if (cin > 200) score -= 18; // Stark inhibierend
-    else if (cin > 100) score -= 10;
-    else if (cin > 50) score -= 5;
+    // magCin = |CIN|: kleine Beträge → günstig, große Beträge → inhibierend
+    if (magCin < 25 && cape >= 300) score += 6; // Sehr günstig für Konvektion
+    else if (magCin < 50 && cape >= 200) score += 3;
+    else if (magCin > 200) score -= 18; // Stark inhibierend
+    else if (magCin > 100) score -= 10;
+    else if (magCin > 50) score -= 5;
     
     // Kombinierte Indizes (Europa) - stärkere Gewichtung
     if (scp >= 3.0) score += 24;
@@ -1007,7 +1020,8 @@ function calculateProbability(hour) {
     if (score > 0 && cape < 100 && shear < 8) {
         score = Math.max(0, score - 10); // Zu wenig CAPE und Shear
     }
-    if (score > 0 && cin > 150 && cape < 1000) {
+    // Starke Hemmung (großer |CIN|) ohne viel CAPE herunterstufen
+    if (score > 0 && magCin > 150 && cape < 1000) {
         score = Math.max(0, score - 12); // Zu hohes CIN ohne ausreichendes CAPE
     }
     
@@ -1024,7 +1038,9 @@ function calculateTornadoProbability(hour, shear, srh) {
     const temp2m = hour.temperature ?? 0;
     const dew = hour.dew ?? 0; // für LCL-Berechnung
     const cape = Math.max(0, hour.cape ?? 0);
-    const cin = Math.abs(hour.cin ?? 0);
+    // CIN negativ (hemmend); wir nutzen für Filter den Betrag
+    const cin = hour.cin ?? 0;
+    const magCin = -Math.min(0, cin); // |CIN| für cin ≤ 0
     const { liftedIndex } = calcIndices(hour);
     
     // Basis-Filter für Europa: Zu kalt oder keine Instabilität = kein Tornado
@@ -1032,7 +1048,7 @@ function calculateTornadoProbability(hour, shear, srh) {
     const minCAPE = 400;
     if (temp2m < minTemp) return 0;
     if (cape < minCAPE) return 0;
-    if (cin > 200) return 0;
+    if (magCin > 200) return 0;
     
     // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
     const srh1km = calcSRH(hour, '0-1km');
@@ -1090,7 +1106,7 @@ function calculateTornadoProbability(hour, shear, srh) {
     else if (ehi >= 1.5) score += 5;
     else if (ehi >= 1.0) score += 3;
     
-    if (cin > 100) score -= 10;
+    if (magCin > 100) score -= 10;
     if (shear < 10) score -= 15;
     if (srh < 80) score -= 10;
     
