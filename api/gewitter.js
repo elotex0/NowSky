@@ -34,7 +34,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `freezing_level_height,precipitation&forecast_days=16&models=icon_seamless,ecmwf_ifs025,gfs_global&timezone=auto`;
+                    `freezing_level_height,precipitation&forecast_days=16&models=icon_seamless,ecmwf_ifs,gfs_global&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
