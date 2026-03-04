@@ -417,58 +417,134 @@ function categorizeRisk(prob) {
     return { level, label };
 }
 
-// Hagelwahrscheinlichkeit (Europa) – orientiert an ESTOFEX/ESSL (CAPE niedrig, Shear/WMAXSHEAR stark gewichtet)
+// Schwerer Hagel (>2cm) Wahrscheinlichkeit (Europa) – ESTOFEX/ESSL-Methodik
+// Quelle: Púčik et al. 2015 (ESSL), Taszarek et al. 2019/2020, ESTOFEX Forecast Guidelines
+// Schwerer Hagel benötigt: hohe CAPE, starken Shear, niedriges Freezing Level, kalte 500hPa-Temperaturen
 function calculateHailProbability(hour, wmaxshear, dcape) {
     const cape = Math.max(0, hour.cape ?? 0);
     const shear = calcShear(hour);
     const temp500 = hour.temp500 ?? 0;
+    const temp700 = hour.temp700 ?? 0;
     const freezingLevel = hour.freezingLevel ?? 4000; // m
+    const temp2m = hour.temperature ?? 0;
+    const dew = hour.dew ?? 0;
+    const lclHeight = calcLCLHeight(temp2m, dew);
+    const midLapse = calcMidLevelLapseRate(temp700, temp500);
+    const srh = calcSRH(hour, '0-3km');
 
-    // Basis-Filter: quasi keine Aufwinde → kein Hagel
-    if (cape < 50) return 0;
+    // Basis-Filter für schweren Hagel (>2cm): ESTOFEX/ESSL-Schwellen
+    // Púčik 2015: Schwerer Hagel in Europa meist bei CAPE ≥ 500 J/kg, Shear ≥ 15 m/s
+    if (cape < 400) return 0; // Zu wenig CAPE für schweren Hagel
+    if (shear < 12) return 0; // Zu wenig Shear für organisierte Superzellen
+    if (wmaxshear < 600) return 0; // WMAXSHEAR zu niedrig für schweren Hagel
+    if (freezingLevel > 3500) return 0; // Zu hohes Freezing Level → Hagel schmilzt
 
     let score = 0;
 
-    // CAPE – Updraft-Potenzial, aber mit europäischen (niedrigeren) Schwellen
-    if (cape >= 1500) score += 24;
-    else if (cape >= 1000) score += 18;
-    else if (cape >= 700) score += 12;
-    else if (cape >= 400) score += 8;
-    else if (cape >= 200) score += 4;
+    // CAPE – kritisch für schweren Hagel (ESTOFEX: ≥800 J/kg für Level 2, ≥1200 für Level 3)
+    // Taszarek 2020: Median CAPE für schweren Hagel Europa ~800-1200 J/kg
+    if (cape >= 2000) score += 30;
+    else if (cape >= 1500) score += 26;
+    else if (cape >= 1200) score += 22;
+    else if (cape >= 800) score += 16;
+    else if (cape >= 600) score += 10;
+    else if (cape >= 400) score += 4;
 
-    // WMAXSHEAR – Hauptindikator für schweren Hagel (Brooks/Taszarek)
-    if (wmaxshear >= 1400) score += 28;
-    else if (wmaxshear >= 1000) score += 22;
-    else if (wmaxshear >= 800) score += 16;
-    else if (wmaxshear >= 500) score += 10;
+    // WMAXSHEAR – bester Prädiktor für schweren Hagel (Taszarek 2020)
+    // Schwellen für schweren Hagel deutlich höher als für allgemeinen Hagel
+    if (wmaxshear >= 1800) score += 32;
+    else if (wmaxshear >= 1400) score += 28;
+    else if (wmaxshear >= 1100) score += 22;
+    else if (wmaxshear >= 900) score += 16;
+    else if (wmaxshear >= 700) score += 10;
+    else if (wmaxshear >= 600) score += 5;
 
-    // Deep-Layer-Shear – Superzell-/organisierte Zelle
-    if (shear >= 22) score += 10;
-    else if (shear >= 18) score += 7;
-    else if (shear >= 12) score += 4;
+    // Deep-Layer-Shear (0-6km) – Superzellen-Organisation (Púčik 2015)
+    // Schwerer Hagel benötigt organisierte, rotierende Aufwinde
+    if (shear >= 25) score += 14;
+    else if (shear >= 20) score += 11;
+    else if (shear >= 18) score += 8;
+    else if (shear >= 15) score += 5;
+    else if (shear >= 12) score += 2;
 
-    // 500 hPa-Temperatur – je kälter, desto mehr Hagelproduktion
-    if (temp500 <= -20) score += 8;
-    else if (temp500 <= -16) score += 5;
-    else if (temp500 <= -12) score += 2;
+    // SRH – Mesozyklonen-Entwicklung (Púčik 2015, ESTOFEX)
+    // Schwerer Hagel oft in Superzellen mit hohem SRH
+    if (srh >= 250) score += 10;
+    else if (srh >= 200) score += 8;
+    else if (srh >= 150) score += 5;
+    else if (srh >= 120) score += 3;
 
-    // DCAPE – Downburst-Komponente, eher sekundär für Hagel
-    if (dcape >= 800 && cape >= 600) score += 4;
-    else if (dcape >= 600 && cape >= 400) score += 2;
+    // 500 hPa-Temperatur – kritisch für Hagelwachstum (ESTOFEX)
+    // Je kälter, desto höher die Hagelproduktion (Wachstumszone)
+    if (temp500 <= -22) score += 12;
+    else if (temp500 <= -20) score += 10;
+    else if (temp500 <= -18) score += 7;
+    else if (temp500 <= -16) score += 4;
+    else if (temp500 <= -14) score += 2;
+    else if (temp500 > -10) score -= 5; // Zu warm = weniger Hagelwachstum
 
-    // Freezing Level: tiefer → mehr Hagel am Boden, hoch → Schmelzweg lang
-    let flFactor = 1.0;
-    if (freezingLevel <= 1800) flFactor = 1.15;
-    else if (freezingLevel <= 2500) flFactor = 1.0;
-    else if (freezingLevel <= 3200) flFactor = 0.8;
-    else if (freezingLevel <= 4000) flFactor = 0.6;
-    else flFactor = 0.45;
+    // Freezing Level – kritisch für schweren Hagel (ESTOFEX/ESSL)
+    // Niedriges FL = kürzerer Schmelzweg = mehr Hagel am Boden
+    // ESTOFEX: FL < 2500m ideal für schweren Hagel, >3500m = kaum schwerer Hagel
+    if (freezingLevel <= 2000) score += 14; // Sehr günstig
+    else if (freezingLevel <= 2500) score += 10;
+    else if (freezingLevel <= 3000) score += 5;
+    else if (freezingLevel <= 3200) score += 2;
+    else if (freezingLevel > 3300) score -= 8; // Zu hoch = Hagel schmilzt
 
-    score = Math.round(score * flFactor);
+    // LCL-Höhe – niedriges LCL begünstigt Hagel (ESTOFEX)
+    // Niedriges LCL = feuchte Umgebung = bessere Hagelproduktion
+    if (lclHeight < 600) score += 8;
+    else if (lclHeight < 1000) score += 6;
+    else if (lclHeight < 1500) score += 3;
+    else if (lclHeight >= 2500) score -= 6; // Zu hohes LCL = trocken
 
-    // Mindestanforderungen nach europäischer Climatology (Hagel auch bei geringem CAPE, aber nicht bei quasi 0-Shear)
-    if (cape < 300 || shear < 10 || wmaxshear < 400) {
-        score = Math.min(score, 25);
+    // Mid-Level Lapse Rate (700-500 hPa) – steile Lapse Rate = starke Aufwinde
+    // Wichtig für Hagelwachstum in der mittleren Troposphäre
+    if (midLapse >= 8.5) score += 8;
+    else if (midLapse >= 8.0) score += 6;
+    else if (midLapse >= 7.5) score += 4;
+    else if (midLapse >= 7.0) score += 2;
+    else if (midLapse < 6.0) score -= 4; // Zu flach = schwache Aufwinde
+
+    // DCAPE – Downburst-Komponente (sekundär für Hagel, aber relevant)
+    // Hoher DCAPE kann Hagel nach unten transportieren
+    if (dcape >= 1000 && cape >= 800) score += 5;
+    else if (dcape >= 800 && cape >= 600) score += 3;
+    else if (dcape >= 600 && cape >= 500) score += 1;
+
+    // Relative Feuchte 500hPa – trockene mittlere Troposphäre begünstigt Hagel
+    // Trockene Luft = stärkere Verdunstungskälte = bessere Hagelproduktion
+    if (hour.rh500 < 30 && cape >= 800) score += 6;
+    else if (hour.rh500 < 40 && cape >= 600) score += 4;
+    else if (hour.rh500 < 50 && cape >= 500) score += 2;
+    else if (hour.rh500 > 80 && cape < 1000) score -= 5; // Zu feucht = weniger Hagel
+
+    // Kombinierte Faktoren-Multiplikator (ESTOFEX-Methodik)
+    // Alle kritischen Faktoren müssen zusammenkommen für schweren Hagel
+    let factor = 1.0;
+    
+    // CAPE + Shear Kombination (Púčik 2015)
+    if (cape >= 1000 && shear >= 18) factor = 1.15;
+    else if (cape >= 800 && shear >= 15) factor = 1.1;
+    else if (cape < 600 || shear < 12) factor = 0.7; // Beide niedrig = stark reduzieren
+
+    // Freezing Level + 500hPa Temp Kombination
+    if (freezingLevel <= 2500 && temp500 <= -18) factor *= 1.1;
+    else if (freezingLevel > 3200 || temp500 > -12) factor *= 0.8;
+
+    score = Math.round(score * factor);
+
+    // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
+    // Mindestanforderungen für schweren Hagel (>2cm) in Europa
+    // Púčik 2015: Schwerer Hagel meist bei CAPE ≥ 600, Shear ≥ 15, WMAXSHEAR ≥ 800
+    if (cape < 500 || shear < 14 || wmaxshear < 700) {
+        score = Math.min(score, 30); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
+    }
+
+    // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwerer Hagel)
+    if (cape >= 1500 && shear >= 20 && wmaxshear >= 1200 && freezingLevel <= 2500 && temp500 <= -18) {
+        score = Math.min(100, score + 10); // Bonus für extreme Bedingungen
     }
 
     return Math.min(100, Math.max(0, score));
