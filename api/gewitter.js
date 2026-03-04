@@ -394,13 +394,9 @@ function calcDCAPE(hour) {
 // Quelle: Taszarek et al. (2020, J. Climate Part II), Brooks et al. (2003)
 // WMAXSHEAR = sqrt(2 * CAPE) * BS06
 // Schwellenwerte: > 500 m²/s² = schweres Gewitter, > 800 = sehr schwer
-function calcWMAXSHEAR(cape, shear, isDerecho=false) {
+function calcWMAXSHEAR(cape, shear) {
     if (cape <= 0 || shear <= 0) return 0;
-    const raw = Math.sqrt(2 * cape) * shear;
-    const maxObserved = 1400; // europäische Extremfälle
-    let scaled = Math.round(raw / maxObserved * 1400);
-    if(isDerecho) scaled *= 1.1; 
-    return Math.min(scaled, 1600); 
+    return Math.round(Math.sqrt(2 * cape) * shear);
 }
 
 // ESTOFEX-ähnliche Risikoklassifizierung (Europa):
@@ -441,31 +437,30 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
 
     // Basis-Filter für schweren Hagel (>2cm): ESTOFEX/ESSL-Schwellen
     // Púčik 2015: Schwerer Hagel in Europa meist bei CAPE ≥ 500 J/kg, Shear ≥ 15 m/s
-    if (cape < 300) return 0;       // Level 1 Minimum
-    if (shear < 10) return 0;       // Level 1 Minimum
-    if (wmaxshear < 500) return 0;  // Level 1 Minimum
-    if (freezingLevel > 3500) return 0; // Hoch genug = Hagel schmilzt
+    if (cape < 400) return 0; // Zu wenig CAPE für schweren Hagel
+    if (shear < 12) return 0; // Zu wenig Shear für organisierte Superzellen
+    if (wmaxshear < 600) return 0; // WMAXSHEAR zu niedrig für schweren Hagel
+    if (freezingLevel > 3500) return 0; // Zu hohes Freezing Level → Hagel schmilzt
 
     let score = 0;
 
     // CAPE – kritisch für schweren Hagel (ESTOFEX: ≥800 J/kg für Level 2, ≥1200 für Level 3)
     // Taszarek 2020: Median CAPE für schweren Hagel Europa ~800-1200 J/kg
-    // CAPE Punkte nach Level
-    if (cape >= 2000) score += 30; // Level 3
-    else if (cape >= 1500) score += 26; // Level 3
-    else if (cape >= 1200) score += 22; // Level 2/3
-    else if (cape >= 800) score += 16;  // Level 2
-    else if (cape >= 500) score += 10;  // Level 1/2
-    else if (cape >= 300) score += 4;   // Level 1
+    if (cape >= 2000) score += 30;
+    else if (cape >= 1500) score += 26;
+    else if (cape >= 1200) score += 22;
+    else if (cape >= 800) score += 16;
+    else if (cape >= 600) score += 10;
+    else if (cape >= 400) score += 4;
 
     // WMAXSHEAR – bester Prädiktor für schweren Hagel (Taszarek 2020)
     // Schwellen für schweren Hagel deutlich höher als für allgemeinen Hagel
-    if (wmaxshear >= 1600) score += 32; // Level 3
-    else if (wmaxshear >= 1200) score += 28; // Level 3
-    else if (wmaxshear >= 900) score += 22;  // Level 2
-    else if (wmaxshear >= 700) score += 16;  // Level 2
-    else if (wmaxshear >= 600) score += 10;  // Level 1/2
-    else if (wmaxshear >= 500) score += 5;   // Level 1
+    if (wmaxshear >= 1800) score += 32;
+    else if (wmaxshear >= 1400) score += 28;
+    else if (wmaxshear >= 1100) score += 22;
+    else if (wmaxshear >= 900) score += 16;
+    else if (wmaxshear >= 700) score += 10;
+    else if (wmaxshear >= 600) score += 5;
 
     // Deep-Layer-Shear (0-6km) – Superzellen-Organisation (Púčik 2015)
     // Schwerer Hagel benötigt organisierte, rotierende Aufwinde
@@ -474,7 +469,6 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     else if (shear >= 18) score += 8;
     else if (shear >= 15) score += 5;
     else if (shear >= 12) score += 2;
-    else if (shear >= 10) score += 1;
 
     // SRH – Mesozyklonen-Entwicklung (Púčik 2015, ESTOFEX)
     // Schwerer Hagel oft in Superzellen mit hohem SRH
@@ -495,18 +489,18 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     // Freezing Level – kritisch für schweren Hagel (ESTOFEX/ESSL)
     // Niedriges FL = kürzerer Schmelzweg = mehr Hagel am Boden
     // ESTOFEX: FL < 2500m ideal für schweren Hagel, >3500m = kaum schwerer Hagel
-    if (freezingLevel <= 2000) score += 14; // Level 3
-    else if (freezingLevel <= 2500) score += 10; // Level 2
-    else if (freezingLevel <= 3000) score += 5;  // Level 1
-    else if (freezingLevel <= 3200) score += 2;  // Grenzwertig
-    else if (freezingLevel > 3300) score -= 8;  // zu hoch
+    if (freezingLevel <= 2000) score += 14; // Sehr günstig
+    else if (freezingLevel <= 2500) score += 10;
+    else if (freezingLevel <= 3000) score += 5;
+    else if (freezingLevel <= 3200) score += 2;
+    else if (freezingLevel > 3300) score -= 8; // Zu hoch = Hagel schmilzt
 
     // LCL-Höhe – niedriges LCL begünstigt Hagel (ESTOFEX)
     // Niedriges LCL = feuchte Umgebung = bessere Hagelproduktion
     if (lclHeight < 600) score += 8;
     else if (lclHeight < 1000) score += 6;
     else if (lclHeight < 1500) score += 3;
-    else if (lclHeight >= 2000) score -= 6; // Zu hohes LCL = trocken
+    else if (lclHeight >= 2500) score -= 6; // Zu hohes LCL = trocken
 
     // Mid-Level Lapse Rate (700-500 hPa) – steile Lapse Rate = starke Aufwinde
     // Wichtig für Hagelwachstum in der mittleren Troposphäre
@@ -547,13 +541,13 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
     // Mindestanforderungen für schweren Hagel (>2cm) in Europa
     // Púčik 2015: Schwerer Hagel meist bei CAPE ≥ 600, Shear ≥ 15, WMAXSHEAR ≥ 800
-    if (cape < 300 || shear < 10 || wmaxshear < 500) {
-        score = Math.min(score, 20); // Score hart begrenzen für Level <1
+    if (cape < 500 || shear < 14 || wmaxshear < 700) {
+        score = Math.min(score, 30); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
     }
-    
-    // Level 3-Bonus für extreme Bedingungen
+
+    // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwerer Hagel)
     if (cape >= 1500 && shear >= 20 && wmaxshear >= 1200 && freezingLevel <= 2500 && temp500 <= -18) {
-        score = Math.min(100, score + 10); // Level 3
+        score = Math.min(100, score + 10); // Bonus für extreme Bedingungen
     }
 
     return Math.min(100, Math.max(0, score));
@@ -697,9 +691,11 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
 
 // Verbesserte LCL-Berechnung nach Bolton (1980) - präziser für Europa
 function calcLCLHeight(temp2m, dew2m) {
-    // temp2m, dew2m in °C
-    const lcl = 125 * (temp2m - dew2m); // einfache Näherung
-    return Math.max(0, lcl); // in Metern
+    if (temp2m <= 0 || dew2m <= 0) return 2000; // Fallback: hohes LCL
+    const T = temp2m + 273.15;
+    const Td = dew2m + 273.15;
+    const LCL = 125 * (temp2m - dew2m); // Vereinfachte Bolton-Formel
+    return Math.max(0, LCL);
 }
 
 // Mid-Level Lapse Rate (700-500 hPa) - wichtig für Europa
