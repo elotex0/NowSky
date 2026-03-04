@@ -257,11 +257,6 @@ function calcRelHum(temp, dew) {
     return Math.min(100, Math.max(0, (e / es) * 100));
 }
 
-// Allgemeine Clamp-Funktion für normierte Indizes (0–1)
-function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-}
-
 // SRH – getrennt für 0-1 km und 0-3 km berechnen
 // 0-1 km ≈ 1000→850 hPa, 0-3 km ≈ 1000→700 hPa
 // Quelle: Thompson et al. 2012; Craven & Brooks 2004
@@ -430,7 +425,7 @@ function categorizeRisk(prob) {
 // Schwerer Hagel benötigt: hohe CAPE, starken Shear, niedriges Freezing Level, kalte 500hPa-Temperaturen
 function calculateHailProbability(hour, wmaxshear, dcape) {
     const cape = Math.max(0, hour.cape ?? 0);
-    const shear = calcShear(hour); // ~0–6 km BWD in m/s
+    const shear = calcShear(hour);
     const temp500 = hour.temp500 ?? 0;
     const temp700 = hour.temp700 ?? 0;
     const freezingLevel = hour.freezingLevel ?? 4000; // m
@@ -440,106 +435,122 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     const midLapse = calcMidLevelLapseRate(temp700, temp500);
     const srh = calcSRH(hour, '0-3km');
 
-    // Grobe Basis-Filter nach ESTOFEX/ESSL-Klimatologie:
-    // - CAPE: in Europa oft niedriger als USA, aber für >2cm meist ≥ 400–600 J/kg
-    // - Shear: organisierte Konvektion meist bei ≥ 12–15 m/s
-    // - WMAXSHEAR: Taszarek 2020: schwere Ereignisse typ. ≥ 600–800 m²/s²
-    // - Freezing Level: >3.5–3.8 km → schwerer Hagel selten am Boden
-    if (cape < 350) return 0;
-    if (shear < 10) return 0;
-    if (wmaxshear < 500) return 0;
-    if (freezingLevel > 3800) return 0;
+    // Basis-Filter für schweren Hagel (>2cm): ESTOFEX/ESSL-Schwellen
+    // Púčik 2015: Schwerer Hagel in Europa meist bei CAPE ≥ 500 J/kg, Shear ≥ 15 m/s
+    if (cape < 400) return 0; // Zu wenig CAPE für schweren Hagel
+    if (shear < 12) return 0; // Zu wenig Shear für organisierte Superzellen
+    if (wmaxshear < 600) return 0; // WMAXSHEAR zu niedrig für schweren Hagel
+    if (freezingLevel > 3500) return 0; // Zu hohes Freezing Level → Hagel schmilzt
 
-    // Normierte Teilindizes (0–1), orientiert an europäischen Studien
+    let score = 0;
 
-    // CAPE-Index: 0 bei 400 J/kg, 1 bei 1800 J/kg
-    const iCAPE = clamp((cape - 400) / (1800 - 400), 0, 1);
+    // CAPE – kritisch für schweren Hagel (ESTOFEX: ≥800 J/kg für Level 2, ≥1200 für Level 3)
+    // Taszarek 2020: Median CAPE für schweren Hagel Europa ~800-1200 J/kg
+    if (cape >= 2000) score += 30;
+    else if (cape >= 1500) score += 26;
+    else if (cape >= 1200) score += 22;
+    else if (cape >= 800) score += 16;
+    else if (cape >= 600) score += 10;
+    else if (cape >= 400) score += 4;
 
-    // Deep-Layer-Shear-Index: 0 bei 12 m/s, 1 bei 22 m/s
-    const iShear = clamp((shear - 12) / (22 - 12), 0, 1);
+    // WMAXSHEAR – bester Prädiktor für schweren Hagel (Taszarek 2020)
+    // Schwellen für schweren Hagel deutlich höher als für allgemeinen Hagel
+    if (wmaxshear >= 1800) score += 32;
+    else if (wmaxshear >= 1400) score += 28;
+    else if (wmaxshear >= 1100) score += 22;
+    else if (wmaxshear >= 900) score += 16;
+    else if (wmaxshear >= 700) score += 10;
+    else if (wmaxshear >= 600) score += 5;
 
-    // WMAXSHEAR-Index: 0 bei 600, 1 bei 1800
-    const iWMAX = clamp((wmaxshear - 600) / (1800 - 600), 0, 1);
+    // Deep-Layer-Shear (0-6km) – Superzellen-Organisation (Púčik 2015)
+    // Schwerer Hagel benötigt organisierte, rotierende Aufwinde
+    if (shear >= 25) score += 14;
+    else if (shear >= 20) score += 11;
+    else if (shear >= 18) score += 8;
+    else if (shear >= 15) score += 5;
+    else if (shear >= 12) score += 2;
 
-    // 500 hPa Temperatur: 0 bei -14 °C, 1 bei -24 °C (kälter = besser)
-    const iT500 = clamp(( -14 - temp500) / ( -24 - -14), 0, 1);
+    // SRH – Mesozyklonen-Entwicklung (Púčik 2015, ESTOFEX)
+    // Schwerer Hagel oft in Superzellen mit hohem SRH
+    if (srh >= 250) score += 10;
+    else if (srh >= 200) score += 8;
+    else if (srh >= 150) score += 5;
+    else if (srh >= 120) score += 3;
 
-    // Freezing-Level-Index: 0 bei 3500 m, 1 bei 1500 m
-    const iFL = clamp((3500 - freezingLevel) / (3500 - 1500), 0, 1);
+    // 500 hPa-Temperatur – kritisch für Hagelwachstum (ESTOFEX)
+    // Je kälter, desto höher die Hagelproduktion (Wachstumszone)
+    if (temp500 <= -22) score += 12;
+    else if (temp500 <= -20) score += 10;
+    else if (temp500 <= -18) score += 7;
+    else if (temp500 <= -16) score += 4;
+    else if (temp500 <= -14) score += 2;
+    else if (temp500 > -10) score -= 5; // Zu warm = weniger Hagelwachstum
 
-    // LCL-Index: 0 bei 1800 m, 1 bei 800 m
-    const iLCL = clamp((1800 - lclHeight) / (1800 - 800), 0, 1);
+    // Freezing Level – kritisch für schweren Hagel (ESTOFEX/ESSL)
+    // Niedriges FL = kürzerer Schmelzweg = mehr Hagel am Boden
+    // ESTOFEX: FL < 2500m ideal für schweren Hagel, >3500m = kaum schwerer Hagel
+    if (freezingLevel <= 2000) score += 14; // Sehr günstig
+    else if (freezingLevel <= 2500) score += 10;
+    else if (freezingLevel <= 3000) score += 5;
+    else if (freezingLevel <= 3200) score += 2;
+    else if (freezingLevel > 3300) score -= 8; // Zu hoch = Hagel schmilzt
 
-    // Midlevel-Lapse-Rate-Index 700–500 hPa: 0 bei 6.5 K/km, 1 bei 8.5 K/km
-    const iLapse = clamp((midLapse - 6.5) / (8.5 - 6.5), 0, 1);
+    // LCL-Höhe – niedriges LCL begünstigt Hagel (ESTOFEX)
+    // Niedriges LCL = feuchte Umgebung = bessere Hagelproduktion
+    if (lclHeight < 600) score += 8;
+    else if (lclHeight < 1000) score += 6;
+    else if (lclHeight < 1500) score += 3;
+    else if (lclHeight >= 2500) score -= 6; // Zu hohes LCL = trocken
 
-    // SRH-Index (0–3 km): 0 bei 80 m²/s², 1 bei 250 m²/s²
-    const iSRH = clamp((srh - 80) / (250 - 80), 0, 1);
+    // Mid-Level Lapse Rate (700-500 hPa) – steile Lapse Rate = starke Aufwinde
+    // Wichtig für Hagelwachstum in der mittleren Troposphäre
+    if (midLapse >= 8.5) score += 8;
+    else if (midLapse >= 8.0) score += 6;
+    else if (midLapse >= 7.5) score += 4;
+    else if (midLapse >= 7.0) score += 2;
+    else if (midLapse < 6.0) score -= 4; // Zu flach = schwache Aufwinde
 
-    // DCAPE: eher sekundär für Hagel, aber hilfreich für Transport nach unten
-    const iDCAPE = clamp((dcape - 400) / (1200 - 400), 0, 1);
+    // DCAPE – Downburst-Komponente (sekundär für Hagel, aber relevant)
+    // Hoher DCAPE kann Hagel nach unten transportieren
+    if (dcape >= 1000 && cape >= 800) score += 5;
+    else if (dcape >= 800 && cape >= 600) score += 3;
+    else if (dcape >= 600 && cape >= 500) score += 1;
 
-    // 500 hPa relative Feuchte: trocken (30–50 %) begünstigt Hagel
-    let iRH500 = 0;
-    if (hour.rh500 != null) {
-        if (hour.rh500 <= 30) iRH500 = 1;
-        else if (hour.rh500 <= 50) iRH500 = clamp((50 - hour.rh500) / (50 - 30), 0, 1) * 0.7;
-        else if (hour.rh500 >= 80) iRH500 = 0;
+    // Relative Feuchte 500hPa – trockene mittlere Troposphäre begünstigt Hagel
+    // Trockene Luft = stärkere Verdunstungskälte = bessere Hagelproduktion
+    if (hour.rh500 < 30 && cape >= 800) score += 6;
+    else if (hour.rh500 < 40 && cape >= 600) score += 4;
+    else if (hour.rh500 < 50 && cape >= 500) score += 2;
+    else if (hour.rh500 > 80 && cape < 1000) score -= 5; // Zu feucht = weniger Hagel
+
+    // Kombinierte Faktoren-Multiplikator (ESTOFEX-Methodik)
+    // Alle kritischen Faktoren müssen zusammenkommen für schweren Hagel
+    let factor = 1.0;
+    
+    // CAPE + Shear Kombination (Púčik 2015)
+    if (cape >= 1000 && shear >= 18) factor = 1.15;
+    else if (cape >= 800 && shear >= 15) factor = 1.1;
+    else if (cape < 600 || shear < 12) factor = 0.7; // Beide niedrig = stark reduzieren
+
+    // Freezing Level + 500hPa Temp Kombination
+    if (freezingLevel <= 2500 && temp500 <= -18) factor *= 1.1;
+    else if (freezingLevel > 3200 || temp500 > -12) factor *= 0.8;
+
+    score = Math.round(score * factor);
+
+    // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
+    // Mindestanforderungen für schweren Hagel (>2cm) in Europa
+    // Púčik 2015: Schwerer Hagel meist bei CAPE ≥ 600, Shear ≥ 15, WMAXSHEAR ≥ 800
+    if (cape < 500 || shear < 14 || wmaxshear < 700) {
+        score = Math.min(score, 30); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
     }
 
-    // Gewichtung der Teilindizes nach ESTOFEX/ESSL-Erfahrung:
-    // CAPE + WMAXSHEAR + Shear dominieren, Freezing Level und T500 stark gewichtet,
-    // LCL/Lapse/SRH als Modulatoren.
-    const wCAPE  = 0.18;
-    const wShear = 0.14;
-    const wWMAX  = 0.18;
-    const wT500  = 0.12;
-    const wFL    = 0.12;
-    const wLCL   = 0.08;
-    const wLapse = 0.07;
-    const wSRH   = 0.06;
-    const wDCAPE = 0.03;
-    const wRH500 = 0.02;
-
-    const hailIndex =
-        iCAPE  * wCAPE  +
-        iShear * wShear +
-        iWMAX  * wWMAX  +
-        iT500  * wT500  +
-        iFL    * wFL    +
-        iLCL   * wLCL   +
-        iLapse * wLapse +
-        iSRH   * wSRH   +
-        iDCAPE * wDCAPE +
-        iRH500 * wRH500;
-
-    // Logistic-Mapping des zusammengesetzten Index auf 0–100 %:
-    // hailIndex ~0.4 → ~10–20 %, ~0.6 → ~30–40 %, >0.75 → >60 %.
-    const a = 5.5;   // Steilheit
-    const b = 0.6;   // Schwelle für markant erhöhte Wahrscheinlichkeiten
-    const prob = 100 / (1 + Math.exp(-a * (hailIndex - b)));
-
-    // Plausibilitätsbegrenzung gemäß ESTOFEX-Level:
-    // - Unter Grenzbedingungen (CAPE < 600, WMAXSHEAR < 800) max. ~40 %
-    // - Klassische Level-2-Lagen (CAPE > 1000, WMAXSHEAR > 1100, FL < 3 km) erreichen >60 %
-    let finalProb = prob;
-    const strongEnv =
-        cape >= 1000 &&
-        shear >= 18 &&
-        wmaxshear >= 1100 &&
-        freezingLevel <= 3000 &&
-        temp500 <= -18;
-
-    if (!strongEnv && (cape < 600 || wmaxshear < 800)) {
-        finalProb = Math.min(finalProb, 40);
+    // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwerer Hagel)
+    if (cape >= 1500 && shear >= 20 && wmaxshear >= 1200 && freezingLevel <= 2500 && temp500 <= -18) {
+        score = Math.min(100, score + 10); // Bonus für extreme Bedingungen
     }
 
-    if (strongEnv) {
-        // leichte Anhebung für sehr gut organisierte Superzellenlagen
-        finalProb = Math.min(100, finalProb + 10);
-    }
-
-    return Math.round(Math.min(100, Math.max(0, finalProb)));
+    return Math.min(100, Math.max(0, score));
 }
 
 // Schwere Winde (≥25 m/s / ≥90 km/h) Wahrscheinlichkeit (Europa) – ESTOFEX/ESSL-Methodik
@@ -555,100 +566,127 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
 
-    // Basis-Filter für schwere Winde (≥ ~90 km/h / ≥25 m/s) nach ESTOFEX/ESSL:
-    // - DCAPE oder WMAXSHEAR müssen erhöht sein
-    // - Böenprognose mindestens Sturmstärke
-    if (dcape < 350 && wmaxshear < 500) return 0;
-    if (shear < 8 && cape < 400) return 0;
-    if (gust < 70) return 0;
+    // Basis-Filter für schwere Winde (≥90 km/h / ≥25 m/s): ESTOFEX/ESSL-Schwellen
+    // Gatzen 2020: Schwere Winde in Europa meist bei DCAPE ≥ 400 J/kg, WMAXSHEAR ≥ 600
+    // Taszarek 2020: Organisierte Systeme (MCS/Derecho) benötigen hohen Shear
+    if (dcape < 300 && wmaxshear < 500) return 0; // Zu wenig DCAPE/WMAXSHEAR
+    if (shear < 10 && cape < 500) return 0; // Zu wenig organisierte Konvektion
+    if (gust < 70) return 0; // Prognostizierte Böen zu niedrig für schwere Winde
 
-    // Normierte Teilindizes (0–1)
+    let score = 0;
 
-    // DCAPE-Index: 0 bei 400 J/kg, 1 bei 1400 J/kg
-    const iDCAPE = clamp((dcape - 400) / (1400 - 400), 0, 1);
+    // DCAPE – kritisch für schwere Downbursts (Gilmore & Wicker 1998, ESTOFEX)
+    // Gatzen 2020: Derechos Deutschland median DCAPE ~800-1000 J/kg
+    if (dcape >= 1400) score += 35;
+    else if (dcape >= 1200) score += 30;
+    else if (dcape >= 1000) score += 26;
+    else if (dcape >= 800) score += 20;
+    else if (dcape >= 600) score += 14;
+    else if (dcape >= 400) score += 8;
+    else if (dcape >= 300) score += 4;
 
-    // WMAXSHEAR-Index: 0 bei 600, 1 bei 1700
-    const iWMAX = clamp((wmaxshear - 600) / (1700 - 600), 0, 1);
+    // WMAXSHEAR – bester Prädiktor für organisierte Systeme (Taszarek 2020)
+    // Schwellen für schwere Winde deutlich höher (MCS/Derecho-Potenzial)
+    if (wmaxshear >= 1600) score += 32;
+    else if (wmaxshear >= 1300) score += 28;
+    else if (wmaxshear >= 1100) score += 22;
+    else if (wmaxshear >= 900) score += 16;
+    else if (wmaxshear >= 700) score += 10;
+    else if (wmaxshear >= 600) score += 6;
+    else if (wmaxshear >= 500) score += 3;
 
-    // Deep-Layer-Shear-Index: 0 bei 10 m/s, 1 bei 22 m/s
-    const iShear = clamp((shear - 10) / (22 - 10), 0, 1);
+    // Deep-Layer-Shear (0-6km) – MCS/Derecho-Organisation (Gatzen 2020)
+    // Schwere Winde oft in linienhaften Systemen mit hohem Shear
+    if (shear >= 25) score += 16;
+    else if (shear >= 20) score += 12;
+    else if (shear >= 18) score += 9;
+    else if (shear >= 15) score += 6;
+    else if (shear >= 12) score += 3;
+    else if (shear >= 10) score += 1;
 
-    // CAPE-Index: für Windereignisse reicht oft moderates CAPE
-    const iCAPE = clamp((cape - 300) / (1200 - 300), 0, 1);
+    // CAPE – Updraft-Stärke für Downbursts (Gatzen 2020)
+    // Schwere Winde können auch bei moderatem CAPE auftreten (warm-season vs cold-season Derechos)
+    if (cape >= 1500) score += 12;
+    else if (cape >= 1200) score += 10;
+    else if (cape >= 800) score += 7;
+    else if (cape >= 500) score += 4;
+    else if (cape >= 300) score += 2;
+    // Low-CAPE/high-shear Fälle bleiben möglich (cold-season Derechos)
 
-    // Böenniveau-Index: 0 bei 70 km/h, 1 bei 130 km/h
-    const iGust = clamp((gust - 70) / (130 - 70), 0, 1);
+    // Böenüberschuss gegenüber Mittelwind – konvektive Böen (ESTOFEX)
+    // Großer Unterschied = starke konvektive Downbursts
+    if (gustDiff >= 40) score += 16;
+    else if (gustDiff >= 30) score += 12;
+    else if (gustDiff >= 25) score += 9;
+    else if (gustDiff >= 20) score += 6;
+    else if (gustDiff >= 15) score += 3;
+    else if (gustDiff >= 10) score += 1;
 
-    // Böenüberschuss gegenüber Mittelwind – gute Proxy für konvektive Böen
-    const iGustDiff = clamp((gustDiff - 10) / (40 - 10), 0, 1);
+    // Absolutes Böenniveau – kritisch für schwere Winde (ESTOFEX)
+    // ESTOFEX Level 1: ≥25 m/s (90 km/h), Level 2: ≥30 m/s (108 km/h), Level 3: ≥35 m/s (126 km/h)
+    if (gust >= 130) score += 20;      // ≥35 m/s (Level 3)
+    else if (gust >= 110) score += 16; // ≥30 m/s (Level 2)
+    else if (gust >= 90) score += 12;   // ≥25 m/s (Level 1)
+    else if (gust >= 80) score += 6;    // Nahe Level 1
+    else if (gust >= 70) score += 2;    // Unter Level 1, aber erhöhtes Risiko
 
-    // 700 hPa Feuchte (Taupunktspreizung) – trockene Luft = stärkere Downbursts
+    // 700 hPa Feuchtigkeit – wichtig für Downburst-Stärke (Gatzen 2020)
+    // Trockene 700 hPa = stärkere Verdunstungskälte = stärkere Downbursts
     const dewDepression700 = temp700 - dew700;
-    let iDry700 = 0;
-    if (dewDepression700 >= 20) iDry700 = 1;
-    else if (dewDepression700 >= 10) iDry700 = (dewDepression700 - 10) / (20 - 10);
+    if (dewDepression700 >= 20 && dcape >= 600) score += 8; // Sehr trocken
+    else if (dewDepression700 >= 15 && dcape >= 500) score += 5;
+    else if (dewDepression700 >= 10 && dcape >= 400) score += 3;
+    else if (dewDepression700 < 5 && dcape < 800) score -= 4; // Zu feucht = schwächere Downbursts
 
     // 500 hPa Temperatur – kalte mittlere Troposphäre begünstigt Downbursts
-    let iT500 = 0;
-    if (temp500 <= -20) iT500 = 1;
-    else if (temp500 <= -12) iT500 = (-12 - temp500) / (-12 + 20);
+    if (temp500 <= -20 && dcape >= 600) score += 6;
+    else if (temp500 <= -16 && dcape >= 500) score += 4;
+    else if (temp500 <= -12 && dcape >= 400) score += 2;
 
-    // RH500 – trockene mittlere Troposphäre begünstigt starke Fallböen
-    let iRH500 = 0;
-    if (hour.rh500 != null) {
-        if (hour.rh500 <= 35) iRH500 = 1;
-        else if (hour.rh500 <= 55) iRH500 = (55 - hour.rh500) / (55 - 35);
+    // Relative Feuchte 500hPa – trockene mittlere Troposphäre (ESTOFEX)
+    if (hour.rh500 < 35 && dcape >= 600) score += 5;
+    else if (hour.rh500 < 45 && dcape >= 500) score += 3;
+    else if (hour.rh500 < 55 && dcape >= 400) score += 1;
+
+    // Kombinierte Faktoren-Multiplikator (ESTOFEX-Methodik)
+    // Alle kritischen Faktoren müssen zusammenkommen für schwere Winde
+    let factor = 1.0;
+    
+    // DCAPE + WMAXSHEAR Kombination (Gatzen 2020, Taszarek 2020)
+    if (dcape >= 1000 && wmaxshear >= 1100) factor = 1.2; // Sehr hohes Derecho-Potenzial
+    else if (dcape >= 800 && wmaxshear >= 900) factor = 1.15;
+    else if (dcape >= 600 && wmaxshear >= 700) factor = 1.1;
+    else if (dcape < 400 || wmaxshear < 600) factor = 0.75; // Beide niedrig = reduzieren
+
+    // Shear + CAPE Kombination (MCS-Organisation)
+    if (shear >= 18 && cape >= 600) factor *= 1.1;
+    else if (shear < 12 && cape < 400) factor *= 0.8;
+
+    // Böen + DCAPE Kombination
+    if (gust >= 100 && dcape >= 800) factor *= 1.1;
+    else if (gust < 80 && dcape < 500) factor *= 0.85;
+
+    score = Math.round(score * factor);
+
+    // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
+    // Mindestanforderungen für schwere Winde (≥90 km/h) in Europa
+    // Gatzen 2020: Schwere Winde meist bei DCAPE ≥ 500, WMAXSHEAR ≥ 700, Shear ≥ 12
+    if (dcape < 400 || wmaxshear < 600 || gust < 75) {
+        score = Math.min(score, 35); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
     }
 
-    // Gewichtung der Teilindizes nach Gatzen/Taszarek/ESTOFEX:
-    // DCAPE + WMAXSHEAR + Böen (Niveau + Überschuss) dominieren,
-    // Shear/CAPE und trockene Mittel-/Obertr. modulieren.
-    const wDCAPE   = 0.22;
-    const wWMAX    = 0.2;
-    const wGust    = 0.18;
-    const wGustDif = 0.12;
-    const wShear   = 0.1;
-    const wCAPE    = 0.06;
-    const wDry700  = 0.05;
-    const wT500    = 0.04;
-    const wRH500   = 0.03;
-
-    const windIndex =
-        iDCAPE   * wDCAPE   +
-        iWMAX    * wWMAX    +
-        iGust    * wGust    +
-        iGustDiff* wGustDif +
-        iShear   * wShear   +
-        iCAPE    * wCAPE    +
-        iDry700  * wDry700  +
-        iT500    * wT500    +
-        iRH500   * wRH500;
-
-    // Logistic-Mapping auf 0–100 %:
-    // windIndex ~0.35 → ~10–15 %, ~0.5 → ~25–30 %, >0.7 → >60 %.
-    const a = 5.0;
-    const b = 0.55;
-    const prob = 100 / (1 + Math.exp(-a * (windIndex - b)));
-
-    // Plausibilitätsbegrenzung:
-    // - Unterhalb klassischer Level‑1‑Bedingungen (Gust < 90, DCAPE < 500, WMAXSHEAR < 700) max. ~35 %
-    // - Klassische Derecho/MCS-Fälle können deutlich höher gehen.
-    let finalProb = prob;
-    const derechoLike =
-        dcape >= 1000 &&
-        wmaxshear >= 1200 &&
-        shear >= 18 &&
-        gust >= 110;
-
-    if (!derechoLike && (gust < 90 || dcape < 500 || wmaxshear < 700)) {
-        finalProb = Math.min(finalProb, 35);
+    // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwere Winde ≥35 m/s)
+    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20 && gust >= 110) {
+        score = Math.min(100, score + 12); // Bonus für extreme Bedingungen
     }
 
-    if (derechoLike) {
-        finalProb = Math.min(100, finalProb + 10);
+    // Cold-Season Derecho-Potenzial (low-CAPE, high-shear)
+    // Gatzen 2020: Cold-season Derechos bei CAPE < 500, aber Shear ≥ 18, WMAXSHEAR ≥ 800
+    if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600) {
+        score = Math.min(100, score + 8); // Bonus für cold-season Typ
     }
 
-    return Math.round(Math.min(100, Math.max(0, finalProb)));
+    return Math.min(100, Math.max(0, score));
 }
 
 // Verbesserte LCL-Berechnung nach Bolton (1980) - präziser für Europa
