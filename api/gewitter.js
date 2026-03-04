@@ -437,10 +437,11 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
 
     // Basis-Filter für schweren Hagel (>2cm): ESTOFEX/ESSL-Schwellen
     // Púčik 2015: Schwerer Hagel in Europa meist bei CAPE ≥ 500 J/kg, Shear ≥ 15 m/s
-    if (cape < 400) return 0; // Zu wenig CAPE für schweren Hagel
-    if (shear < 12) return 0; // Zu wenig Shear für organisierte Superzellen
-    if (wmaxshear < 600) return 0; // WMAXSHEAR zu niedrig für schweren Hagel
-    if (freezingLevel > 3500) return 0; // Zu hohes Freezing Level → Hagel schmilzt
+    // Hier leicht gelockert, um auch Level-1-Severe (2–3 cm) besser zu erfassen
+    if (cape < 300) return 0; // Darunter praktisch kein ≥2cm-Hagel
+    if (shear < 12) return 0; // Zu wenig Shear für organisierte Zellen
+    if (wmaxshear < 500) return 0; // WMAXSHEAR zu niedrig für ≥2cm-Hagel
+    if (freezingLevel > 3800) return 0; // Sehr hohes Freezing Level → Hagel schmilzt
 
     let score = 0;
 
@@ -541,8 +542,13 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
     // Mindestanforderungen für schweren Hagel (>2cm) in Europa
     // Púčik 2015: Schwerer Hagel meist bei CAPE ≥ 600, Shear ≥ 15, WMAXSHEAR ≥ 800
-    if (cape < 500 || shear < 14 || wmaxshear < 700) {
-        score = Math.min(score, 30); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
+    // Etwas gelockert, um Level-1-Severe nicht zu stark zu deckeln
+    let fails = 0;
+    if (cape < 500) fails++;
+    if (shear < 14) fails++;
+    if (wmaxshear < 700) fails++;
+    if (fails >= 2) {
+        score = Math.min(score, 40); // Deutlich begrenzen wenn mehrere Mindestanforderungen fehlen
     }
 
     // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwerer Hagel)
@@ -569,9 +575,10 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     // Basis-Filter für schwere Winde (≥90 km/h / ≥25 m/s): ESTOFEX/ESSL-Schwellen
     // Gatzen 2020: Schwere Winde in Europa meist bei DCAPE ≥ 400 J/kg, WMAXSHEAR ≥ 600
     // Taszarek 2020: Organisierte Systeme (MCS/Derecho) benötigen hohen Shear
-    if (dcape < 300 && wmaxshear < 500) return 0; // Zu wenig DCAPE/WMAXSHEAR
+    // Leicht gelockert, um Level-1-Severe (25 m/s) sensibler zu erfassen
+    if (dcape < 250 && wmaxshear < 450) return 0; // Sehr wenig DCAPE/WMAXSHEAR
     if (shear < 10 && cape < 500) return 0; // Zu wenig organisierte Konvektion
-    if (gust < 70) return 0; // Prognostizierte Böen zu niedrig für schwere Winde
+    if (gust < 60) return 0; // Prognostizierte Böen deutlich unter Severe-Schwelle
 
     let score = 0;
 
@@ -671,8 +678,13 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
     // Mindestanforderungen für schwere Winde (≥90 km/h) in Europa
     // Gatzen 2020: Schwere Winde meist bei DCAPE ≥ 500, WMAXSHEAR ≥ 700, Shear ≥ 12
-    if (dcape < 400 || wmaxshear < 600 || gust < 75) {
-        score = Math.min(score, 35); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
+    // Etwas gelockert, um Level-1-Severe nicht zu stark zu deckeln
+    let windFails = 0;
+    if (dcape < 400) windFails++;
+    if (wmaxshear < 600) windFails++;
+    if (gust < 75) windFails++;
+    if (windFails >= 2) {
+        score = Math.min(score, 45); // Begrenzen, wenn mehrere Kernparameter schwach sind
     }
 
     // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwere Winde ≥35 m/s)
