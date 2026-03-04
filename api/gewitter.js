@@ -550,46 +550,140 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     return Math.min(100, Math.max(0, score));
 }
 
-// Sturmböen / schwere Winde (Europa) – orientiert an DCAPE/WMAXSHEAR-Studien (z.B. Gatzen, Taszarek)
+// Schwere Winde (≥25 m/s / ≥90 km/h) Wahrscheinlichkeit (Europa) – ESTOFEX/ESSL-Methodik
+// Quelle: Gatzen et al. 2020 (Derechos Deutschland), Taszarek et al. 2019/2020, ESTOFEX Forecast Guidelines
+// Schwere Winde benötigen: hohen DCAPE, organisierte Konvektion (MCS/Derecho), hohen WMAXSHEAR
 function calculateWindProbability(hour, wmaxshear, dcape) {
     const cape = Math.max(0, hour.cape ?? 0);
+    const shear = calcShear(hour);
     const wind10m = hour.wind ?? 0;   // km/h
     const gust = hour.gust ?? 0;      // km/h
     const gustDiff = gust - wind10m;
+    const temp700 = hour.temp700 ?? 0;
+    const dew700 = hour.dew700 ?? 0;
+    const temp500 = hour.temp500 ?? 0;
 
-    // Basis-Filter: komplett stabile Lage ohne DCAPE, ohne Böen
-    if (dcape < 150 && wmaxshear < 300 && gust < 40) return 0;
+    // Basis-Filter für schwere Winde (≥90 km/h / ≥25 m/s): ESTOFEX/ESSL-Schwellen
+    // Gatzen 2020: Schwere Winde in Europa meist bei DCAPE ≥ 400 J/kg, WMAXSHEAR ≥ 600
+    // Taszarek 2020: Organisierte Systeme (MCS/Derecho) benötigen hohen Shear
+    if (dcape < 300 && wmaxshear < 500) return 0; // Zu wenig DCAPE/WMAXSHEAR
+    if (shear < 10 && cape < 500) return 0; // Zu wenig organisierte Konvektion
+    if (gust < 70) return 0; // Prognostizierte Böen zu niedrig für schwere Winde
 
     let score = 0;
 
-    // DCAPE – Haupttreiber für Downbursts
-    if (dcape >= 1100) score += 32;
-    else if (dcape >= 800) score += 24;
-    else if (dcape >= 600) score += 16;
-    else if (dcape >= 400) score += 10;
-    else if (dcape >= 250) score += 5;
+    // DCAPE – kritisch für schwere Downbursts (Gilmore & Wicker 1998, ESTOFEX)
+    // Gatzen 2020: Derechos Deutschland median DCAPE ~800-1000 J/kg
+    if (dcape >= 1400) score += 35;
+    else if (dcape >= 1200) score += 30;
+    else if (dcape >= 1000) score += 26;
+    else if (dcape >= 800) score += 20;
+    else if (dcape >= 600) score += 14;
+    else if (dcape >= 400) score += 8;
+    else if (dcape >= 300) score += 4;
 
-    // WMAXSHEAR – organisierte, linienhafte Konvektion / MCS (Derecho-Potenzial)
-    if (wmaxshear >= 1300) score += 22;
+    // WMAXSHEAR – bester Prädiktor für organisierte Systeme (Taszarek 2020)
+    // Schwellen für schwere Winde deutlich höher (MCS/Derecho-Potenzial)
+    if (wmaxshear >= 1600) score += 32;
+    else if (wmaxshear >= 1300) score += 28;
+    else if (wmaxshear >= 1100) score += 22;
     else if (wmaxshear >= 900) score += 16;
-    else if (wmaxshear >= 600) score += 10;
-    else if (wmaxshear >= 400) score += 5;
+    else if (wmaxshear >= 700) score += 10;
+    else if (wmaxshear >= 600) score += 6;
+    else if (wmaxshear >= 500) score += 3;
 
-    // Böenüberschuss gegenüber Mittelwind – Hinweis auf konvektive Böen
-    if (gustDiff >= 30) score += 14;
-    else if (gustDiff >= 20) score += 9;
-    else if (gustDiff >= 10) score += 5;
+    // Deep-Layer-Shear (0-6km) – MCS/Derecho-Organisation (Gatzen 2020)
+    // Schwere Winde oft in linienhaften Systemen mit hohem Shear
+    if (shear >= 25) score += 16;
+    else if (shear >= 20) score += 12;
+    else if (shear >= 18) score += 9;
+    else if (shear >= 15) score += 6;
+    else if (shear >= 12) score += 3;
+    else if (shear >= 10) score += 1;
 
-    // Absolutes Böenniveau
-    if (gust >= 110) score += 16;       // > 110 km/h
-    else if (gust >= 90) score += 12;   // > 90 km/h
-    else if (gust >= 70) score += 8;    // > 70 km/h
-    else if (gust >= 55) score += 4;    // > 55 km/h
+    // CAPE – Updraft-Stärke für Downbursts (Gatzen 2020)
+    // Schwere Winde können auch bei moderatem CAPE auftreten (warm-season vs cold-season Derechos)
+    if (cape >= 1500) score += 12;
+    else if (cape >= 1200) score += 10;
+    else if (cape >= 800) score += 7;
+    else if (cape >= 500) score += 4;
+    else if (cape >= 300) score += 2;
+    // Low-CAPE/high-shear Fälle bleiben möglich (cold-season Derechos)
 
-    // CAPE-Gewicht: Wind-Fälle in Europa oft low-CAPE / high-shear, aber völlig stabile Lagen bremsen
-    if (cape < 100 && dcape < 800) score = Math.min(score, 25);
+    // Böenüberschuss gegenüber Mittelwind – konvektive Böen (ESTOFEX)
+    // Großer Unterschied = starke konvektive Downbursts
+    if (gustDiff >= 40) score += 16;
+    else if (gustDiff >= 30) score += 12;
+    else if (gustDiff >= 25) score += 9;
+    else if (gustDiff >= 20) score += 6;
+    else if (gustDiff >= 15) score += 3;
+    else if (gustDiff >= 10) score += 1;
 
-    return Math.min(100, Math.max(0, Math.round(score)));
+    // Absolutes Böenniveau – kritisch für schwere Winde (ESTOFEX)
+    // ESTOFEX Level 1: ≥25 m/s (90 km/h), Level 2: ≥30 m/s (108 km/h), Level 3: ≥35 m/s (126 km/h)
+    if (gust >= 130) score += 20;      // ≥35 m/s (Level 3)
+    else if (gust >= 110) score += 16; // ≥30 m/s (Level 2)
+    else if (gust >= 90) score += 12;   // ≥25 m/s (Level 1)
+    else if (gust >= 80) score += 6;    // Nahe Level 1
+    else if (gust >= 70) score += 2;    // Unter Level 1, aber erhöhtes Risiko
+
+    // 700 hPa Feuchtigkeit – wichtig für Downburst-Stärke (Gatzen 2020)
+    // Trockene 700 hPa = stärkere Verdunstungskälte = stärkere Downbursts
+    const dewDepression700 = temp700 - dew700;
+    if (dewDepression700 >= 20 && dcape >= 600) score += 8; // Sehr trocken
+    else if (dewDepression700 >= 15 && dcape >= 500) score += 5;
+    else if (dewDepression700 >= 10 && dcape >= 400) score += 3;
+    else if (dewDepression700 < 5 && dcape < 800) score -= 4; // Zu feucht = schwächere Downbursts
+
+    // 500 hPa Temperatur – kalte mittlere Troposphäre begünstigt Downbursts
+    if (temp500 <= -20 && dcape >= 600) score += 6;
+    else if (temp500 <= -16 && dcape >= 500) score += 4;
+    else if (temp500 <= -12 && dcape >= 400) score += 2;
+
+    // Relative Feuchte 500hPa – trockene mittlere Troposphäre (ESTOFEX)
+    if (hour.rh500 < 35 && dcape >= 600) score += 5;
+    else if (hour.rh500 < 45 && dcape >= 500) score += 3;
+    else if (hour.rh500 < 55 && dcape >= 400) score += 1;
+
+    // Kombinierte Faktoren-Multiplikator (ESTOFEX-Methodik)
+    // Alle kritischen Faktoren müssen zusammenkommen für schwere Winde
+    let factor = 1.0;
+    
+    // DCAPE + WMAXSHEAR Kombination (Gatzen 2020, Taszarek 2020)
+    if (dcape >= 1000 && wmaxshear >= 1100) factor = 1.2; // Sehr hohes Derecho-Potenzial
+    else if (dcape >= 800 && wmaxshear >= 900) factor = 1.15;
+    else if (dcape >= 600 && wmaxshear >= 700) factor = 1.1;
+    else if (dcape < 400 || wmaxshear < 600) factor = 0.75; // Beide niedrig = reduzieren
+
+    // Shear + CAPE Kombination (MCS-Organisation)
+    if (shear >= 18 && cape >= 600) factor *= 1.1;
+    else if (shear < 12 && cape < 400) factor *= 0.8;
+
+    // Böen + DCAPE Kombination
+    if (gust >= 100 && dcape >= 800) factor *= 1.1;
+    else if (gust < 80 && dcape < 500) factor *= 0.85;
+
+    score = Math.round(score * factor);
+
+    // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
+    // Mindestanforderungen für schwere Winde (≥90 km/h) in Europa
+    // Gatzen 2020: Schwere Winde meist bei DCAPE ≥ 500, WMAXSHEAR ≥ 700, Shear ≥ 12
+    if (dcape < 400 || wmaxshear < 600 || gust < 75) {
+        score = Math.min(score, 35); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
+    }
+
+    // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwere Winde ≥35 m/s)
+    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20 && gust >= 110) {
+        score = Math.min(100, score + 12); // Bonus für extreme Bedingungen
+    }
+
+    // Cold-Season Derecho-Potenzial (low-CAPE, high-shear)
+    // Gatzen 2020: Cold-season Derechos bei CAPE < 500, aber Shear ≥ 18, WMAXSHEAR ≥ 800
+    if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600) {
+        score = Math.min(100, score + 8); // Bonus für cold-season Typ
+    }
+
+    return Math.min(100, Math.max(0, score));
 }
 
 // Verbesserte LCL-Berechnung nach Bolton (1980) - präziser für Europa
