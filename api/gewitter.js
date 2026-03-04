@@ -212,7 +212,7 @@ export default async function handler(req, res) {
 // Hilfsfunktionen
 // Multi-Modell-Wert aus icon_eu, ecmwf_ifs025, gfs_global bilden
 function getMultiModelValue(hourly, baseName, index, agg = 'mean') {
-    const models = ['icon_eu', 'ecmwf_ifs025', 'gfs_global', 'icon_d2', 'icon_global'];
+    const models = ['icon_seamless', 'ecmwf_ifs', 'gfs_global'];
     const values = [];
 
     for (const model of models) {
