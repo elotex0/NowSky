@@ -34,7 +34,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `freezing_level_height,precipitation&forecast_days=16&models=icon_d2,icon_eu,ecmwf_ifs025,gfs_global,arpege_europe&timezone=auto`;
+                    `freezing_level_height,precipitation&forecast_days=16&models=icon_d2,icon_eu,ecmwf_ifs025,gfs_global,arpege_europe,dmi_harmonie_arome_europe&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -90,8 +90,20 @@ export default async function handler(req, res) {
                 cape: getMultiModelValue(data.hourly, 'cape', i),
                 // CIN kommt von der API als negativer Wert (Stabilisierung). Wir speichern ihn mit Vorzeichen.
                 // Nur übernehmen wenn mindestens 2 Modelle einen Wert liefern, sonst 0 (neutral)
-                cin: countModels(data.hourly, 'convective_inhibition', i) >= 2
-                ? getMultiModelValue(data.hourly, 'convective_inhibition', i) : 0,
+                cin: (() => {
+                    // AROME liefert CIN als positive Zahl (z.B. 50 statt -50)
+                    // Wir korrigieren das VOR der Gewichtung direkt in den Rohdaten
+                    const aromeKey = 'convective_inhibition_harmonie_arome_europe';
+                    if (Array.isArray(data.hourly[aromeKey]) && 
+                        data.hourly[aromeKey][i] !== null && 
+                        data.hourly[aromeKey][i] !== undefined &&
+                        data.hourly[aromeKey][i] > 0) {
+                        // Vorzeichen umkehren: +50 → -50
+                        data.hourly[aromeKey][i] = -data.hourly[aromeKey][i];
+                    }
+                    return countModels(data.hourly, 'convective_inhibition', i) >= 2
+                        ? getMultiModelValue(data.hourly, 'convective_inhibition', i) : 0;
+                })(),
                 liftedIndex: countModels(data.hourly, 'lifted_index', i) >= 2
                 ? getMultiModelValue(data.hourly, 'lifted_index', i) : 0,
                 pblHeight: countModels(data.hourly, 'boundary_layer_height', i) >= 2
@@ -219,7 +231,7 @@ export default async function handler(req, res) {
             'boundary_layer_height', 'direct_radiation',
             'freezing_level_height'
         ];
-        const modellNamen = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'gfs_global'];
+        const modellNamen = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'gfs_global', 'dmi_harmonie_arome_europe'];
 
         for (const feld of alleFelder) {
             debugRohwerte[feld] = {};
@@ -253,7 +265,7 @@ export default async function handler(req, res) {
 
 // Gibt zurück wie viele Modelle einen Wert liefern (nicht null)
 function countModels(hourly, baseName, index) {
-    const models = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'gfs_global'];
+    const models = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'gfs_global', 'dmi_harmonie_arome_europe'];
     let count = 0;
     for (const model of models) {
         const key = `${baseName}_${model}`;
@@ -266,7 +278,7 @@ function countModels(hourly, baseName, index) {
 // Hilfsfunktionen
 // Multi-Modell-Wert aus icon_eu, ecmwf_ifs025, gfs_global bilden
 function getMultiModelValue(hourly, baseName, index, agg = 'mean') {
-    const models = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'gfs_global'];
+    const models = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'gfs_global', 'dmi_harmonie_arome_europe'];
     const values = [];
 
     for (const model of models) {
