@@ -110,7 +110,7 @@ export default async function handler(req, res) {
                 ? getMultiModelValue(data.hourly, 'lifted_index', i) : 0,
                 pblHeight: getMultiModelValue(data.hourly, 'boundary_layer_height', i),
                 directRadiation: getMultiModelValue(data.hourly, 'direct_radiation', i),
-                precipAcc: getMultiModelValue(data.hourly, 'precipitation', i, 'max'),
+                precipAcc: getMultiModelValue(data.hourly, 'precipitation', i,),
                 freezingLevel: getMultiModelValue(data.hourly, 'freezing_level_height', i),
             };
         });
