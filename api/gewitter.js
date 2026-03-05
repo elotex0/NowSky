@@ -224,12 +224,44 @@ function getMultiModelValue(hourly, baseName, index, agg = 'mean') {
     }
 
     if (!values.length) return 0;
-
     if (agg === 'max') return Math.max(...values);
     if (agg === 'min') return Math.min(...values);
 
-    const sum = values.reduce((s, v) => s + v, 0);
-    return sum / values.length;
+    // --- NEU: Dynamische Gewichtung mit Ausreißer-Entfernung ---
+
+    // Weniger als 3 Modelle? Einfacher Mittelwert reicht
+    if (values.length < 3) {
+        return values.reduce((s, v) => s + v, 0) / values.length;
+    }
+
+    // SCHRITT 1: Ausreißer entfernen (IQR-Methode)
+    // Sortiere die Werte und finde den mittleren Bereich (Q1 bis Q3)
+    const sorted = [...values].sort((a, b) => a - b);
+    const q1 = sorted[Math.floor(sorted.length * 0.25)];
+    const q3 = sorted[Math.floor(sorted.length * 0.75)];
+    const iqr = q3 - q1;
+
+    // Ein Wert gilt als Ausreißer wenn er mehr als 1.5x IQR vom Rand entfernt ist
+    // Aber: nur entfernen wenn mindestens 2 Modelle übrig bleiben
+    const lowerBound = q1 - 1.5 * iqr;
+    const upperBound = q3 + 1.5 * iqr;
+    const filtered = values.filter(v => v >= lowerBound && v <= upperBound);
+    const useValues = filtered.length >= 2 ? filtered : values;
+
+    // SCHRITT 2: Gewichte berechnen
+    // Modelle die näher am Median liegen bekommen mehr Gewicht
+    const median = useValues[Math.floor(useValues.length / 2)];
+    const weights = useValues.map(v => {
+        const distance = Math.abs(v - median);
+        // Je weiter weg, desto kleiner das Gewicht
+        // Bei distance=0 → Gewicht 1.0, bei großer Abweichung → Gewicht sinkt
+        return 1 / (1 + distance * 0.1);
+    });
+
+    // SCHRITT 3: Gewichteten Mittelwert berechnen
+    const totalWeight = weights.reduce((s, w) => s + w, 0);
+    const weightedSum = useValues.reduce((s, v, i) => s + v * weights[i], 0);
+    return weightedSum / totalWeight;
 }
 
 function getRegion(lat, lon) {
