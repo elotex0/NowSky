@@ -33,7 +33,7 @@ export default async function handler(req, res) {
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,` +
-                    `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
+                    `dew_point_850hPa,dew_point_700hPa,direct_radiation,` +
                     `freezing_level_height,precipitation&forecast_days=16&&models=icon_d2,icon_eu,ecmwf_ifs025,dmi_harmonie_arome_europe&timezone=auto`;
 
         const response = await fetch(url);
@@ -165,7 +165,76 @@ export default async function handler(req, res) {
                     const li = t500 - T_parcel_500;
                     return Math.round(li * 10) / 10;
                 })(),
-                pblHeight: getMultiModelValue(data.hourly, 'boundary_layer_height', i),
+                pblHeight: (() => {
+                    // PBL-Höhe nach Holzworth (1964/1967), adaptiert für Europa
+                    // Methode: Trockenadiabatischer Aufstieg vom Boden bis Temperaturgleichgewicht
+                    // Quelle: Seidel et al. 2010 (J. Geophys. Res.), ESSL-Klimatologie
+                    const t2m = getMultiModelValue(data.hourly, 'temperature_2m', i);
+                    const t850 = getMultiModelValue(data.hourly, 'temperature_850hPa', i);
+                    const t700 = getMultiModelValue(data.hourly, 'temperature_700hPa', i);
+                    const radiation = getMultiModelValue(data.hourly, 'direct_radiation', i);
+
+                    // Näherungsweise Höhe der Druckflächen über Grund (Standardatmosphäre)
+                    // 850 hPa ≈ 1500 m, 700 hPa ≈ 3000 m
+                    const z850 = 1500;
+                    const z700 = 3000;
+
+                    // Trockenadiabatischer Temperaturgradient: 9.8 K/km
+                    const DALR = 9.8; // K/km
+
+                    // Parzellentemperatur auf 850 hPa: T2m - DALR * 1.5 km
+                    const T_parcel_850 = t2m - DALR * (z850 / 1000);
+                    // Parzellentemperatur auf 700 hPa: T2m - DALR * 3.0 km
+                    const T_parcel_700 = t2m - DALR * (z700 / 1000);
+
+                    // Lineare Interpolation: Wo ist T_parcel = T_environment?
+                    // Zwischen Boden und 850 hPa
+                    let pblHeight = 200; // Mindestwert (stabile Nacht)
+
+                    if (T_parcel_850 >= t850) {
+                        // Mischungsschicht reicht mindestens bis 850 hPa
+                        if (T_parcel_700 >= t700) {
+                            // Sehr tiefe Lapse Rate → PBL reicht bis 700 hPa oder höher
+                            // Extrapolation begrenzt auf 4000 m
+                            const lapse_env = (t850 - t700) / (z700 - z850) * 1000; // K/km
+                            if (lapse_env >= DALR) {
+                                pblHeight = 3500; // Superadiabatisch → sehr tiefe PBL
+                            } else {
+                                // Interpolation über 700 hPa hinaus
+                                const dT = T_parcel_700 - t700;
+                                const extraZ = dT / (DALR - lapse_env) * 1000;
+                                pblHeight = Math.min(4000, z700 + extraZ);
+                            }
+                        } else {
+                            // PBL liegt zwischen 850 und 700 hPa → interpolieren
+                            const dT_850 = T_parcel_850 - t850; // positiv = instabil
+                            const dT_700 = T_parcel_700 - t700; // negativ = stabil
+                            const fraction = dT_850 / (dT_850 - dT_700);
+                            pblHeight = z850 + fraction * (z700 - z850);
+                        }
+                    } else {
+                        // PBL unter 850 hPa → interpolieren zwischen Boden und 850 hPa
+                        // T_parcel am Boden = t2m, T_env am Boden ≈ t2m (per Definition)
+                        // Gradient bestimmt wie schnell Parzel kühler wird als Umgebung
+                        const lapse_env_low = (t2m - t850) / z850 * 1000; // K/km
+                        if (lapse_env_low <= 0) {
+                            pblHeight = 200; // Inversion → sehr stabile PBL
+                        } else {
+                            // Höhe wo Parzel = Umgebung
+                            // DALR > lapse_env → Parzel wird irgendwann kälter
+                            const z_mix = (t2m - t850) / (DALR - lapse_env_low) * 1000;
+                            pblHeight = Math.max(200, Math.min(z_mix, z850));
+                        }
+                    }
+
+                    // Strahlungskorrektur (tagsüber: mehr Einstrahlung = tiefere PBL)
+                    // Oke (1987): Solare Einstrahlung treibt konvektive PBL
+                    if (radiation > 600) pblHeight *= 1.2;
+                    else if (radiation > 300) pblHeight *= 1.1;
+                    else if (radiation < 20) pblHeight *= 0.7; // Nacht: stabile PBL
+
+                    return Math.round(Math.max(100, Math.min(4000, pblHeight)));
+                })(),
                 directRadiation: getMultiModelValue(data.hourly, 'direct_radiation', i),
                 precipAcc: getMultiModelValue(data.hourly, 'precipitation', i,),
                 freezingLevel: getMultiModelValue(data.hourly, 'freezing_level_height', i),
