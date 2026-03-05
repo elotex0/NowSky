@@ -196,11 +196,49 @@ export default async function handler(req, res) {
                 wind_risk: categorizeRisk(day.maxWindProbability)
             }));
 
+        // Debug: Rohwerte aller Modelle für die erste Stunde (Index 0)
+        const debugRohwerte = {};
+        const debugGewichtet = {};
+        const alleFelder = [
+            'cape', 'temperature_2m', 'dew_point_2m',
+            'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high',
+            'precipitation_probability', 'precipitation',
+            'wind_speed_10m', 'wind_gusts_10m',
+            'wind_direction_1000hPa', 'wind_direction_850hPa', 'wind_direction_700hPa',
+            'wind_direction_500hPa', 'wind_direction_300hPa',
+            'wind_speed_1000hPa', 'wind_speed_850hPa', 'wind_speed_700hPa',
+            'wind_speed_500hPa', 'wind_speed_300hPa',
+            'temperature_500hPa', 'temperature_700hPa', 'temperature_850hPa',
+            'dew_point_850hPa', 'dew_point_700hPa',
+            'relative_humidity_500hPa',
+            'convective_inhibition', 'lifted_index',
+            'boundary_layer_height', 'direct_radiation',
+            'freezing_level_height'
+        ];
+        const modellNamen = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'gfs_global'];
+
+        for (const feld of alleFelder) {
+            debugRohwerte[feld] = {};
+            for (const modell of modellNamen) {
+                const key = `${feld}_${modell}`;
+                debugRohwerte[feld][modell] = data.hourly[key]?.[0] ?? null;
+            }
+            // Zeigt den bereinigten Endwert nach dynamischer Gewichtung
+            debugGewichtet[feld] = getMultiModelValue(data.hourly, feld, 0);
+        }
+
         return res.status(200).json({
             timezone: timezone,
             region: region,
             stunden: stunden,
-            tage: tage
+            tage: tage,
+            debug: {
+                hinweis: "Alle Werte beziehen sich auf Index 0 (erste Stunde der Vorhersage)",
+                erste_stunde_timestamp: hours[0]?.time ?? null,
+                rohwerte_pro_modell: debugRohwerte,
+                endwert_nach_gewichtung: debugGewichtet,
+                berechnete_parameter_erste_stunde: hours[0] ?? null
+            }
         });
 
     } catch (error) {
