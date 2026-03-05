@@ -199,7 +199,10 @@ export default async function handler(req, res) {
             }
 
             const probability        = ensembleProb(gewitter_by_model, leadtimeHours);
-            const tornadoProbability = ensembleProb(tornado_by_model,  leadtimeHours);
+            const tornadoProbability = Math.min(
+                ensembleProb(tornado_by_model, leadtimeHours),
+                probability  // Tornado kann nie wahrscheinlicher sein als Gewitter
+            );
             const hailProbability    = ensembleProb(hagel_by_model,    leadtimeHours);
             const windProbability    = ensembleProb(wind_by_model,     leadtimeHours);
 
@@ -1154,9 +1157,10 @@ function calculateTornadoProbability(hour, shear, srh) {
     const magCin = -Math.min(0, cin);
 
     // Basis-Filter
-    if (temp2m < 5)   return 0;
-    if (magCin > 200) return 0;
-    if (cape < 100 && shear < 20) return 0;
+    if (temp2m < 5)    return 0;
+    if (magCin > 200)  return 0;
+    if (cape < 100)    return 0;  // Kein CAPE = kein Tornado, egal wie viel Shear
+    if (shear < 12)    return 0;  // Mindest-Shear erhöht von implizit 0 auf 12 m/s
 
     const srh1km    = calcSRH(hour, '0-1km');
     const wmaxshear = calcWMAXSHEAR(cape, shear);
