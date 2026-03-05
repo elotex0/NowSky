@@ -94,7 +94,7 @@ export default async function handler(req, res) {
                     // Manche Modelle liefern CIN als positive Zahl → muss negativ sein
                     const vorzeichenModelle = [
                         'convective_inhibition_dmi_harmonie_arome_europe',
-                        'convective_inhibition_ecmwf_ifs025'
+                        'convective_inhibition_ecmwf_ifs'
                     ];
                     for (const key of vorzeichenModelle) {
                         if (Array.isArray(data.hourly[key]) &&
