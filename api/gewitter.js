@@ -104,6 +104,18 @@ export default async function handler(req, res) {
                             data.hourly[key][i] = -data.hourly[key][i];
                         }
                     }
+                    // Fehlerwerte entfernen: Werte unter -500 sind bei CIN physikalisch unmöglich
+                    // AROME/andere Modelle nutzen -1000 als "kein Wert"-Kennzeichnung
+                    const cinModelle = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'ecmwf_ifs', 'gfs_global', 'dmi_harmonie_arome_europe'];
+                    for (const modell of cinModelle) {
+                        const key = `convective_inhibition_${modell}`;
+                        if (Array.isArray(data.hourly[key]) &&
+                            data.hourly[key][i] !== null &&
+                            data.hourly[key][i] < -500) {
+                            // Als null markieren → wird von getMultiModelValue ignoriert
+                            data.hourly[key][i] = null;
+                        }
+                    }
                     return getMultiModelValue(data.hourly, 'convective_inhibition', i);
                 })(),
                 liftedIndex: countModels(data.hourly, 'lifted_index', i) >= 2
