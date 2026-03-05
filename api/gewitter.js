@@ -106,7 +106,7 @@ export default async function handler(req, res) {
                 wind_speed_950hPa:  get('wind_speed_950hPa') ?? 0,
                 wind_speed_925hPa:  get('wind_speed_925hPa') ?? 0,
                 wind_speed_900hPa:  get('wind_speed_900hPa') ?? 0,
-                pwat:               get('total_column_integrated_water_vapour') ?? 0,
+                pwat:               get('total_column_integrated_water_vapour') ?? 25,
                 temp500:            t500,
                 temp850:            t850,
                 temp700:            t700 ?? (t850 + t500) / 2,
