@@ -1127,81 +1127,68 @@ function calculateTornadoProbability(hour, shear, srh) {
     const magCin = -Math.min(0, cin);
     const { liftedIndex } = calcIndices(hour);
 
-    if (temp2m < 8) return 0;
-    // minCAPE von 400 → 200 korrigiert (europäische Tornados bei niedrigerem CAPE)
-    if (cape < 200) {
-        if (shear < 18) return 0; // HSLC-Ausnahme nur bei sehr hohem Shear
-    }
+    // Basis-Filter
+    if (temp2m < 5)   return 0;
     if (magCin > 200) return 0;
+    // HSLC: cape < 200 nur erlaubt wenn sehr hoher Shear + Rotation vorhanden
+    if (cape < 200 && shear < 20) return 0;
 
-    const srh1km = calcSRH(hour, '0-1km');
+    const srh1km    = calcSRH(hour, '0-1km');
+    const lclHeight = calcLCLHeight(temp2m, dew);
 
-    const dir1000 = hour.windDir1000 ?? 0;
-    const dir850  = hour.windDir850  ?? 0;
-    const dir700  = hour.windDir700  ?? 0;
+    // STP ohne Veering-Faktor (Europa: kein zuverlässiges Veering-Signal)
+    // normCAPE=750 (Europa-kalibriert, Taszarek 2020)
+    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
 
-    function veeringAngle(d1, d2) {
-        let diff = (d2 - d1 + 360) % 360;
-        return diff > 180 ? diff - 360 : diff;
-    }
-    const totalVeering = veeringAngle(dir1000, dir850) + veeringAngle(dir850, dir700);
-    const veeringFactor = totalVeering < -20 ? 0.3 : totalVeering < 0 ? 0.6
-                        : totalVeering >= 30 ? 1.2 : totalVeering >= 15 ? 1.1 : 1.0;
-
-    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew) * veeringFactor;
-
+    // Basis-Score aus STP – Schwellen nach oben verschoben für Europa
+    // (STP-Werte >1 sind in Europa schon außergewöhnlich)
     let score = 0;
-    if      (stp >= 2.0) score = 85;
-    else if (stp >= 1.5) score = 70;
-    else if (stp >= 1.0) score = 55;
-    else if (stp >= 0.7) score = 40;
-    else if (stp >= 0.5) score = 25;
-    else if (stp >= 0.3) score = 12;
-    else if (stp > 0)    score = 5;
+    if      (stp >= 3.0) score = 75;
+    else if (stp >= 2.0) score = 55;
+    else if (stp >= 1.5) score = 40;
+    else if (stp >= 1.0) score = 25;
+    else if (stp >= 0.7) score = 15;
+    else if (stp >= 0.5) score = 8;
+    // Unter 0.5: kein Basis-Score – verhindert falsch-positive bei schwachem STP
 
-    if      (cape >= 1000 && shear >= 18) score += 8;
-    else if (cape >= 800  && shear >= 15) score += 5;
-    else if (cape >= 600  && shear >= 12) score += 3;
+    // SRH 0-1km – wichtigster Einzel-Prädiktor (Davies-Jones 1984, ESSL-Schema)
+    // Europa: 100 m²/s² bereits signifikant (vs. USA 150+)
+    if      (srh1km >= 250) score += 8;
+    else if (srh1km >= 150) score += 5;
+    else if (srh1km >= 100) score += 3;
+    if      (srh1km < 40)   score -= 15;
+    else if (srh1km < 60)   score -= 8;
 
-    if      (srh >= 200 && cape >= 800) score += 6;
-    else if (srh >= 150 && cape >= 600) score += 4;
-    else if (srh >= 120 && cape >= 500) score += 2;
+    // CAPE
+    if      (cape >= 1000) score += 6;
+    else if (cape >= 600)  score += 4;
+    else if (cape >= 300)  score += 2;
 
-    if      (liftedIndex <= -5 && cape >= 800) score += 5;
-    else if (liftedIndex <= -3 && cape >= 600) score += 3;
+    // Shear
+    if      (shear >= 25) score += 5;
+    else if (shear >= 18) score += 3;
+    else if (shear < 12)  score -= 8;
 
-    // EHI mit 0-1km SRH (SPC-Standard)
-    const ehi = (cape * srh1km) / 160000;
-    if      (ehi >= 2.5) score += 8;
-    else if (ehi >= 1.5) score += 5;
-    else if (ehi >= 1.0) score += 3;
+    // LCL (Taszarek 2017: Europa Tornado-Median LCL < 1000m AGL)
+    if      (lclHeight < 500)   score += 8;
+    else if (lclHeight < 800)   score += 5;
+    else if (lclHeight < 1200)  score += 2;
+    else if (lclHeight >= 2000) score -= 12;
+    else if (lclHeight >= 1500) score -= 6;
 
-    const lclTornado = calcLCLHeight(temp2m, dew);
-    if      (lclTornado < 500)   score += 8;
-    else if (lclTornado < 800)   score += 5;
-    else if (lclTornado < 1000)  score += 2;
-    else if (lclTornado >= 1500) score -= 8;
-    else if (lclTornado >= 1200) score -= 4;
+    // CIN
+    if (magCin > 150) score -= 12;
+    else if (magCin > 100) score -= 8;
+    else if (magCin > 50)  score -= 3;
 
-    if (magCin > 100) score -= 10;
-    if (shear < 10)   score -= 15;
-    if (srh < 80)     score -= 10;
-
+    // Temperatur-Skalierung
     if      (temp2m < 8)  score = Math.round(score * 0.5);
-    else if (temp2m < 13) score = Math.round(score * 0.75);
+    else if (temp2m < 12) score = Math.round(score * 0.75);
 
-    if (stp < 0.1 && score > 10) {
-        score = Math.min(score, shear < 15 ? 8 : 20);
-    }
-
-    let failCount = 0;
-    if (cape  < 200 && score > 15) failCount++;
-    if (shear < 8   && score > 10) failCount++;
-    if (srh   < 50  && score > 10) failCount++;
-
-    if      (failCount === 3) score = Math.round(score * 0.35);
-    else if (failCount === 2) score = Math.round(score * 0.55);
-    else if (failCount === 1) score = Math.round(score * 0.75);
+    // Harte Obergrenzen ohne Kernparameter
+    if (srh1km < 60)  return Math.min(5,  Math.max(0, score));
+    if (srh1km < 100) return Math.min(15, Math.max(0, score));
+    if (shear  < 12)  return Math.min(5,  Math.max(0, score));
 
     return Math.min(100, Math.max(0, Math.round(score)));
 }
