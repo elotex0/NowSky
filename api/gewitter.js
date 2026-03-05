@@ -18,11 +18,13 @@ export default async function handler(req, res) {
                     `&hourly=wind_gusts_10m,wind_speed_10m,temperature_2m,dew_point_2m,` +
                     `cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation_probability,` +
                     `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
+                    `wind_direction_975hPa,wind_direction_950hPa,wind_direction_925hPa,wind_direction_900hPa,` +
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
+                    `wind_speed_975hPa,wind_speed_950hPa,wind_speed_925hPa,wind_speed_900hPa,` +
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,relative_humidity_850hPa,relative_humidity_700hPa,cape,` +
-                    `dew_point_850hPa,dew_point_700hPa,direct_radiation,` +
-                    `freezing_level_height,precipitation&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
+                    `dew_point_850hPa,dew_point_700hPa,direct_radiation,total_column_integrated_water_vapour,` +
+                    `freezing_level_height,precipitation,boundary_layer_height,convective_inhibition,lifted_index&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -91,11 +93,20 @@ export default async function handler(req, res) {
                 windDir700:         get('wind_direction_700hPa') ?? 0,
                 windDir500:         get('wind_direction_500hPa') ?? 0,
                 windDir300:         get('wind_direction_300hPa') ?? 0,
+                windDir975:         get('wind_direction_975hPa') ?? 0,
+                windDir950:         get('wind_direction_950hPa') ?? 0,
+                windDir925:         get('wind_direction_925hPa') ?? 0,
+                windDir900:         get('wind_direction_900hPa') ?? 0,
                 wind_speed_1000hPa: get('wind_speed_1000hPa') ?? 0,
                 wind_speed_850hPa:  get('wind_speed_850hPa') ?? 0,
                 wind_speed_700hPa:  get('wind_speed_700hPa') ?? 0,
                 wind_speed_500hPa:  get('wind_speed_500hPa') ?? 0,
                 wind_speed_300hPa:  get('wind_speed_300hPa') ?? 0,
+                wind_speed_975hPa:  get('wind_speed_975hPa') ?? 0,
+                wind_speed_950hPa:  get('wind_speed_950hPa') ?? 0,
+                wind_speed_925hPa:  get('wind_speed_925hPa') ?? 0,
+                wind_speed_900hPa:  get('wind_speed_900hPa') ?? 0,
+                pwat:               get('total_column_integrated_water_vapour') ?? 0,
                 temp500:            t500,
                 temp850:            t850,
                 temp700:            t700 ?? (t850 + t500) / 2,
@@ -109,11 +120,14 @@ export default async function handler(req, res) {
                 directRadiation:    get('direct_radiation') ?? 0,
                 precipAcc:          get('precipitation') ?? 0,
                 freezingLevel:      get('freezing_level_height') ?? 3000,
+                cin:                get('convective_inhibition') ?? null,
+                liftedIndex:        get('lifted_index') ?? null,
+                pblHeight:          get('boundary_layer_height') ?? null,
             };
 
-            hour.cin         = calcCIN(hour);
-            hour.liftedIndex = calcLiftedIndex(hour);
-            hour.pblHeight   = calcPBLHeight(hour);
+            hour.cin        = hour.cin        ?? calcCIN(hour);
+            hour.liftedIndex = hour.liftedIndex ?? calcLiftedIndex(hour);
+            hour.pblHeight   = hour.pblHeight   ?? calcPBLHeight(hour);
 
             return hour;
         }
@@ -495,14 +509,20 @@ function calcPBLHeight(hour) {
 function calcSRH(hour, layer = '0-3km') {
     const levels = layer === '0-1km'
         ? [
+            // 0-1km: 1000/975/950/925/900 hPa (~0-1000m)
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
-            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 },
-          ]
+            { ws: (hour.wind_speed_975hPa  ?? 0) / 3.6, wd: hour.windDir975  ?? 0 },
+            { ws: (hour.wind_speed_950hPa  ?? 0) / 3.6, wd: hour.windDir950  ?? 0 },
+            { ws: (hour.wind_speed_925hPa  ?? 0) / 3.6, wd: hour.windDir925  ?? 0 },
+            { ws: (hour.wind_speed_900hPa  ?? 0) / 3.6, wd: hour.windDir900  ?? 0 },
+            ]
         : [
+            // 0-3km: bis 700 hPa
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
+            { ws: (hour.wind_speed_925hPa  ?? 0) / 3.6, wd: hour.windDir925  ?? 0 },
             { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 },
             { ws: (hour.wind_speed_700hPa  ?? 0) / 3.6, wd: hour.windDir700  ?? 0 },
-          ];
+            ];
 
     const winds    = levels.map(l => windToUV(l.ws, l.wd));
     const meanU    = winds.reduce((s, w) => s + w.u, 0) / winds.length;
@@ -769,6 +789,7 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     const temp700  = hour.temp700 ?? 0;
     const dew700   = hour.dew700  ?? 0;
     const temp500  = hour.temp500 ?? 0;
+    const pwat = hour.pwat ?? 0;
 
     // ESTOFEX Z_wind: DCAPE + CAPE + Shear + Midlevel_dry_air + PWAT
     if (dcape < 250 && wmaxshear < 450) return 0;
@@ -857,6 +878,11 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     if      (meanRH_w < 35 && dcape >= 600) score += 6;
     else if (meanRH_w < 45 && dcape >= 500) score += 3;
     else if (meanRH_w > 75 && dcape < 800)  score -= 4;
+
+    // PWAT (ESTOFEX Z_wind b5)
+    if      (pwat < 15 && dcape >= 600) score += 5;
+    else if (pwat < 20 && dcape >= 500) score += 3;
+    else if (pwat > 35 && dcape < 800)  score -= 4;
 
     let factor = 1.0;
     if      (dcape >= 1000 && wmaxshear >= 1100) factor = 1.2;
