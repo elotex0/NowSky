@@ -272,31 +272,29 @@ function getMultiModelValue(hourly, baseName, index, agg = 'mean') {
         return values.reduce((s, v) => s + v, 0) / values.length;
     }
 
-    // SCHRITT 1: Ausreißer entfernen (IQR-Methode)
-    // Sortiere die Werte und finde den mittleren Bereich (Q1 bis Q3)
+    // SCHRITT 1: Sortieren
     const sorted = [...values].sort((a, b) => a - b);
-    const q1 = sorted[Math.floor(sorted.length * 0.25)];
-    const q3 = sorted[Math.floor(sorted.length * 0.75)];
-    const iqr = q3 - q1;
 
-    // Ein Wert gilt als Ausreißer wenn er mehr als 1.5x IQR vom Rand entfernt ist
-    // Aber: nur entfernen wenn mindestens 2 Modelle übrig bleiben
-    const lowerBound = q1 - 1.5 * iqr;
-    const upperBound = q3 + 1.5 * iqr;
-    const filtered = values.filter(v => v >= lowerBound && v <= upperBound);
+    // SCHRITT 2: Ausreißer entfernen über Abstand zum Median
+    // Median ist robuster als IQR bei wenigen Werten (3-5 Modelle)
+    const mid = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 !== 0
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) / 2;
+
+    const abweichungen = values.map(v => Math.abs(v - median));
+    const maxErlaubteAbweichung = median * 0.6; // Wert darf max 60% vom Median abweichen
+
+    const filtered = values.filter((v, i) => abweichungen[i] <= maxErlaubteAbweichung);
     const useValues = filtered.length >= 2 ? filtered : values;
 
-    // SCHRITT 2: Gewichte berechnen
-    // Modelle die näher am Median liegen bekommen mehr Gewicht
-    const median = useValues[Math.floor(useValues.length / 2)];
+    // SCHRITT 3: Gewichte berechnen (näher am Median = mehr Gewicht)
     const weights = useValues.map(v => {
         const distance = Math.abs(v - median);
-        // Je weiter weg, desto kleiner das Gewicht
-        // Bei distance=0 → Gewicht 1.0, bei großer Abweichung → Gewicht sinkt
-        return 1 / (1 + distance * 0.1);
+        return 1 / (1 + distance / (median + 1));
     });
 
-    // SCHRITT 3: Gewichteten Mittelwert berechnen
+    // SCHRITT 4: Gewichteten Mittelwert berechnen
     const totalWeight = weights.reduce((s, w) => s + w, 0);
     const weightedSum = useValues.reduce((s, v, i) => s + v * weights[i], 0);
     return weightedSum / totalWeight;
