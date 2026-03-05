@@ -620,24 +620,15 @@ function calcSRH(hour, layer = '0-3km') {
 }
 
 function calcShear(hour) {
-    // 0-6 km Bulk Wind Shear: Standardschicht für Superzell-Parameter
-    // Approximation: 1000 hPa ≈ 0 km, 500 hPa ≈ 5.5 km, 300 hPa ≈ 9 km (zu hoch)
-    // Besser: 1000→500 hPa als Proxy für 0-6 km Shear (meteorologischer Standard)
-    const ws500 = (hour.wind_speed_500hPa ?? 0) / 3.6;
+    // 0-6 km Bulk Wind Shear nach Taszarek 2020 / ESSL-Standard
+    // 1000 hPa ≈ 0 km, 500 hPa ≈ 5.5 km → bester verfügbarer Proxy für 0-6 km
+    const ws500  = (hour.wind_speed_500hPa  ?? 0) / 3.6;
     const ws1000 = (hour.wind_speed_1000hPa ?? 0) / 3.6;
-    const w500 = windToUV(ws500, hour.windDir500 ?? 0);
+    const w500  = windToUV(ws500,  hour.windDir500  ?? 0);
     const w1000 = windToUV(ws1000, hour.windDir1000 ?? 0);
 
-    const bulkShear = Math.hypot(w500.u - w1000.u, w500.v - w1000.v);
-
-    // Effective Shear: Nur relevant wenn untere Troposphäre ausreichend CAPE hat
-    // Penalisiere sehr schwachen Shear unter 850 hPa (0-1 km Shear für Tornados)
-    const ws850 = (hour.wind_speed_850hPa ?? 0) / 3.6;
-    const w850 = windToUV(ws850, hour.windDir850 ?? 0);
-    const lowLevelShear = Math.hypot(w850.u - w1000.u, w850.v - w1000.v);
-
-    // Kombinierter Shear-Index: 0-6 km dominant, 0-1 km als Gewichtungsfaktor
-    return Math.round((bulkShear * 0.75 + lowLevelShear * 0.25) * 10) / 10;
+    // Reiner Bulk Wind Shear 0-6km (kein Hybrid)
+    return Math.round(Math.hypot(w500.u - w1000.u, w500.v - w1000.v) * 10) / 10;
 }
 
 // Verbesserte meteorologische Indizes
@@ -688,10 +679,11 @@ function calcDCAPE(hour) {
     const temp700 = hour.temp700 ?? 0;
     const dew700 = hour.dew700 ?? 0;
     const temp500 = hour.temp500 ?? 0;
-    const cape = hour.cape ?? 0;
 
-    // DCAPE nur sinnvoll wenn überhaupt konvektives Potential vorhanden
-    if (cape < 100) return 0;
+    // DCAPE ist unabhängig von CAPE (Verdunstungskühlung beim Abstieg)
+    // Nur bei absolut trockener Atmosphäre ohne jede Feuchte sinnlos
+    const dewDepCheck = (hour?.temp700 ?? 0) - (hour?.dew700 ?? 0);
+    if (dewDepCheck > 35) return 0; // Extrem trockene Atmosphäre = kein Verdunstungsantrieb
 
     const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
     const tempDiff = wetBulb700 - temp500;
@@ -762,7 +754,7 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     if (cape < 250) return 0; // Zu wenig CAPE selbst für 1cm-Hagel
     if (shear < 10) return 0; // Zu wenig Shear für organisierte Konvektion
     if (wmaxshear < 450) return 0; // WMAXSHEAR zu niedrig selbst für 1cm-Hagel
-    if (freezingLevel > 3800) return 0; // Sehr hohes Freezing Level → Hagel schmilzt oft
+    if (freezingLevel > 4000) return 0; // Sehr hohes Freezing Level → Hagel schmilzt oft
 
     let score = 0;
 
@@ -813,7 +805,7 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     else if (freezingLevel <= 2700) score += 9;
     else if (freezingLevel <= 3200) score += 5;
     else if (freezingLevel <= 3600) score += 2;
-    else if (freezingLevel > 3800) score -= 7; // Sehr hoch = Hagel schmilzt stark
+    else if (freezingLevel > 3800) score -= 5; // Sehr hoch = Hagel schmilzt stark
 
     // Taszarek 2017, Púčik 2015: Höheres LCL = trockenere Umgebung = besseres Hagelwachstum
     // Niedriges LCL begünstigt Tornados, NICHT Hagel
@@ -917,15 +909,14 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     else if (dcape >= 400) score += 7;
     else if (dcape >= 300) score += 4;
 
-    // WMAXSHEAR – bester Prädiktor für organisierte Systeme (Taszarek 2020)
-    // Für "severe wind" leicht gelockerte Schwellen
-    if (wmaxshear >= 1550) score += 31;
-    else if (wmaxshear >= 1250) score += 27;
-    else if (wmaxshear >= 1050) score += 21;
-    else if (wmaxshear >= 850) score += 15;
-    else if (wmaxshear >= 650) score += 10;
-    else if (wmaxshear >= 550) score += 6;
-    else if (wmaxshear >= 450) score += 3;
+    // Europa-kalibriert nach Gatzen 2020: Derechos typisch 800–1200 m²/s²
+    if (wmaxshear >= 1200) score += 31;
+    else if (wmaxshear >= 1000) score += 27;
+    else if (wmaxshear >= 850)  score += 21;
+    else if (wmaxshear >= 700)  score += 15;
+    else if (wmaxshear >= 550)  score += 10;
+    else if (wmaxshear >= 450)  score += 6;
+    else if (wmaxshear >= 350)  score += 3;
 
     // Deep-Layer-Shear (0-6km) – MCS/Derecho-Organisation (Gatzen 2020)
     // Schwere Winde oft in linienhaften Systemen mit hohem Shear
@@ -938,16 +929,20 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
 
     // Taszarek 2017: 0-3km Shear bester Diskriminator für extrem schwere Winde
     const srh3km = calcSRH(hour, '0-3km');
-    const shear_low = Math.hypot(
-        ((hour.wind_speed_850hPa ?? 0) / 3.6) * Math.sin((hour.windDir850 ?? 0) * Math.PI / 180) -
-        ((hour.wind_speed_1000hPa ?? 0) / 3.6) * Math.sin((hour.windDir1000 ?? 0) * Math.PI / 180),
-        ((hour.wind_speed_850hPa ?? 0) / 3.6) * Math.cos((hour.windDir850 ?? 0) * Math.PI / 180) -
-        ((hour.wind_speed_1000hPa ?? 0) / 3.6) * Math.cos((hour.windDir1000 ?? 0) * Math.PI / 180)
-    );
+    const w850_low = windToUV((hour.wind_speed_850hPa ?? 0) / 3.6, hour.windDir850 ?? 0);
+    const w1000_low = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
+    const shear_low = Math.hypot(w850_low.u - w1000_low.u, w850_low.v - w1000_low.v);
     if (shear_low >= 15) score += 10;
     else if (shear_low >= 12) score += 7;
     else if (shear_low >= 9) score += 4;
     else if (shear_low >= 6) score += 2;
+
+    // 0-3km SRH – organisierte Rotation im unteren Bereich begünstigt schwere Winde
+    // Taszarek 2017: srh3km > 150 m²/s² = klares Signal für schwere konvektive Winde
+    if (srh3km >= 200) score += 8;
+    else if (srh3km >= 150) score += 6;
+    else if (srh3km >= 100) score += 4;
+    else if (srh3km >= 60)  score += 2;
 
     // CAPE – Updraft-Stärke für Downbursts (Gatzen 2020)
     // Schwere Winde können auch bei moderatem CAPE auftreten (warm-season vs cold-season Derechos)
