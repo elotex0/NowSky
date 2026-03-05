@@ -34,7 +34,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,cape,convective_inhibition,lifted_index,` +
                     `dew_point_850hPa,dew_point_700hPa,boundary_layer_height,direct_radiation,` +
-                    `freezing_level_height,precipitation&forecast_days=16&models=icon_d2,icon_eu,ecmwf_ifs025,ecmwf_ifs,gfs_global,arpege_europe,dmi_harmonie_arome_europe&timezone=auto`;
+                    `freezing_level_height,precipitation&forecast_days=16&&models=icon_d2,icon_eu,ecmwf_ifs025,dmi_harmonie_arome_europe&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -94,7 +94,6 @@ export default async function handler(req, res) {
                     // Manche Modelle liefern CIN als positive Zahl → muss negativ sein
                     const vorzeichenModelle = [
                         'convective_inhibition_dmi_harmonie_arome_europe',
-                        'convective_inhibition_ecmwf_ifs'
                     ];
                     for (const key of vorzeichenModelle) {
                         if (Array.isArray(data.hourly[key]) &&
@@ -106,7 +105,7 @@ export default async function handler(req, res) {
                     }
                     // Fehlerwerte entfernen: Werte unter -500 sind bei CIN physikalisch unmöglich
                     // AROME/andere Modelle nutzen -1000 als "kein Wert"-Kennzeichnung
-                    const cinModelle = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'ecmwf_ifs', 'gfs_global', 'dmi_harmonie_arome_europe'];
+                    const cinModelle = ['icon_d2', 'icon_eu', 'ecmwf_ifs025', 'dmi_harmonie_arome_europe'];
                     for (const modell of cinModelle) {
                         const key = `convective_inhibition_${modell}`;
                         if (Array.isArray(data.hourly[key]) &&
@@ -244,7 +243,7 @@ export default async function handler(req, res) {
             'boundary_layer_height', 'direct_radiation',
             'freezing_level_height'
         ];
-        const modellNamen = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'ecmwf_ifs', 'gfs_global', 'dmi_harmonie_arome_europe'];
+        const modellNamen = ['icon_d2', 'icon_eu', 'ecmwf_ifs025', 'dmi_harmonie_arome_europe'];
 
         for (const feld of alleFelder) {
             debugRohwerte[feld] = {};
@@ -297,7 +296,7 @@ export default async function handler(req, res) {
 
 // Gibt zurück wie viele Modelle einen Wert liefern (nicht null)
 function countModels(hourly, baseName, index) {
-    const models = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'ecmwf_ifs', 'gfs_global', 'dmi_harmonie_arome_europe'];
+    const models = ['icon_d2', 'icon_eu', 'ecmwf_ifs025', 'dmi_harmonie_arome_europe'];
     let count = 0;
     for (const model of models) {
         const key = `${baseName}_${model}`;
@@ -310,7 +309,7 @@ function countModels(hourly, baseName, index) {
 // Hilfsfunktionen
 // Multi-Modell-Wert aus icon_eu, ecmwf_ifs025, gfs_global bilden
 function getMultiModelValue(hourly, baseName, index, agg = 'mean') {
-    const models = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'ecmwf_ifs', 'gfs_global', 'dmi_harmonie_arome_europe'];
+    const models = ['icon_d2', 'icon_eu', 'ecmwf_ifs025', 'dmi_harmonie_arome_europe'];
     const values = [];
 
     for (const model of models) {
