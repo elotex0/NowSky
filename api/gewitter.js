@@ -93,7 +93,7 @@ export default async function handler(req, res) {
                 cin: (() => {
                     // AROME liefert CIN als positive Zahl (z.B. 50 statt -50)
                     // Wir korrigieren das VOR der Gewichtung direkt in den Rohdaten
-                    const aromeKey = 'convective_inhibition_harmonie_arome_europe';
+                    const aromeKey = 'convective_inhibition_dmi_harmonie_arome_europe';
                     if (Array.isArray(data.hourly[aromeKey]) && 
                         data.hourly[aromeKey][i] !== null && 
                         data.hourly[aromeKey][i] !== undefined &&
@@ -101,7 +101,7 @@ export default async function handler(req, res) {
                         // Vorzeichen umkehren: +50 → -50
                         data.hourly[aromeKey][i] = -data.hourly[aromeKey][i];
                     }
-                    return countModels(data.hourly, 'convective_inhibition', i) >= 1
+                    return countModels(data.hourly, 'convective_inhibition', i) >= 2
                         ? getMultiModelValue(data.hourly, 'convective_inhibition', i) : 0;
                 })(),
                 liftedIndex: countModels(data.hourly, 'lifted_index', i) >= 2
@@ -243,17 +243,36 @@ export default async function handler(req, res) {
             debugGewichtet[feld] = getMultiModelValue(data.hourly, feld, 0);
         }
 
+        // Debug: Rohwerte für die nächsten 5 Stunden ab jetzt
+        const debugStunden = [];
+        for (let s = 0; s < 5; s++) {
+            const stunde = hours[s];
+            if (!stunde) break;
+
+            const rohwerte = {};
+            for (const feld of alleFelder) {
+                rohwerte[feld] = {};
+                for (const modell of modellNamen) {
+                    const key = `${feld}_${modell}`;
+                    rohwerte[feld][modell] = data.hourly[key]?.[s] ?? null;
+                }
+            }
+
+            debugStunden.push({
+                timestamp: stunde.time,
+                rohwerte_pro_modell: rohwerte,
+                berechnete_parameter: stunde
+            });
+        }
+
         return res.status(200).json({
             timezone: timezone,
             region: region,
             stunden: stunden,
             tage: tage,
             debug: {
-                hinweis: "Alle Werte beziehen sich auf Index 0 (erste Stunde der Vorhersage)",
-                erste_stunde_timestamp: hours[0]?.time ?? null,
-                rohwerte_pro_modell: debugRohwerte,
-                endwert_nach_gewichtung: debugGewichtet,
-                berechnete_parameter_erste_stunde: hours[0] ?? null
+                hinweis: "Die nächsten 5 Stunden ab Vorhersagebeginn",
+                stunden: debugStunden
             }
         });
 
