@@ -32,7 +32,7 @@ export default async function handler(req, res) {
                     `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
-                    `relative_humidity_500hPa,cape,convective_inhibition,` +
+                    `relative_humidity_500hPa,cape,` +
                     `dew_point_850hPa,dew_point_700hPa,direct_radiation,` +
                     `freezing_level_height,precipitation&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
 
@@ -815,12 +815,12 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     else if (freezingLevel <= 3600) score += 2;
     else if (freezingLevel > 3800) score -= 7; // Sehr hoch = Hagel schmilzt stark
 
-    // LCL-Höhe – niedriges LCL begünstigt Hagel (ESTOFEX)
-    // Niedriges LCL = feuchte Umgebung = bessere Hagelproduktion
-    if (lclHeight < 600) score += 7;
-    else if (lclHeight < 1000) score += 5;
-    else if (lclHeight < 1500) score += 3;
-    else if (lclHeight >= 2500) score -= 5; // Zu hohes LCL = trocken
+    // Taszarek 2017, Púčik 2015: Höheres LCL = trockenere Umgebung = besseres Hagelwachstum
+    // Niedriges LCL begünstigt Tornados, NICHT Hagel
+    if (lclHeight >= 1500) score += 7;
+    else if (lclHeight >= 1000) score += 4;
+    else if (lclHeight >= 700) score += 1;
+    else if (lclHeight < 400) score -= 5; // Sehr niedriges LCL = feucht = weniger Hagel
 
     // Mid-Level Lapse Rate (700-500 hPa) – steile Lapse Rate = starke Aufwinde
     // Wichtig für Hagelwachstum in der mittleren Troposphäre
@@ -829,6 +829,16 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     else if (midLapse >= 7.5) score += 4;
     else if (midLapse >= 7.0) score += 2;
     else if (midLapse < 6.0) score -= 3; // Zu flach = schwache Aufwinde
+
+    // Taszarek 2017: Mixing Ratio (Feuchtigkeitsgehalt BL) wichtig für großen Hagel
+    // Approximation: höherer Taupunkt 2m = höheres Mischungsverhältnis
+    const dew2m_hail = hour.dew ?? 0;
+    const e_dew = 6.112 * Math.exp((17.67 * dew2m_hail) / (dew2m_hail + 243.5));
+    const mixRatio = 622 * e_dew / (1013.25 - e_dew); // g/kg
+    if (mixRatio >= 12 && cape >= 800) score += 7;
+    else if (mixRatio >= 10 && cape >= 600) score += 4;
+    else if (mixRatio >= 8 && cape >= 400) score += 2;
+    else if (mixRatio < 5 && cape < 800) score -= 4; // Zu trocken = weniger Hagel
 
     // DCAPE – Downburst-Komponente (sekundär für Hagel, aber relevant)
     // Hoher DCAPE kann Hagel nach unten transportieren
@@ -919,12 +929,25 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
 
     // Deep-Layer-Shear (0-6km) – MCS/Derecho-Organisation (Gatzen 2020)
     // Schwere Winde oft in linienhaften Systemen mit hohem Shear
-    if (shear >= 24) score += 15;
-    else if (shear >= 20) score += 12;
-    else if (shear >= 17) score += 9;
-    else if (shear >= 14) score += 6;
-    else if (shear >= 11) score += 3;
+    if (shear >= 24) score += 12;
+    else if (shear >= 20) score += 9;
+    else if (shear >= 17) score += 7;
+    else if (shear >= 14) score += 4;
+    else if (shear >= 11) score += 2;
     else if (shear >= 9) score += 1;
+
+    // Taszarek 2017: 0-3km Shear bester Diskriminator für extrem schwere Winde
+    const srh3km = calcSRH(hour, '0-3km');
+    const shear_low = Math.hypot(
+        ((hour.wind_speed_850hPa ?? 0) / 3.6) * Math.sin((hour.windDir850 ?? 0) * Math.PI / 180) -
+        ((hour.wind_speed_1000hPa ?? 0) / 3.6) * Math.sin((hour.windDir1000 ?? 0) * Math.PI / 180),
+        ((hour.wind_speed_850hPa ?? 0) / 3.6) * Math.cos((hour.windDir850 ?? 0) * Math.PI / 180) -
+        ((hour.wind_speed_1000hPa ?? 0) / 3.6) * Math.cos((hour.windDir1000 ?? 0) * Math.PI / 180)
+    );
+    if (shear_low >= 15) score += 10;
+    else if (shear_low >= 12) score += 7;
+    else if (shear_low >= 9) score += 4;
+    else if (shear_low >= 6) score += 2;
 
     // CAPE – Updraft-Stärke für Downbursts (Gatzen 2020)
     // Schwere Winde können auch bei moderatem CAPE auftreten (warm-season vs cold-season Derechos)
@@ -1160,6 +1183,12 @@ function calculateProbability(hour) {
     else if (cape >= 500) score += 12;
     else if (cape >= 300) score += 8;
     else if (cape >= 150) score += 4;
+
+    const elTemp = hour.temp500 ?? 0;
+    if (elTemp <= -20 && cape >= 200) score += 8;
+    else if (elTemp <= -15 && cape >= 150) score += 5;
+    else if (elTemp <= -10 && cape >= 100) score += 3;
+    else if (elTemp > -5 && cape < 500) score -= 5; // Zu warmes EL = flache Konvektion
     
     // Effective Layer Instability (ELI) - ESSL-Methodik
     if (eli >= 2000) score += 10;
@@ -1195,13 +1224,15 @@ function calculateProbability(hour) {
     else if (ehi >= 0.5) score += 5;
     else if (ehi >= 0.3) score += 3;
     
-    // WMAXSHEAR-Score (Taszarek 2020: bester globaler Prädiktor)
+    // Taszarek 2020: Europa-Schwellen für WMAXSHEAR
+    // > 600 = signifikant, > 1000 = sehr schwer, < 400 = kaum organisierte Konvektion
     if (wmaxshear >= 1500) score += 22;
     else if (wmaxshear >= 1200) score += 18;
     else if (wmaxshear >= 900) score += 14;
     else if (wmaxshear >= 700) score += 10;
-    else if (wmaxshear >= 500) score += 7;
-    else if (wmaxshear >= 300) score += 4;
+    else if (wmaxshear >= 500) score += 6;
+    else if (wmaxshear >= 400) score += 3;
+    else if (wmaxshear >= 300) score += 1; // Sehr schwach organisiert
     
     // Shear-Bewertung (Europa) - stärker gewichtet als CAPE
     // Púčik 2015: Deep-Layer-Shear entscheidend für schwere Gewitter in Europa
@@ -1430,6 +1461,15 @@ function calculateTornadoProbability(hour, shear, srh) {
     else if (ehi >= 1.5) score += 5;
     else if (ehi >= 1.0) score += 3;
     
+    // Taszarek 2017: LCL < 1000m = wichtiger Tornado-Prädiktor für Europa
+    // Median LCL bei europäischen Tornados liegt unter 1000m AGL
+    const lclTornado = calcLCLHeight(temp2m, dew);
+    if (lclTornado < 500) score += 8;
+    else if (lclTornado < 800) score += 5;
+    else if (lclTornado < 1000) score += 2;
+    else if (lclTornado >= 1500) score -= 8; // Hohes LCL = ungünstig für Tornados in Europa
+    else if (lclTornado >= 1200) score -= 4;
+
     if (magCin > 100) score -= 10;
     if (shear < 10) score -= 15;
     if (srh < 80) score -= 10;
