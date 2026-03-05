@@ -91,19 +91,111 @@ export default async function handler(req, res) {
                 // CIN kommt von der API als negativer Wert (Stabilisierung). Wir speichern ihn mit Vorzeichen.
                 // Nur übernehmen wenn mindestens 2 Modelle einen Wert liefern, sonst 0 (neutral)
                 cin: (() => {
-                    // Fehlerwerte entfernen: Werte unter -500 sind bei CIN physikalisch unmöglich
-                    // AROME/andere Modelle nutzen -1000 als "kein Wert"-Kennzeichnung
-                    const cinModelle = ['icon_eu', 'ecmwf_ifs025', 'gfs_global'];
-                    for (const modell of cinModelle) {
-                        const key = `convective_inhibition_${modell}`;
-                        if (Array.isArray(data.hourly[key]) &&
-                            data.hourly[key][i] !== null &&
-                            data.hourly[key][i] < -500) {
-                            // Als null markieren → wird von getMultiModelValue ignoriert
-                            data.hourly[key][i] = null;
+                    // CIN selbst berechnen nach Doswell & Rasmussen (1994)
+                    // ESSL-Standard: Surface-Based CIN aus 2m + 850 hPa Schicht
+                    // CIN = negative Fläche zwischen Parzellenaufstieg und Umgebungstemperatur
+                    // unterhalb des LFC (Level of Free Convection)
+                    const t2m = getMultiModelValue(data.hourly, 'temperature_2m', i);
+                    const d2m = getMultiModelValue(data.hourly, 'dew_point_2m', i);
+                    const t850 = getMultiModelValue(data.hourly, 'temperature_850hPa', i);
+                    const d850 = getMultiModelValue(data.hourly, 'dew_point_850hPa', i);
+                    const t700 = getMultiModelValue(data.hourly, 'temperature_700hPa', i);
+
+                    if (t2m === 0 && t850 === 0) return 0;
+
+                    // Schritt 1: LCL-Höhe und LCL-Temperatur (Bolton 1980)
+                    const dewDep2m = t2m - d2m;
+                    const T_LCL = t2m - 0.212 * dewDep2m - 0.001 * dewDep2m * dewDep2m;
+                    const z_LCL = 125 * dewDep2m; // m (Bolton-Näherung)
+
+                    // Schritt 2: θe der Bodenparzelle (Bolton 1980)
+                    const T2m_K = t2m + 273.15;
+                    const T_LCL_K = T_LCL + 273.15;
+                    const e_d2m = 6.112 * Math.exp((17.67 * d2m) / (d2m + 243.5));
+                    const w2m = 0.622 * e_d2m / (1013.25 - e_d2m);
+                    const w2m_gkg = w2m * 1000;
+                    const theta_e_surface = T2m_K
+                        * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m_gkg))
+                        * Math.exp((3.376 / T_LCL_K - 0.00254) * w2m_gkg * (1 + 0.00081 * w2m_gkg));
+
+                    // Schritt 3: Parzellentemperatur bei 850 hPa
+                    // Unterhalb LCL: trockenadiabatisch (DALR = 9.8 K/km)
+                    // Oberhalb LCL: feuchtadiabatisch (θe konstant)
+                    const z850 = 1500; // m
+                    const DALR = 9.8;  // K/km
+
+                    let T_parcel_850;
+                    if (z_LCL >= z850) {
+                        // LCL über 850 hPa → Parzelle noch trockenadiabatisch bei 850 hPa
+                        T_parcel_850 = t2m - DALR * (z850 / 1000);
+                    } else {
+                        // LCL unter 850 hPa → feuchtadiabatisch von LCL bis 850 hPa
+                        // Iterative θe-Lösung wie beim LI
+                        T_parcel_850 = T_LCL - 4; // Startwert
+                        for (let iter = 0; iter < 5; iter++) {
+                            const Tp_K = T_parcel_850 + 273.15;
+                            const es = 6.112 * Math.exp((17.67 * T_parcel_850) / (T_parcel_850 + 243.5));
+                            const ws = 0.622 * es / (850 - es);
+                            const ws_gkg = ws * 1000;
+                            const theta_e_test = Tp_K
+                                * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * ws_gkg))
+                                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
+                            T_parcel_850 += (theta_e_surface - theta_e_test) * 0.3;
                         }
                     }
-                    return getMultiModelValue(data.hourly, 'convective_inhibition', i);
+
+                    // Schritt 4: CIN berechnen
+                    // CIN = Integral der negativen Auftriebsfläche (Parzelle kälter als Umgebung)
+                    // Approximation über 2 Schichten: Boden→850 hPa und 850→700 hPa
+
+                    // Schicht 1: Boden (ca. 0m) → 850 hPa (ca. 1500m)
+                    // Mittlere Temperaturdifferenz: Parzelle vs. Umgebung
+                    // Am Boden ist Parzelle = Umgebung per Definition
+                    const dT_850 = T_parcel_850 - t850; // positiv = Auftrieb, negativ = Hemmung
+                    const meanDT_low = dT_850 / 2; // linear interpoliert vom Boden (0) bis 850 hPa
+
+                    // CIN-Beitrag Schicht 1 (nur wenn negativ = hemmend)
+                    const g = 9.81;
+                    const T_mean_low_K = ((t2m + t850) / 2) + 273.15;
+                    const cin_low = meanDT_low < 0
+                        ? (meanDT_low / T_mean_low_K) * g * z850
+                        : 0;
+
+                    // Schicht 2: 850 → 700 hPa (nur relevant wenn LFC noch nicht erreicht)
+                    let cin_mid = 0;
+                    if (dT_850 < 0) {
+                        // Parzelle noch gehemmt bei 850 hPa → weiter bis 700 hPa prüfen
+                        let T_parcel_700 = T_parcel_850;
+                        for (let iter = 0; iter < 5; iter++) {
+                            const Tp_K = T_parcel_700 + 273.15;
+                            const es = 6.112 * Math.exp((17.67 * T_parcel_700) / (T_parcel_700 + 243.5));
+                            const ws = 0.622 * es / (700 - es);
+                            const ws_gkg = ws * 1000;
+                            const theta_e_test = Tp_K
+                                * Math.pow(1000 / 700, 0.2854 * (1 - 0.00028 * ws_gkg))
+                                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
+                            T_parcel_700 += (theta_e_surface - theta_e_test) * 0.3;
+                        }
+                        const dT_700 = T_parcel_700 - t700;
+                        // Nur den negativen Anteil der Schicht 850→700 hPa einbeziehen
+                        if (dT_700 < 0) {
+                            const meanDT_mid = (dT_850 + dT_700) / 2;
+                            const T_mean_mid_K = ((t850 + t700) / 2) + 273.15;
+                            cin_mid = (meanDT_mid / T_mean_mid_K) * g * 1500; // dz = 1500m
+                        } else {
+                            // LFC liegt zwischen 850 und 700 hPa → nur halbe Schicht
+                            const fraction = dT_850 / (dT_850 - dT_700);
+                            const dz_neg = fraction * 1500;
+                            const meanDT_mid = dT_850 / 2;
+                            const T_mean_mid_K = t850 + 273.15;
+                            cin_mid = (meanDT_mid / T_mean_mid_K) * g * dz_neg;
+                        }
+                    }
+
+                    // Gesamt-CIN (negativ = hemmend, 0 = kein Deckel)
+                    const cin_total = cin_low + cin_mid;
+                    // Physikalisch sinnvoller Bereich: 0 bis -500 J/kg
+                    return Math.round(Math.max(-500, Math.min(0, cin_total)));
                 })(),
                 liftedIndex: (() => {
                     // Lifted Index selbst berechnen nach Doswell & Rasmussen (1994)
