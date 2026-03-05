@@ -243,18 +243,22 @@ export default async function handler(req, res) {
             debugGewichtet[feld] = getMultiModelValue(data.hourly, feld, 0);
         }
 
-        // Debug: Rohwerte für die nächsten 5 Stunden ab jetzt
+        // Debug: Rohwerte für die nächsten 5 Stunden ab JETZT
         const debugStunden = [];
-        for (let s = 0; s < 5; s++) {
-            const stunde = hours[s];
+        const jetztStunden = nextHours.slice(0, 5); // nextHours ist bereits ab aktueller Uhrzeit gefiltert
+        for (let s = 0; s < jetztStunden.length; s++) {
+            const stunde = hours.find(h => h.time === jetztStunden[s].timestamp);
             if (!stunde) break;
+
+            // Index in den originalen hours-Array finden (für Rohwerte)
+            const originalIndex = data.hourly.time.indexOf(stunde.time);
 
             const rohwerte = {};
             for (const feld of alleFelder) {
                 rohwerte[feld] = {};
                 for (const modell of modellNamen) {
                     const key = `${feld}_${modell}`;
-                    rohwerte[feld][modell] = data.hourly[key]?.[s] ?? null;
+                    rohwerte[feld][modell] = data.hourly[key]?.[originalIndex] ?? null;
                 }
             }
 
@@ -264,17 +268,6 @@ export default async function handler(req, res) {
                 berechnete_parameter: stunde
             });
         }
-
-        return res.status(200).json({
-            timezone: timezone,
-            region: region,
-            stunden: stunden,
-            tage: tage,
-            debug: {
-                hinweis: "Die nächsten 5 Stunden ab Vorhersagebeginn",
-                stunden: debugStunden
-            }
-        });
 
     } catch (error) {
         console.error('Fehler:', error);
