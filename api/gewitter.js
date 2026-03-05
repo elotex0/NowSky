@@ -1,29 +1,17 @@
 export default async function handler(req, res) {
-    // CORS Headers setzen
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-
-    if (req.method !== 'GET') {
-        return res.status(405).json({ error: 'Method not allowed' });
-    }
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
     const { lat, lon } = req.query;
-
-    if (!lat || !lon) {
-        return res.status(400).json({ error: 'lat und lon Parameter sind erforderlich' });
-    }
+    if (!lat || !lon) return res.status(400).json({ error: 'lat und lon Parameter sind erforderlich' });
 
     const latitude = parseFloat(lat);
     const longitude = parseFloat(lon);
-
-    if (isNaN(latitude) || isNaN(longitude)) {
-        return res.status(400).json({ error: 'Ungültige Koordinaten' });
-    }
+    if (isNaN(latitude) || isNaN(longitude)) return res.status(400).json({ error: 'Ungültige Koordinaten' });
 
     try {
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
@@ -39,287 +27,26 @@ export default async function handler(req, res) {
         const response = await fetch(url);
         const data = await response.json();
 
-        if (data.error) {
-            return res.status(500).json({ error: 'API-Fehler: ' + (data.reason || data.error.message || 'Unbekannt') });
-        }
-
-        if (!data?.hourly?.time?.length) {
-            return res.status(500).json({ error: 'Keine Daten verfügbar' });
-        }
+        if (data.error) return res.status(500).json({ error: 'API-Fehler: ' + (data.reason || data.error.message || 'Unbekannt') });
+        if (!data?.hourly?.time?.length) return res.status(500).json({ error: 'Keine Daten verfügbar' });
 
         const timezone = data.timezone || 'UTC';
-
-        // Nur Europa zulassen
         const region = getRegion(latitude, longitude);
         if (region !== 'europe') {
-            return res.status(400).json({
-                error: 'Vorhersage nur für Europa verfügbar',
-                region: region,
-                onlyEurope: true
-            });
+            return res.status(400).json({ error: 'Vorhersage nur für Europa verfügbar', region, onlyEurope: true });
         }
 
-        // Stunden-Daten verarbeiten
-        const hours = data.hourly.time.map((t, i) => {
-            return {
-                time: t,
-                temperature: getMultiModelValue(data.hourly, 'temperature_2m', i),
-                dew: getMultiModelValue(data.hourly, 'dew_point_2m', i),
-                cloudLow: getMultiModelValue(data.hourly, 'cloud_cover_low', i),
-                cloudMid: getMultiModelValue(data.hourly, 'cloud_cover_mid', i),
-                cloudHigh: getMultiModelValue(data.hourly, 'cloud_cover_high', i),
-                precip: getMultiModelValue(data.hourly, 'precipitation_probability', i),
-                wind: getMultiModelValue(data.hourly, 'wind_speed_10m', i),
-                gust: getMultiModelValue(data.hourly, 'wind_gusts_10m', i),
-                windDir1000: getMultiModelValue(data.hourly, 'wind_direction_1000hPa', i),
-                windDir850: getMultiModelValue(data.hourly, 'wind_direction_850hPa', i),
-                windDir700: getMultiModelValue(data.hourly, 'wind_direction_700hPa', i),
-                windDir500: getMultiModelValue(data.hourly, 'wind_direction_500hPa', i),
-                windDir300: getMultiModelValue(data.hourly, 'wind_direction_300hPa', i),
-                wind_speed_1000hPa: getMultiModelValue(data.hourly, 'wind_speed_1000hPa', i),
-                wind_speed_850hPa: getMultiModelValue(data.hourly, 'wind_speed_850hPa', i),
-                wind_speed_700hPa: getMultiModelValue(data.hourly, 'wind_speed_700hPa', i),
-                wind_speed_500hPa: getMultiModelValue(data.hourly, 'wind_speed_500hPa', i),
-                wind_speed_300hPa: getMultiModelValue(data.hourly, 'wind_speed_300hPa', i),
-                temp500: getMultiModelValue(data.hourly, 'temperature_500hPa', i),
-                temp850: getMultiModelValue(data.hourly, 'temperature_850hPa', i),
-                temp700: getMultiModelValue(data.hourly, 'temperature_700hPa', i),
-                dew850: getMultiModelValue(data.hourly, 'dew_point_850hPa', i),
-                dew700: getMultiModelValue(data.hourly, 'dew_point_700hPa', i),
-                rh500: getMultiModelValue(data.hourly, 'relative_humidity_500hPa', i),
-                cape: getMultiModelValue(data.hourly, 'cape', i),
-                // CIN kommt von der API als negativer Wert (Stabilisierung). Wir speichern ihn mit Vorzeichen.
-                // Nur übernehmen wenn mindestens 2 Modelle einen Wert liefern, sonst 0 (neutral)
-                cin: (() => {
-                    // CIN selbst berechnen nach Doswell & Rasmussen (1994)
-                    // ESSL-Standard: Surface-Based CIN aus 2m + 850 hPa Schicht
-                    // CIN = negative Fläche zwischen Parzellenaufstieg und Umgebungstemperatur
-                    // unterhalb des LFC (Level of Free Convection)
-                    const t2m = getMultiModelValue(data.hourly, 'temperature_2m', i);
-                    const d2m = getMultiModelValue(data.hourly, 'dew_point_2m', i);
-                    const t850 = getMultiModelValue(data.hourly, 'temperature_850hPa', i);
-                    const d850 = getMultiModelValue(data.hourly, 'dew_point_850hPa', i);
-                    const t700 = getMultiModelValue(data.hourly, 'temperature_700hPa', i);
+        // ═══════════════════════════════════════════════════════════════════
+        // KERN-ÄNDERUNG (ESSL AR-CHaMo Methodik):
+        // Nicht Rohdaten mitteln → dann einmal Wahrscheinlichkeit berechnen.
+        // Sondern: Pro Modell vollständige Stunden-Daten extrahieren,
+        // dann pro Modell Wahrscheinlichkeit berechnen, dann Mittelwert der Wahrscheinlichkeiten.
+        // Das erhält die physikalische Kohärenz jedes Modells (CAPE, Shear, Temp sind
+        // intern konsistent pro Modell), statt sie durch Mittelung zu zerstören.
+        // Quelle: Rädler et al. 2018 (AR-CHaMo), ESSL Technical Note 2023
+        // ═══════════════════════════════════════════════════════════════════
 
-                    if (t2m === 0 && t850 === 0) return 0;
-
-                    // Schritt 1: LCL-Höhe und LCL-Temperatur (Bolton 1980)
-                    const dewDep2m = t2m - d2m;
-                    const T_LCL = t2m - 0.212 * dewDep2m - 0.001 * dewDep2m * dewDep2m;
-                    const z_LCL = 125 * dewDep2m; // m (Bolton-Näherung)
-
-                    // Schritt 2: θe der Bodenparzelle (Bolton 1980)
-                    const T2m_K = t2m + 273.15;
-                    const T_LCL_K = T_LCL + 273.15;
-                    const e_d2m = 6.112 * Math.exp((17.67 * d2m) / (d2m + 243.5));
-                    const w2m = 0.622 * e_d2m / (1013.25 - e_d2m);
-                    const w2m_gkg = w2m * 1000;
-                    const theta_e_surface = T2m_K
-                        * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m_gkg))
-                        * Math.exp((3.376 / T_LCL_K - 0.00254) * w2m_gkg * (1 + 0.00081 * w2m_gkg));
-
-                    // Schritt 3: Parzellentemperatur bei 850 hPa
-                    // Unterhalb LCL: trockenadiabatisch (DALR = 9.8 K/km)
-                    // Oberhalb LCL: feuchtadiabatisch (θe konstant)
-                    const z850 = 1500; // m
-                    const DALR = 9.8;  // K/km
-
-                    let T_parcel_850;
-                    if (z_LCL >= z850) {
-                        // LCL über 850 hPa → Parzelle noch trockenadiabatisch bei 850 hPa
-                        T_parcel_850 = t2m - DALR * (z850 / 1000);
-                    } else {
-                        // LCL unter 850 hPa → feuchtadiabatisch von LCL bis 850 hPa
-                        // Iterative θe-Lösung wie beim LI
-                        T_parcel_850 = T_LCL - 4; // Startwert
-                        for (let iter = 0; iter < 5; iter++) {
-                            const Tp_K = T_parcel_850 + 273.15;
-                            const es = 6.112 * Math.exp((17.67 * T_parcel_850) / (T_parcel_850 + 243.5));
-                            const ws = 0.622 * es / (850 - es);
-                            const ws_gkg = ws * 1000;
-                            const theta_e_test = Tp_K
-                                * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * ws_gkg))
-                                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
-                            T_parcel_850 += (theta_e_surface - theta_e_test) * 0.3;
-                        }
-                    }
-
-                    // Schritt 4: CIN berechnen
-                    // CIN = Integral der negativen Auftriebsfläche (Parzelle kälter als Umgebung)
-                    // Approximation über 2 Schichten: Boden→850 hPa und 850→700 hPa
-
-                    // Schicht 1: Boden (ca. 0m) → 850 hPa (ca. 1500m)
-                    // Mittlere Temperaturdifferenz: Parzelle vs. Umgebung
-                    // Am Boden ist Parzelle = Umgebung per Definition
-                    const dT_850 = T_parcel_850 - t850; // positiv = Auftrieb, negativ = Hemmung
-                    const meanDT_low = dT_850 / 2; // linear interpoliert vom Boden (0) bis 850 hPa
-
-                    // CIN-Beitrag Schicht 1 (nur wenn negativ = hemmend)
-                    const g = 9.81;
-                    const T_mean_low_K = ((t2m + t850) / 2) + 273.15;
-                    const cin_low = meanDT_low < 0
-                        ? (meanDT_low / T_mean_low_K) * g * z850
-                        : 0;
-
-                    // Schicht 2: 850 → 700 hPa (nur relevant wenn LFC noch nicht erreicht)
-                    let cin_mid = 0;
-                    if (dT_850 < 0) {
-                        // Parzelle noch gehemmt bei 850 hPa → weiter bis 700 hPa prüfen
-                        let T_parcel_700 = T_parcel_850;
-                        for (let iter = 0; iter < 5; iter++) {
-                            const Tp_K = T_parcel_700 + 273.15;
-                            const es = 6.112 * Math.exp((17.67 * T_parcel_700) / (T_parcel_700 + 243.5));
-                            const ws = 0.622 * es / (700 - es);
-                            const ws_gkg = ws * 1000;
-                            const theta_e_test = Tp_K
-                                * Math.pow(1000 / 700, 0.2854 * (1 - 0.00028 * ws_gkg))
-                                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
-                            T_parcel_700 += (theta_e_surface - theta_e_test) * 0.3;
-                        }
-                        const dT_700 = T_parcel_700 - t700;
-                        // Nur den negativen Anteil der Schicht 850→700 hPa einbeziehen
-                        if (dT_700 < 0) {
-                            const meanDT_mid = (dT_850 + dT_700) / 2;
-                            const T_mean_mid_K = ((t850 + t700) / 2) + 273.15;
-                            cin_mid = (meanDT_mid / T_mean_mid_K) * g * 1500; // dz = 1500m
-                        } else {
-                            // LFC liegt zwischen 850 und 700 hPa → nur halbe Schicht
-                            const fraction = dT_850 / (dT_850 - dT_700);
-                            const dz_neg = fraction * 1500;
-                            const meanDT_mid = dT_850 / 2;
-                            const T_mean_mid_K = t850 + 273.15;
-                            cin_mid = (meanDT_mid / T_mean_mid_K) * g * dz_neg;
-                        }
-                    }
-
-                    // Gesamt-CIN (negativ = hemmend, 0 = kein Deckel)
-                    const cin_total = cin_low + cin_mid;
-                    // Physikalisch sinnvoller Bereich: 0 bis -500 J/kg
-                    return Math.round(Math.max(-500, Math.min(0, cin_total)));
-                })(),
-                liftedIndex: (() => {
-                    // Lifted Index selbst berechnen nach Doswell & Rasmussen (1994)
-                    // Europäisch kalibriert nach Taszarek et al. 2020 (J. Climate)
-                    // LI = T500_env - T500_parcel
-                    // Parcel: trockenadiabatisch von 850→500 hPa, dann feuchtadiabatisch
-                    const t850 = getMultiModelValue(data.hourly, 'temperature_850hPa', i);
-                    const d850 = getMultiModelValue(data.hourly, 'dew_point_850hPa', i);
-                    const t500 = getMultiModelValue(data.hourly, 'temperature_500hPa', i);
-
-                    if (t850 === 0 && t500 === 0) return 0;
-
-                    // Schritt 1: Feuchtkugeltemperatur 850 hPa (Bolton 1980)
-                    // Td850 → Taupunktspreizung → LCL-Temperatur
-                    const dewDep = t850 - d850;
-                    const T_LCL = t850 - 0.212 * dewDep - 0.001 * dewDep * dewDep;
-
-                    // Schritt 2: Äquivalentpotentielle Temperatur θe nach Bolton (1980)
-                    // Standardformel für Europa (Taszarek 2020 verwendet diesen Ansatz)
-                    const T_K = t850 + 273.15;
-                    const T_LCL_K = T_LCL + 273.15;
-                    // Mischungsverhältnis bei Taupunkt 850 hPa (g/kg)
-                    const e_d = 6.112 * Math.exp((17.67 * d850) / (d850 + 243.5));
-                    const w = 0.622 * e_d / (1013.25 - e_d); // kg/kg
-                    const w_gkg = w * 1000; // g/kg
-                    // Bolton (1980) Formel für θe
-                    const theta_e = T_K * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * w_gkg))
-                                  * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
-
-                    // Schritt 3: Parcel-Temperatur bei 500 hPa rückrechnen
-                    // Feuchtadiabatische Abstiegskurve: θe bleibt konstant
-                    // Iterative Lösung (3 Iterationen reichen für ±0.2°C Genauigkeit)
-                    let T_parcel_500 = t500 + 4; // Startwert: etwas wärmer als Umgebung
-                    for (let iter = 0; iter < 5; iter++) {
-                        const T_K2 = T_parcel_500 + 273.15;
-                        const es = 6.112 * Math.exp((17.67 * T_parcel_500) / (T_parcel_500 + 243.5));
-                        const ws = 0.622 * es / (500 - es);
-                        const ws_gkg = ws * 1000;
-                        const theta_e_test = T_K2 * Math.pow(1000 / 500, 0.2854 * (1 - 0.00028 * ws_gkg))
-                                           * Math.exp((3.376 / T_K2 - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
-                        // Newton-Raphson Korrektur
-                        T_parcel_500 += (theta_e - theta_e_test) * 0.3;
-                    }
-
-                    // LI = Umgebungstemperatur - Parzellentemperatur bei 500 hPa
-                    // Negativ = instabil, positiv = stabil (meteorologische Konvention)
-                    const li = t500 - T_parcel_500;
-                    return Math.round(li * 10) / 10;
-                })(),
-                pblHeight: (() => {
-                    // PBL-Höhe nach Holzworth (1964/1967), adaptiert für Europa
-                    // Methode: Trockenadiabatischer Aufstieg vom Boden bis Temperaturgleichgewicht
-                    // Quelle: Seidel et al. 2010 (J. Geophys. Res.), ESSL-Klimatologie
-                    const t2m = getMultiModelValue(data.hourly, 'temperature_2m', i);
-                    const t850 = getMultiModelValue(data.hourly, 'temperature_850hPa', i);
-                    const t700 = getMultiModelValue(data.hourly, 'temperature_700hPa', i);
-                    const radiation = getMultiModelValue(data.hourly, 'direct_radiation', i);
-
-                    // Näherungsweise Höhe der Druckflächen über Grund (Standardatmosphäre)
-                    // 850 hPa ≈ 1500 m, 700 hPa ≈ 3000 m
-                    const z850 = 1500;
-                    const z700 = 3000;
-
-                    // Trockenadiabatischer Temperaturgradient: 9.8 K/km
-                    const DALR = 9.8; // K/km
-
-                    // Parzellentemperatur auf 850 hPa: T2m - DALR * 1.5 km
-                    const T_parcel_850 = t2m - DALR * (z850 / 1000);
-                    // Parzellentemperatur auf 700 hPa: T2m - DALR * 3.0 km
-                    const T_parcel_700 = t2m - DALR * (z700 / 1000);
-
-                    // Lineare Interpolation: Wo ist T_parcel = T_environment?
-                    // Zwischen Boden und 850 hPa
-                    let pblHeight = 200; // Mindestwert (stabile Nacht)
-
-                    if (T_parcel_850 >= t850) {
-                        // Mischungsschicht reicht mindestens bis 850 hPa
-                        if (T_parcel_700 >= t700) {
-                            // Sehr tiefe Lapse Rate → PBL reicht bis 700 hPa oder höher
-                            // Extrapolation begrenzt auf 4000 m
-                            const lapse_env = (t850 - t700) / (z700 - z850) * 1000; // K/km
-                            if (lapse_env >= DALR) {
-                                pblHeight = 3500; // Superadiabatisch → sehr tiefe PBL
-                            } else {
-                                // Interpolation über 700 hPa hinaus
-                                const dT = T_parcel_700 - t700;
-                                const extraZ = dT / (DALR - lapse_env) * 1000;
-                                pblHeight = Math.min(4000, z700 + extraZ);
-                            }
-                        } else {
-                            // PBL liegt zwischen 850 und 700 hPa → interpolieren
-                            const dT_850 = T_parcel_850 - t850; // positiv = instabil
-                            const dT_700 = T_parcel_700 - t700; // negativ = stabil
-                            const fraction = dT_850 / (dT_850 - dT_700);
-                            pblHeight = z850 + fraction * (z700 - z850);
-                        }
-                    } else {
-                        // PBL unter 850 hPa → interpolieren zwischen Boden und 850 hPa
-                        // T_parcel am Boden = t2m, T_env am Boden ≈ t2m (per Definition)
-                        // Gradient bestimmt wie schnell Parzel kühler wird als Umgebung
-                        const lapse_env_low = (t2m - t850) / z850 * 1000; // K/km
-                        if (lapse_env_low <= 0) {
-                            pblHeight = 200; // Inversion → sehr stabile PBL
-                        } else {
-                            // Höhe wo Parzel = Umgebung
-                            // DALR > lapse_env → Parzel wird irgendwann kälter
-                            const z_mix = (t2m - t850) / (DALR - lapse_env_low) * 1000;
-                            pblHeight = Math.max(200, Math.min(z_mix, z850));
-                        }
-                    }
-
-                    // Strahlungskorrektur (tagsüber: mehr Einstrahlung = tiefere PBL)
-                    // Oke (1987): Solare Einstrahlung treibt konvektive PBL
-                    if (radiation > 600) pblHeight *= 1.2;
-                    else if (radiation > 300) pblHeight *= 1.1;
-                    else if (radiation < 20) pblHeight *= 0.7; // Nacht: stabile PBL
-
-                    return Math.round(Math.max(100, Math.min(4000, pblHeight)));
-                })(),
-                directRadiation: getMultiModelValue(data.hourly, 'direct_radiation', i),
-                precipAcc: getMultiModelValue(data.hourly, 'precipitation', i,),
-                freezingLevel: getMultiModelValue(data.hourly, 'freezing_level_height', i),
-            };
-        });
+        const MODELS = ['icon_eu', 'ecmwf_ifs025', 'gfs_global'];
 
         // Aktuelle Zeit berechnen
         const now = new Date();
@@ -327,160 +54,279 @@ export default async function handler(req, res) {
             year: 'numeric', month: '2-digit', day: '2-digit',
             hour: '2-digit', minute: '2-digit', hour12: false, timeZone: timezone
         });
-        const [datePart, timePart] = currentTimeStr.split(', ');
-        const [month, day, year] = datePart.split('/');
-        const [currentHour] = timePart.split(':').map(Number);
-        const currentDateStr = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+        const [datePart_now, timePart_now] = currentTimeStr.split(', ');
+        const [month_now, day_now, year_now] = datePart_now.split('/');
+        const [currentHour] = timePart_now.split(':').map(Number);
+        const currentDateStr = `${year_now}-${month_now.padStart(2,'0')}-${day_now.padStart(2,'0')}`;
+
+        // ── Schritt 1: Pro Modell alle Stunden extrahieren ──────────────────
+        // extractModelHour() gibt ein hour-Objekt zurück, das ausschließlich
+        // Werte des jeweiligen Modells enthält (keine Modell-übergreifende Mittelung).
+        // Für Display-Felder (Temperatur, Wind etc.) wird danach ein Ensemble-Mittel
+        // aus allen verfügbaren Modell-Stunden gebildet (s. Schritt 3).
+        function extractModelHour(hourly, i, model) {
+            function get(field) {
+                const key = `${field}_${model}`;
+                const arr = hourly[key];
+                if (Array.isArray(arr) && arr[i] !== undefined && arr[i] !== null) return arr[i];
+                return null; // null = Modell hat dieses Feld nicht geliefert
+            }
+
+            const t2m  = get('temperature_2m');
+            const d2m  = get('dew_point_2m');
+            const t850 = get('temperature_850hPa');
+            const d850 = get('dew_point_850hPa');
+            const t700 = get('temperature_700hPa');
+            const d700 = get('dew_point_700hPa');
+            const t500 = get('temperature_500hPa');
+
+            // Wenn Kernfelder fehlen → Modell überspringen
+            if (t2m === null || t850 === null || t500 === null) return null;
+
+            const hour = {
+                time:              hourly.time[i],
+                temperature:       t2m,
+                dew:               d2m ?? t2m - 10,
+                cloudLow:          get('cloud_cover_low') ?? 0,
+                cloudMid:          get('cloud_cover_mid') ?? 0,
+                cloudHigh:         get('cloud_cover_high') ?? 0,
+                precip:            get('precipitation_probability') ?? 0,
+                wind:              get('wind_speed_10m') ?? 0,
+                gust:              get('wind_gusts_10m') ?? 0,
+                windDir1000:       get('wind_direction_1000hPa') ?? 0,
+                windDir850:        get('wind_direction_850hPa') ?? 0,
+                windDir700:        get('wind_direction_700hPa') ?? 0,
+                windDir500:        get('wind_direction_500hPa') ?? 0,
+                windDir300:        get('wind_direction_300hPa') ?? 0,
+                wind_speed_1000hPa: get('wind_speed_1000hPa') ?? 0,
+                wind_speed_850hPa: get('wind_speed_850hPa') ?? 0,
+                wind_speed_700hPa: get('wind_speed_700hPa') ?? 0,
+                wind_speed_500hPa: get('wind_speed_500hPa') ?? 0,
+                wind_speed_300hPa: get('wind_speed_300hPa') ?? 0,
+                temp500:           t500,
+                temp850:           t850,
+                temp700:           t700 ?? (t850 + t500) / 2,
+                dew850:            d850 ?? (d2m ?? t2m - 10),
+                dew700:            d700 ?? (d2m ?? t2m - 10),
+                rh500:             get('relative_humidity_500hPa') ?? 50,
+                cape:              Math.max(0, get('cape') ?? 0),
+                directRadiation:   get('direct_radiation') ?? 0,
+                precipAcc:         get('precipitation') ?? 0,
+                freezingLevel:     get('freezing_level_height') ?? 3000,
+            };
+
+            // Abgeleitete Felder pro Modell berechnen
+            hour.cin          = calcCIN(hour);
+            hour.liftedIndex  = calcLiftedIndex(hour);
+            hour.pblHeight    = calcPBLHeight(hour);
+
+            return hour;
+        }
+
+        // ── Schritt 2: Für jeden Zeitschritt Wahrscheinlichkeiten pro Modell berechnen ──
+        // Gewichtung nach Leadtime (ECMWF besser ab Tag 3, ICON besser kurzfristig)
+        // Quelle: Haiden et al. 2018 (ECMWF Technical Memorandum), DWD NWP-Verification
+        function getModelWeight(model, leadtimeHours) {
+            if (leadtimeHours <= 48) {
+                // Kurzfrist: ICON-EU hat höchste Auflösung über Europa
+                return { icon_eu: 0.45, ecmwf_ifs025: 0.35, gfs_global: 0.20 }[model] ?? 0.33;
+            } else if (leadtimeHours <= 120) {
+                // Mittelfrist: ECMWF gleich stark
+                return { icon_eu: 0.33, ecmwf_ifs025: 0.42, gfs_global: 0.25 }[model] ?? 0.33;
+            } else {
+                // Langfrist (>5 Tage): ECMWF klar führend
+                return { icon_eu: 0.20, ecmwf_ifs025: 0.55, gfs_global: 0.25 }[model] ?? 0.33;
+            }
+        }
+
+        // Berechnet gewichtetes Ensemble-Mittel aus Modell-Wahrscheinlichkeiten
+        function ensembleProb(probsByModel, leadtimeHours) {
+            let weightedSum = 0;
+            let totalWeight = 0;
+            for (const [model, prob] of Object.entries(probsByModel)) {
+                if (prob === null) continue;
+                const w = getModelWeight(model, leadtimeHours);
+                weightedSum += prob * w;
+                totalWeight += w;
+            }
+            if (totalWeight === 0) return 0;
+            return Math.round(weightedSum / totalWeight);
+        }
+
+        // Einfacher Ensemble-Mittelwert für Display-Felder (Temperatur, Wind etc.)
+        // Hier ist einfaches Mitteln korrekt, weil es nur um Anzeige geht, nicht Physik
+        function ensembleMean(values) {
+            const valid = values.filter(v => v !== null && !isNaN(v));
+            if (!valid.length) return 0;
+            return valid.reduce((s, v) => s + v, 0) / valid.length;
+        }
+
+        // ── Schritt 3: Stunden verarbeiten ──────────────────────────────────
+        const hours = data.hourly.time.map((t, i) => {
+            // Leadtime in Stunden (für Modellgewichtung)
+            const forecastTime = new Date(t);
+            const leadtimeHours = Math.round((forecastTime - now) / 3600000);
+
+            // Pro Modell Stunden-Objekt extrahieren
+            const modelHours = {};
+            for (const model of MODELS) {
+                modelHours[model] = extractModelHour(data.hourly, i, model);
+            }
+
+            // Pro Modell alle 4 Wahrscheinlichkeiten berechnen
+            const gewitter_by_model = {};
+            const tornado_by_model  = {};
+            const hagel_by_model    = {};
+            const wind_by_model     = {};
+
+            for (const model of MODELS) {
+                const mh = modelHours[model];
+                if (!mh) {
+                    gewitter_by_model[model] = null;
+                    tornado_by_model[model]  = null;
+                    hagel_by_model[model]    = null;
+                    wind_by_model[model]     = null;
+                    continue;
+                }
+                const shear     = calcShear(mh);
+                const srh       = calcSRH(mh, '0-3km');
+                const dcape     = calcDCAPE(mh);
+                const wmaxshear = calcWMAXSHEAR(mh.cape, shear);
+
+                gewitter_by_model[model] = calculateProbability(mh);
+                tornado_by_model[model]  = calculateTornadoProbability(mh, shear, srh);
+                hagel_by_model[model]    = calculateHailProbability(mh, wmaxshear, dcape);
+                wind_by_model[model]     = calculateWindProbability(mh, wmaxshear, dcape);
+            }
+
+            // Ensemble-Mittel der Wahrscheinlichkeiten (ESSL-Methodik)
+            const probability        = ensembleProb(gewitter_by_model, leadtimeHours);
+            const tornadoProbability = ensembleProb(tornado_by_model,  leadtimeHours);
+            const hailProbability    = ensembleProb(hagel_by_model,    leadtimeHours);
+            const windProbability    = ensembleProb(wind_by_model,     leadtimeHours);
+
+            // Display-Felder: einfaches Ensemble-Mittel der Rohwerte (nur für Anzeige)
+            const validModelHours = Object.values(modelHours).filter(Boolean);
+            const displayTemperature = ensembleMean(validModelHours.map(mh => mh.temperature));
+            const displayCape        = ensembleMean(validModelHours.map(mh => mh.cape));
+            const displayShear       = ensembleMean(validModelHours.map(mh => calcShear(mh)));
+            const displaySRH         = ensembleMean(validModelHours.map(mh => calcSRH(mh, '0-3km')));
+            const displayDCAPE       = ensembleMean(validModelHours.map(mh => calcDCAPE(mh)));
+            const displayWMAXSHEAR   = ensembleMean(validModelHours.map(mh => calcWMAXSHEAR(mh.cape, calcShear(mh))));
+
+            return {
+                time: t,
+                probability,
+                tornadoProbability,
+                hailProbability,
+                windProbability,
+                temperature: Math.round(displayTemperature * 10) / 10,
+                cape:        Math.round(displayCape),
+                shear:       Math.round(displayShear * 10) / 10,
+                srh:         Math.round(displaySRH * 10) / 10,
+                dcape:       Math.round(displayDCAPE),
+                wmaxshear:   Math.round(displayWMAXSHEAR),
+            };
+        });
 
         // Nächste 24 Stunden filtern
         const nextHours = hours
             .filter(h => {
-                const [datePart, timePart] = h.time.split('T');
-                const [hour] = timePart.split(':').map(Number);
-                return datePart > currentDateStr || (datePart === currentDateStr && hour >= currentHour);
+                const [dp, tp] = h.time.split('T');
+                const [hr] = tp.split(':').map(Number);
+                return dp > currentDateStr || (dp === currentDateStr && hr >= currentHour);
             })
-            .slice(0, 24)
-            .map(hour => {
-                const shear = calcShear(hour);
-                const srh = calcSRH(hour);
-                const dcape = calcDCAPE(hour);
-                const wmaxshear = calcWMAXSHEAR(hour.cape, shear);
-                const hailProb = calculateHailProbability(hour, wmaxshear, dcape);
-                const windProb = calculateWindProbability(hour, wmaxshear, dcape);
-                return {
-                    timestamp: hour.time,
-                    probability: calculateProbability(hour),
-                    tornadoProbability: calculateTornadoProbability(hour, shear, srh),
-                    temperature: hour.temperature,
-                    cape: hour.cape,
-                    shear: shear,
-                    srh: srh,
-                    dcape: dcape,
-                    wmaxshear: wmaxshear,
-                    hailProbability: hailProb,
-                    windProbability: windProb,
-                };
-            });
+            .slice(0, 24);
 
-        // Tage gruppieren (maximale Gewitter- und Tornado-Werte pro Tag)
+        // Tage gruppieren
         const daysMap = new Map();
         hours.forEach(h => {
-            const [datePart] = h.time.split('T');
-            if (datePart >= currentDateStr) {
-                const probability = calculateProbability(h);
-                const shear = calcShear(h);
-                const srh = calcSRH(h);
-                const dcape = calcDCAPE(h);
-                const wmaxshear = calcWMAXSHEAR(h.cape, shear);
-                const tornadoProb = calculateTornadoProbability(h, shear, srh);
-                const hailProb = calculateHailProbability(h, wmaxshear, dcape);
-                const windProb = calculateWindProbability(h, wmaxshear, dcape);
-                if (!daysMap.has(datePart)) {
-                    daysMap.set(datePart, { 
-                        date: datePart, 
-                        maxProbability: probability,
-                        maxTornadoProbability: tornadoProb,
-                        maxHailProbability: hailProb,
-                        maxWindProbability: windProb
+            const [dp] = h.time.split('T');
+            if (dp >= currentDateStr) {
+                if (!daysMap.has(dp)) {
+                    daysMap.set(dp, {
+                        date: dp,
+                        maxProbability:        h.probability,
+                        maxTornadoProbability: h.tornadoProbability,
+                        maxHailProbability:    h.hailProbability,
+                        maxWindProbability:    h.windProbability,
                     });
                 } else {
-                    const dayData = daysMap.get(datePart);
-                    dayData.maxProbability = Math.max(dayData.maxProbability, probability);
-                    dayData.maxTornadoProbability = Math.max(dayData.maxTornadoProbability, tornadoProb);
-                    dayData.maxHailProbability = Math.max(dayData.maxHailProbability, hailProb);
-                    dayData.maxWindProbability = Math.max(dayData.maxWindProbability, windProb);
+                    const d = daysMap.get(dp);
+                    d.maxProbability        = Math.max(d.maxProbability,        h.probability);
+                    d.maxTornadoProbability = Math.max(d.maxTornadoProbability, h.tornadoProbability);
+                    d.maxHailProbability    = Math.max(d.maxHailProbability,    h.hailProbability);
+                    d.maxWindProbability    = Math.max(d.maxWindProbability,    h.windProbability);
                 }
             }
         });
 
         const stunden = nextHours.map(h => ({
-            timestamp: h.timestamp,
-            gewitter: h.probability,
-            tornado: h.tornadoProbability,
-            hagel: h.hailProbability,
-            wind: h.windProbability,
+            timestamp:    h.time,
+            gewitter:     h.probability,
+            tornado:      h.tornadoProbability,
+            hagel:        h.hailProbability,
+            wind:         h.windProbability,
             gewitter_risk: categorizeRisk(h.probability),
-            tornado_risk: categorizeRisk(h.tornadoProbability),
-            hagel_risk: categorizeRisk(h.hailProbability),
-            wind_risk: categorizeRisk(h.windProbability)
+            tornado_risk:  categorizeRisk(h.tornadoProbability),
+            hagel_risk:    categorizeRisk(h.hailProbability),
+            wind_risk:     categorizeRisk(h.windProbability),
         }));
 
         const tage = Array.from(daysMap.values())
             .sort((a, b) => a.date.localeCompare(b.date))
             .map(day => ({
-                date: day.date,
-                gewitter: day.maxProbability,
-                tornado: day.maxTornadoProbability,
-                hagel: day.maxHailProbability,
-                wind: day.maxWindProbability,
+                date:          day.date,
+                gewitter:      day.maxProbability,
+                tornado:       day.maxTornadoProbability,
+                hagel:         day.maxHailProbability,
+                wind:          day.maxWindProbability,
                 gewitter_risk: categorizeRisk(day.maxProbability),
-                tornado_risk: categorizeRisk(day.maxTornadoProbability),
-                hagel_risk: categorizeRisk(day.maxHailProbability),
-                wind_risk: categorizeRisk(day.maxWindProbability)
+                tornado_risk:  categorizeRisk(day.maxTornadoProbability),
+                hagel_risk:    categorizeRisk(day.maxHailProbability),
+                wind_risk:     categorizeRisk(day.maxWindProbability),
             }));
 
-        // Debug: Rohwerte aller Modelle für die erste Stunde (Index 0)
-        const debugRohwerte = {};
-        const debugGewichtet = {};
-        const alleFelder = [
-            'cape', 'temperature_2m', 'dew_point_2m',
-            'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high',
-            'precipitation_probability', 'precipitation',
-            'wind_speed_10m', 'wind_gusts_10m',
-            'wind_direction_1000hPa', 'wind_direction_850hPa', 'wind_direction_700hPa',
-            'wind_direction_500hPa', 'wind_direction_300hPa',
-            'wind_speed_1000hPa', 'wind_speed_850hPa', 'wind_speed_700hPa',
-            'wind_speed_500hPa', 'wind_speed_300hPa',
-            'temperature_500hPa', 'temperature_700hPa', 'temperature_850hPa',
-            'dew_point_850hPa', 'dew_point_700hPa',
-            'relative_humidity_500hPa',
-            'convective_inhibition', 'lifted_index',
-            'boundary_layer_height', 'direct_radiation',
-            'freezing_level_height'
-        ];
-        const modellNamen = ['icon_eu', 'ecmwf_ifs025', 'gfs_global'];
-
-        for (const feld of alleFelder) {
-            debugRohwerte[feld] = {};
-            for (const modell of modellNamen) {
-                const key = `${feld}_${modell}`;
-                debugRohwerte[feld][modell] = data.hourly[key]?.[0] ?? null;
+        // Debug: erste 5 Stunden mit Modell-Einzelwerten
+        const debugStunden = nextHours.slice(0, 5).map((h, idx) => {
+            const i = data.hourly.time.indexOf(h.time);
+            const perModel = {};
+            for (const model of MODELS) {
+                const mh = extractModelHour(data.hourly, i, model);
+                if (!mh) { perModel[model] = null; continue; }
+                const shear = calcShear(mh);
+                const srh   = calcSRH(mh, '0-3km');
+                const dcape = calcDCAPE(mh);
+                const wms   = calcWMAXSHEAR(mh.cape, shear);
+                perModel[model] = {
+                    gewitter: calculateProbability(mh),
+                    tornado:  calculateTornadoProbability(mh, shear, srh),
+                    hagel:    calculateHailProbability(mh, wms, dcape),
+                    wind:     calculateWindProbability(mh, wms, dcape),
+                    cape:     Math.round(mh.cape),
+                    shear:    Math.round(shear * 10) / 10,
+                    srh:      Math.round(srh * 10) / 10,
+                    cin:      mh.cin,
+                    li:       mh.liftedIndex,
+                };
             }
-            // Zeigt den bereinigten Endwert nach dynamischer Gewichtung
-            debugGewichtet[feld] = getMultiModelValue(data.hourly, feld, 0);
-        }
-
-        // Debug: Rohwerte für die nächsten 5 Stunden ab jetzt
-        const debugStunden = [];
-        for (let s = 0; s < 5; s++) {
-            const stunde = hours[s];
-            if (!stunde) break;
-
-            const rohwerte = {};
-            for (const feld of alleFelder) {
-                rohwerte[feld] = {};
-                for (const modell of modellNamen) {
-                    const key = `${feld}_${modell}`;
-                    rohwerte[feld][modell] = data.hourly[key]?.[s] ?? null;
-                }
-            }
-
-            debugStunden.push({
-                timestamp: stunde.time,
-                rohwerte_pro_modell: rohwerte,
-                berechnete_parameter: stunde
-            });
-        }
+            return {
+                timestamp:       h.time,
+                ensemble_gewitter: h.probability,
+                ensemble_tornado:  h.tornadoProbability,
+                per_modell:      perModel,
+            };
+        });
 
         return res.status(200).json({
-            timezone: timezone,
-            region: region,
-            stunden: stunden,
-            tage: tage,
+            timezone,
+            region,
+            stunden,
+            tage,
             debug: {
-                hinweis: "Die nächsten 5 Stunden ab Vorhersagebeginn",
-                stunden: debugStunden
-            }
+                hinweis: 'ESSL-Methodik: Pro Modell Wahrscheinlichkeit, dann gewichteter Ensemble-Mittelwert',
+                stunden: debugStunden,
+            },
         });
 
     } catch (error) {
@@ -489,82 +335,13 @@ export default async function handler(req, res) {
     }
 }
 
-// Hilfsfunktionen
-// Multi-Modell-Wert aus icon_eu, ecmwf_ifs025, gfs_global bilden
-function getMultiModelValue(hourly, baseName, index, agg = 'mean') {
-    const models = ['icon_eu', 'ecmwf_ifs025', 'gfs_global'];
-    const values = [];
-
-    for (const model of models) {
-        const key = `${baseName}_${model}`;
-        const arr = hourly[key];
-        if (Array.isArray(arr) && arr[index] !== undefined && arr[index] !== null) {
-            values.push(arr[index]);
-        }
-    }
-
-    if (!values.length) return 0;
-    if (agg === 'max') return Math.max(...values);
-    if (agg === 'min') return Math.min(...values);
-
-    // --- NEU: Dynamische Gewichtung mit Ausreißer-Entfernung ---
-
-    // Weniger als 3 Modelle? Einfacher Mittelwert reicht
-    if (values.length < 3) {
-        return values.reduce((s, v) => s + v, 0) / values.length;
-    }
-
-    // SCHRITT 1: Sortieren
-    const sorted = [...values].sort((a, b) => a - b);
-
-    // Median korrekt berechnen
-    const mid = Math.floor(sorted.length / 2);
-    const median = sorted.length % 2 !== 0
-        ? sorted[mid]
-        : (sorted[mid - 1] + sorted[mid]) / 2;
-
-    // SCHRITT 2: Nur filtern wenn mindestens 3 Werte vorhanden
-    // Bei 1-2 Werten: direkt zurückgeben, kein Ausreißer-Check möglich
-    if (values.length <= 2) {
-        return values.reduce((s, v) => s + v, 0) / values.length;
-    }
-
-    // SCHRITT 3: Ausreißer entfernen
-    // Abweichung relativ zum Betrag des Medians (funktioniert auch bei negativen Werten!)
-    const absMedian = Math.abs(median);
-    const schwelle = absMedian < 5
-        ? 10        // bei kleinen/nahe-null Werten: feste Schwelle 10 Einheiten
-        : absMedian * 0.65; // sonst: 65% Abweichung erlaubt
-
-    const filtered = values.filter(v => Math.abs(v - median) <= schwelle);
-    const useValues = filtered.length >= 2 ? filtered : values;
-
-    // SCHRITT 4: Gewichte berechnen
-    // Näher am Median = mehr Gewicht, funktioniert auch bei negativen Zahlen
-    const weights = useValues.map(v => {
-        const distance = Math.abs(v - median);
-        const normDist = absMedian > 1 ? distance / absMedian : distance;
-        return 1 / (1 + normDist);
-    });
-
-    // SCHRITT 5: Gewichteten Mittelwert berechnen
-    const totalWeight = weights.reduce((s, w) => s + w, 0);
-    const weightedSum = useValues.reduce((s, v, i) => s + v * weights[i], 0);
-    return weightedSum / totalWeight;
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// HILFSFUNKTIONEN
+// ═══════════════════════════════════════════════════════════════════════════
 
 function getRegion(lat, lon) {
-    // Europa: ca. 35°N - 70°N, -10°W - 40°E
-    if (lat >= 35 && lat <= 70 && lon >= -10 && lon <= 40) {
-        return 'europe';
-    }
-    // Alles andere als "außerhalb Europa" kennzeichnen
+    if (lat >= 35 && lat <= 70 && lon >= -10 && lon <= 40) return 'europe';
     return 'outside_europe';
-}
-
-function angleDiff(a, b) {
-    const d = Math.abs(a - b) % 360;
-    return d > 180 ? 360 - d : d;
 }
 
 function windToUV(speed, direction) {
@@ -574,343 +351,447 @@ function windToUV(speed, direction) {
 
 function calcRelHum(temp, dew) {
     const es = 6.112 * Math.exp((17.67 * temp) / (temp + 243.5));
-    const e = 6.112 * Math.exp((17.67 * dew) / (dew + 243.5));
+    const e  = 6.112 * Math.exp((17.67 * dew)  / (dew  + 243.5));
     return Math.min(100, Math.max(0, (e / es) * 100));
 }
 
-// SRH – getrennt für 0-1 km und 0-3 km berechnen
-// 0-1 km ≈ 1000→850 hPa, 0-3 km ≈ 1000→700 hPa
-// Quelle: Thompson et al. 2012; Craven & Brooks 2004
+// ── CIN (jetzt als eigenständige Funktion, nicht mehr inline) ─────────────
+function calcCIN(hour) {
+    const t2m  = hour.temperature ?? 0;
+    const d2m  = hour.dew ?? t2m - 10;
+    const t850 = hour.temp850 ?? 0;
+    const t700 = hour.temp700 ?? 0;
+
+    if (t2m === 0 && t850 === 0) return 0;
+
+    const dewDep2m = t2m - d2m;
+    const T_LCL    = t2m - 0.212 * dewDep2m - 0.001 * dewDep2m * dewDep2m;
+    const z_LCL    = 125 * dewDep2m;
+    const T2m_K    = t2m + 273.15;
+    const T_LCL_K  = T_LCL + 273.15;
+    const e_d2m    = 6.112 * Math.exp((17.67 * d2m) / (d2m + 243.5));
+    const w2m      = 0.622 * e_d2m / (1013.25 - e_d2m);
+    const w2m_gkg  = w2m * 1000;
+    const theta_e_surface = T2m_K
+        * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m_gkg))
+        * Math.exp((3.376 / T_LCL_K - 0.00254) * w2m_gkg * (1 + 0.00081 * w2m_gkg));
+
+    const z850 = 1500;
+    const DALR = 9.8;
+    let T_parcel_850;
+    if (z_LCL >= z850) {
+        T_parcel_850 = t2m - DALR * (z850 / 1000);
+    } else {
+        T_parcel_850 = T_LCL - 4;
+        for (let iter = 0; iter < 5; iter++) {
+            const Tp_K = T_parcel_850 + 273.15;
+            const es   = 6.112 * Math.exp((17.67 * T_parcel_850) / (T_parcel_850 + 243.5));
+            const ws   = 0.622 * es / (850 - es);
+            const ws_gkg = ws * 1000;
+            const theta_e_test = Tp_K
+                * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * ws_gkg))
+                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
+            T_parcel_850 += (theta_e_surface - theta_e_test) * 0.3;
+        }
+    }
+
+    const dT_850     = T_parcel_850 - t850;
+    const meanDT_low = dT_850 / 2;
+    const g          = 9.81;
+    const T_mean_low_K = ((t2m + t850) / 2) + 273.15;
+    const cin_low = meanDT_low < 0 ? (meanDT_low / T_mean_low_K) * g * z850 : 0;
+
+    let cin_mid = 0;
+    if (dT_850 < 0) {
+        let T_parcel_700 = T_parcel_850;
+        for (let iter = 0; iter < 5; iter++) {
+            const Tp_K = T_parcel_700 + 273.15;
+            const es   = 6.112 * Math.exp((17.67 * T_parcel_700) / (T_parcel_700 + 243.5));
+            const ws   = 0.622 * es / (700 - es);
+            const ws_gkg = ws * 1000;
+            const theta_e_test = Tp_K
+                * Math.pow(1000 / 700, 0.2854 * (1 - 0.00028 * ws_gkg))
+                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
+            T_parcel_700 += (theta_e_surface - theta_e_test) * 0.3;
+        }
+        const dT_700 = T_parcel_700 - t700;
+        if (dT_700 < 0) {
+            const meanDT_mid   = (dT_850 + dT_700) / 2;
+            const T_mean_mid_K = ((t850 + t700) / 2) + 273.15;
+            cin_mid = (meanDT_mid / T_mean_mid_K) * g * 1500;
+        } else {
+            const fraction   = dT_850 / (dT_850 - dT_700);
+            const dz_neg     = fraction * 1500;
+            const meanDT_mid = dT_850 / 2;
+            cin_mid = (meanDT_mid / (t850 + 273.15)) * g * dz_neg;
+        }
+    }
+
+    return Math.round(Math.max(-500, Math.min(0, cin_low + cin_mid)));
+}
+
+// ── Lifted Index (eigenständige Funktion) ──────────────────────────────────
+function calcLiftedIndex(hour) {
+    const t850 = hour.temp850 ?? 0;
+    const d850 = hour.dew850 ?? t850 - 10;
+    const t500 = hour.temp500 ?? 0;
+    if (t850 === 0 && t500 === 0) return 0;
+
+    const dewDep  = t850 - d850;
+    const T_LCL   = t850 - 0.212 * dewDep - 0.001 * dewDep * dewDep;
+    const T_K     = t850 + 273.15;
+    const T_LCL_K = T_LCL + 273.15;
+    const e_d     = 6.112 * Math.exp((17.67 * d850) / (d850 + 243.5));
+    const w       = 0.622 * e_d / (1013.25 - e_d);
+    const w_gkg   = w * 1000;
+    const theta_e = T_K * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * w_gkg))
+                  * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
+
+    let T_parcel_500 = t500 + 4;
+    for (let iter = 0; iter < 5; iter++) {
+        const T_K2 = T_parcel_500 + 273.15;
+        const es   = 6.112 * Math.exp((17.67 * T_parcel_500) / (T_parcel_500 + 243.5));
+        const ws   = 0.622 * es / (500 - es);
+        const ws_gkg = ws * 1000;
+        const theta_e_test = T_K2 * Math.pow(1000 / 500, 0.2854 * (1 - 0.00028 * ws_gkg))
+                           * Math.exp((3.376 / T_K2 - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
+        T_parcel_500 += (theta_e - theta_e_test) * 0.3;
+    }
+    return Math.round((t500 - T_parcel_500) * 10) / 10;
+}
+
+// ── PBL-Höhe (eigenständige Funktion) ─────────────────────────────────────
+function calcPBLHeight(hour) {
+    const t2m  = hour.temperature ?? 0;
+    const t850 = hour.temp850 ?? 0;
+    const t700 = hour.temp700 ?? 0;
+    const radiation = hour.directRadiation ?? 0;
+    const z850 = 1500, z700 = 3000, DALR = 9.8;
+
+    const T_parcel_850 = t2m - DALR * (z850 / 1000);
+    const T_parcel_700 = t2m - DALR * (z700 / 1000);
+    let pblHeight = 200;
+
+    if (T_parcel_850 >= t850) {
+        if (T_parcel_700 >= t700) {
+            const lapse_env = (t850 - t700) / (z700 - z850) * 1000;
+            if (lapse_env >= DALR) {
+                pblHeight = 3500;
+            } else {
+                const dT    = T_parcel_700 - t700;
+                const extraZ = dT / (DALR - lapse_env) * 1000;
+                pblHeight   = Math.min(4000, z700 + extraZ);
+            }
+        } else {
+            const dT_850 = T_parcel_850 - t850;
+            const dT_700 = T_parcel_700 - t700;
+            pblHeight    = z850 + (dT_850 / (dT_850 - dT_700)) * (z700 - z850);
+        }
+    } else {
+        const lapse_env_low = (t2m - t850) / z850 * 1000;
+        if (lapse_env_low <= 0) {
+            pblHeight = 200;
+        } else {
+            pblHeight = Math.max(200, Math.min((t2m - t850) / (DALR - lapse_env_low) * 1000, z850));
+        }
+    }
+
+    // Strahlungskorrektur: additiv statt multiplikativ (stabiler, kein 4000m-Überlauf)
+    if (radiation > 600)      pblHeight = Math.min(4000, pblHeight + 400);
+    else if (radiation > 300) pblHeight = Math.min(4000, pblHeight + 200);
+    else if (radiation < 20)  pblHeight = Math.max(100,  pblHeight - 300);
+
+    return Math.round(Math.max(100, Math.min(4000, pblHeight)));
+}
+
+// ── SRH ───────────────────────────────────────────────────────────────────
 function calcSRH(hour, layer = '0-3km') {
-    // Schichtauswahl: 0-1 km nur 1000+850, 0-3 km auch 700
     const levels = layer === '0-1km'
         ? [
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
-            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 }
+            { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 },
           ]
         : [
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
             { ws: (hour.wind_speed_850hPa  ?? 0) / 3.6, wd: hour.windDir850  ?? 0 },
-            { ws: (hour.wind_speed_700hPa  ?? 0) / 3.6, wd: hour.windDir700  ?? 0 }
+            { ws: (hour.wind_speed_700hPa  ?? 0) / 3.6, wd: hour.windDir700  ?? 0 },
           ];
 
     const winds = levels.map(l => windToUV(l.ws, l.wd));
-
-    // Mean Wind & Shear-Vektor für Bunkers-Methode
     const meanU = winds.reduce((s, w) => s + w.u, 0) / winds.length;
     const meanV = winds.reduce((s, w) => s + w.v, 0) / winds.length;
-
-    const shearU = winds[winds.length - 1].u - winds[0].u;
-    const shearV = winds[winds.length - 1].v - winds[0].v;
+    const shearU = winds[winds.length-1].u - winds[0].u;
+    const shearV = winds[winds.length-1].v - winds[0].v;
     const shearMag = Math.hypot(shearU, shearV) || 1;
-
-    // Bunkers Right-Mover: 7.5 m/s rechts des Shear-Vektors
     const devMag = 7.5;
     const stormU = meanU + devMag * (shearV / shearMag);
     const stormV = meanV - devMag * (shearU / shearMag);
 
     let srh = 0;
     for (let i = 0; i < winds.length - 1; i++) {
-        const u1 = winds[i].u - stormU, v1 = winds[i].v - stormV;
+        const u1 = winds[i].u - stormU,   v1 = winds[i].v - stormV;
         const u2 = winds[i+1].u - stormU, v2 = winds[i+1].v - stormV;
         srh += u1 * v2 - u2 * v1;
     }
-
     return Math.round(Math.abs(srh) * 10) / 10;
 }
 
+// ── Shear 0-6km ───────────────────────────────────────────────────────────
+// Korrekturfaktor 1.08: 500 hPa liegt bei ~5.5 km statt 6 km
+// Quelle: Taszarek 2020 / ESSL-Standard
 function calcShear(hour) {
-    // 0-6 km Bulk Wind Shear nach Taszarek 2020 / ESSL-Standard
-    // 1000 hPa ≈ 0 km, 500 hPa ≈ 5.5 km → bester verfügbarer Proxy für 0-6 km
     const ws500  = (hour.wind_speed_500hPa  ?? 0) / 3.6;
     const ws1000 = (hour.wind_speed_1000hPa ?? 0) / 3.6;
-    const w500  = windToUV(ws500,  hour.windDir500  ?? 0);
-    const w1000 = windToUV(ws1000, hour.windDir1000 ?? 0);
-
-    // Reiner Bulk Wind Shear 0-6km (kein Hybrid)
-    return Math.round(Math.hypot(w500.u - w1000.u, w500.v - w1000.v) * 10) / 10;
+    const w500   = windToUV(ws500,  hour.windDir500  ?? 0);
+    const w1000  = windToUV(ws1000, hour.windDir1000 ?? 0);
+    return Math.round(Math.hypot(w500.u - w1000.u, w500.v - w1000.v) * 1.08 * 10) / 10;
 }
 
-// Verbesserte meteorologische Indizes
+// ── Indizes ────────────────────────────────────────────────────────────────
 function calcIndices(hour) {
     const temp500 = hour.temp500 ?? 0;
     const temp850 = hour.temp850 ?? 0;
     const temp700 = hour.temp700 ?? 0;
-    const dew850 = hour.dew850 ?? 0;
-    const dew700 = hour.dew700 ?? 0;
-    
+    const dew850  = hour.dew850  ?? 0;
+    const dew700  = hour.dew700  ?? 0;
     return {
-        kIndex: temp850 - temp500 + dew850 - (temp700 - dew700),
-        showalter: temp500 - (temp850 - 9.8 * 1.5),
-        lapse: (temp850 - temp500) / 3.5,
-        liftedIndex: hour.liftedIndex ?? (temp500 - (temp850 - 9.8 * 1.5))
+        kIndex:      temp850 - temp500 + dew850 - (temp700 - dew700),
+        showalter:   temp500 - (temp850 - 9.8 * 1.5),
+        lapse:       (temp850 - temp500) / 3.5,
+        liftedIndex: hour.liftedIndex ?? (temp500 - (temp850 - 9.8 * 1.5)),
     };
 }
 
-// SCP nach Thompson et al. (2004): (MUCAPE/1000) * (ESRH/50) * (EBWD/12)
-// Für Europa kalibriert (ESTOFEX/ESSL-orientierte Schwellen)
+// ── SCP ───────────────────────────────────────────────────────────────────
 function calcSCP(cape, shear, srh, cin) {
-    // Europa-Schwellen
-    const minCAPE = 100;
-    const minShear = 6;
-    const minSRH = 40;
-
-    if (cape < minCAPE || shear < minShear || srh < minSRH) return 0;
-    if (shear < 12.5) return 0; // konsistent mit STP-Cutoff
-
-    // SPC-Standard: CAPE/1000, SRH/50, BWD/12
+    if (cape < 100 || shear < 6 || srh < 40 || shear < 12.5) return 0;
     const capeTerm  = cape / 1000;
     const srhTerm   = Math.min(srh / 50, 4.0);
     const shearTerm = Math.min(shear / 12, 1.5);
-    // CIN ist in Europa konventionsgemäß negativ. Wir arbeiten hier mit dem Betrag der Hemmung.
-    const magCin    = -Math.min(0, cin); // |CIN| für cin ≤ 0, sonst 0
+    const magCin    = -Math.min(0, cin);
     const cinTerm   = magCin < 40 ? 1.0 : Math.max(0.1, 1 - (magCin - 40) / 200);
-
-    // Europa-Scaling (Taszarek/ESTOFEX: etwas niedrigere Schwellen als USA)
-    const europeScale = 0.85;
-
-    return Math.max(0, capeTerm * srhTerm * shearTerm * cinTerm * europeScale);
+    return Math.max(0, capeTerm * srhTerm * shearTerm * cinTerm);
 }
 
-// DCAPE (Downdraft CAPE) nach Gilmore & Wicker (1998)
-// Approximation über 700-500 hPa Schicht
-// Hoher DCAPE → starke Downbursts, Hagel, Sturmböen
+// ── DCAPE ─────────────────────────────────────────────────────────────────
 function calcDCAPE(hour) {
     const temp700 = hour.temp700 ?? 0;
-    const dew700 = hour.dew700 ?? 0;
+    const dew700  = hour.dew700  ?? 0;
     const temp500 = hour.temp500 ?? 0;
-
-    // DCAPE ist unabhängig von CAPE (Verdunstungskühlung beim Abstieg)
-    // Nur bei absolut trockener Atmosphäre ohne jede Feuchte sinnlos
-    const dewDepCheck = (hour?.temp700 ?? 0) - (hour?.dew700 ?? 0);
-    if (dewDepCheck > 35) return 0; // Extrem trockene Atmosphäre = kein Verdunstungsantrieb
+    if ((temp700 - dew700) > 35) return 0;
 
     const wetBulb700 = temp700 - 0.33 * (temp700 - dew700);
-    const tempDiff = wetBulb700 - temp500;
+    const tempDiff   = wetBulb700 - temp500;
     if (tempDiff <= 0) return 0;
 
-    // Physikalisch: DCAPE nur relevant wenn Feuchteparzel wärmer als Umgebung
-    // Trockenheit 700 hPa dämpft DCAPE stark (kein Verdunstungsantrieb)
-    const dewDepression700 = temp700 - dew700;
-    const moistFactor = dewDepression700 > 20 ? 0.2        // sehr trocken = kaum Evaporation
-                      : dewDepression700 > 10 ? 0.5
-                      : dewDepression700 > 5  ? 0.8
-                      : 1.0;
-
-    const T_env_kelvin = temp700 + 273.15;
-    const dz = 2500;
-    const dcape = Math.max(0, (tempDiff / T_env_kelvin) * 9.81 * dz * moistFactor);
-    return Math.round(dcape);
+    const dewDep700 = temp700 - dew700;
+    const moistFactor = dewDep700 > 20 ? 0.2 : dewDep700 > 10 ? 0.5 : dewDep700 > 5 ? 0.8 : 1.0;
+    return Math.round(Math.max(0, (tempDiff / (temp700 + 273.15)) * 9.81 * 2500 * moistFactor));
 }
 
-// WMAXSHEAR – bester globaler Prädiktor für schwere Gewitter
-// Quelle: Taszarek et al. (2020, J. Climate Part II), Brooks et al. (2003)
-// WMAXSHEAR = sqrt(2 * CAPE) * BS06
-// Schwellenwerte: > 500 m²/s² = schweres Gewitter, > 800 = sehr schwer
+// ── WMAXSHEAR ─────────────────────────────────────────────────────────────
 function calcWMAXSHEAR(cape, shear) {
     if (cape <= 0 || shear <= 0) return 0;
     return Math.round(Math.sqrt(2 * cape) * shear);
 }
 
-// ESTOFEX-ähnliche Risikoklassifizierung (Europa):
-// 0 = none (<15%), 1 = Tstorm (15–39%), 2 = Level 1–2 (40–69%), 3 = Level 3 (≥70%)
-function categorizeRisk(prob) {
-    const p = Math.max(0, Math.min(100, Math.round(prob ?? 0)));
-    let level = 0;
-    let label = 'none';
-
-    if (p >= 70) {
-        level = 3;
-        label = 'high';
-    } else if (p >= 40) {
-        level = 2;
-        label = 'moderate';
-    } else if (p >= 15) {
-        level = 1;
-        label = 'tstorm';
-    }
-
-    return { level, label };
+// ── LCL-Höhe ──────────────────────────────────────────────────────────────
+function calcLCLHeight(temp2m, dew2m) {
+    if (temp2m <= 0 || dew2m <= 0) return 2000;
+    return Math.max(0, 125 * (temp2m - dew2m));
 }
 
-// Hagel ≥1cm Wahrscheinlichkeit (Europa) – ESTOFEX/ESSL-Methodik (abgemilderte Schwellen)
-// Quelle: Púčik et al. 2015 (ESSL), Taszarek et al. 2019/2020, ESTOFEX Forecast Guidelines
-// Hagel ≥1cm benötigt: ausreichende CAPE, moderaten bis starken Shear, relativ niedriges Freezing Level, kalte 500hPa-Temperaturen
-function calculateHailProbability(hour, wmaxshear, dcape) {
-    const cape = Math.max(0, hour.cape ?? 0);
-    const shear = calcShear(hour);
-    const temp500 = hour.temp500 ?? 0;
-    const temp700 = hour.temp700 ?? 0;
-    const freezingLevel = hour.freezingLevel ?? 4000; // m
-    const temp2m = hour.temperature ?? 0;
-    const dew = hour.dew ?? 0;
-    const lclHeight = calcLCLHeight(temp2m, dew);
-    const midLapse = calcMidLevelLapseRate(temp700, temp500);
-    const srh = calcSRH(hour, '0-3km');
+// ── Mid-Level Lapse Rate ───────────────────────────────────────────────────
+function calcMidLevelLapseRate(temp700, temp500) {
+    return (temp700 - temp500) / 2.0; // K/km (dz 700→500 hPa ≈ 2 km)
+}
 
-    // Basis-Filter für Hagel ≥1cm (abgemildert gegenüber >2cm):
-    // Púčik 2015: Schwerer Hagel in Europa meist bei CAPE ≥ 500 J/kg, Shear ≥ 15 m/s
-    // Für ≥1cm-Hagel lassen wir bereits etwas geringere Werte zu.
-    if (cape < 250) return 0; // Zu wenig CAPE selbst für 1cm-Hagel
-    if (shear < 10) return 0; // Zu wenig Shear für organisierte Konvektion
-    if (wmaxshear < 450) return 0; // WMAXSHEAR zu niedrig selbst für 1cm-Hagel
-    if (freezingLevel > 4000) return 0; // Sehr hohes Freezing Level → Hagel schmilzt oft
+// ── Moisture Depth ─────────────────────────────────────────────────────────
+function calcMoistureDepth(dew850, dew700, temp850, temp700) {
+    return (calcRelHum(temp850, dew850) + calcRelHum(temp700, dew700)) / 2;
+}
+
+// ── ELI ───────────────────────────────────────────────────────────────────
+function calcELI(cape, cin, pblHeight) {
+    if (cape < 50) return 0;
+    const pblFactor = pblHeight > 1500 ? 1.2 : pblHeight > 1000 ? 1.0 : pblHeight > 500 ? 0.8 : 0.6;
+    const magCin    = -Math.min(0, cin);
+    const cinFactor = magCin < 25 ? 1.0 : magCin < 50 ? 0.9 : magCin < 100 ? 0.7 : magCin < 150 ? 0.5 : 0.3;
+    return cape * pblFactor * cinFactor;
+}
+
+// ── STP ───────────────────────────────────────────────────────────────────
+// normCAPE = 750 (Europa-kalibriert, Taszarek 2020: Median Tornado-CAPE Europa ~470 J/kg)
+function calcSTP(cape, srh, shear, liftedIndex, cin, temp2m = null, dew2m = null) {
+    if (cape < 80 || srh < 40 || shear < 6 || shear < 12.5) return 0;
+
+    let lclTerm;
+    if (temp2m !== null && dew2m !== null) {
+        const lclHeight = calcLCLHeight(temp2m, dew2m);
+        if (lclHeight < 1000)     lclTerm = 1.0;
+        else if (lclHeight >= 2000) lclTerm = 0.0;
+        else                      lclTerm = (2000 - lclHeight) / 1000;
+    } else {
+        lclTerm = liftedIndex <= -4 ? 1.0 : liftedIndex <= -2 ? 0.8 : liftedIndex <= 0 ? 0.5 : 0.2;
+    }
+
+    const capeTerm  = Math.min(cape / 750, 3.0);   // Europa: 750 statt 1500
+    const srhTerm   = Math.min(srh / 150, 3.0);
+    const shearTerm = shear >= 30 ? 1.5 : (shear / 20);
+
+    let cinTerm;
+    if      (cin >= -50)  cinTerm = 1.0;
+    else if (cin <= -200) cinTerm = 0.0;
+    else                  cinTerm = (200 + cin) / 150;
+
+    return Math.max(0, capeTerm * srhTerm * shearTerm * lclTerm * cinTerm);
+}
+
+// ── Risiko-Kategorisierung ─────────────────────────────────────────────────
+function categorizeRisk(prob) {
+    const p = Math.max(0, Math.min(100, Math.round(prob ?? 0)));
+    if (p >= 70) return { level: 3, label: 'high' };
+    if (p >= 45) return { level: 2, label: 'moderate' };
+    if (p >= 15) return { level: 1, label: 'tstorm' };
+    return { level: 0, label: 'none' };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WAHRSCHEINLICHKEITS-FUNKTIONEN
+// ═══════════════════════════════════════════════════════════════════════════
+
+function calculateHailProbability(hour, wmaxshear, dcape) {
+    const cape         = Math.max(0, hour.cape ?? 0);
+    const shear        = calcShear(hour);
+    const temp500      = hour.temp500 ?? 0;
+    const temp700      = hour.temp700 ?? 0;
+    const freezingLevel = hour.freezingLevel ?? 4000;
+    const temp2m       = hour.temperature ?? 0;
+    const dew          = hour.dew ?? 0;
+    const lclHeight    = calcLCLHeight(temp2m, dew);
+    const midLapse     = calcMidLevelLapseRate(temp700, temp500);
+    const srh          = calcSRH(hour, '0-3km');
+
+    if (cape < 250)          return 0;
+    if (shear < 10)          return 0;
+    if (wmaxshear < 450)     return 0;
+    if (freezingLevel > 3500) return 0; // Korrigiert von 4000 → 3500 m (Taszarek 2017)
 
     let score = 0;
 
-    // CAPE – kritisch für Hagel, aber für ≥1cm etwas niedrigere Schwellen als für >2cm
-    if (cape >= 2000) score += 28;
+    if      (cape >= 2000) score += 28;
     else if (cape >= 1500) score += 24;
     else if (cape >= 1200) score += 20;
-    else if (cape >= 800) score += 15;
-    else if (cape >= 600) score += 9;
-    else if (cape >= 350) score += 4;
+    else if (cape >= 800)  score += 15;
+    else if (cape >= 600)  score += 9;
+    else if (cape >= 350)  score += 4;
 
-    // WMAXSHEAR – bester Prädiktor für Hagel (Taszarek 2020),
-    // für ≥1cm geringfügig abgemilderte Schwellen
-    if (wmaxshear >= 1700) score += 30;
+    if      (wmaxshear >= 1700) score += 30;
     else if (wmaxshear >= 1350) score += 26;
     else if (wmaxshear >= 1050) score += 21;
-    else if (wmaxshear >= 850) score += 15;
-    else if (wmaxshear >= 650) score += 9;
-    else if (wmaxshear >= 500) score += 4;
+    else if (wmaxshear >= 850)  score += 15;
+    else if (wmaxshear >= 650)  score += 9;
+    else if (wmaxshear >= 500)  score += 4;
 
-    // Deep-Layer-Shear (0-6km) – Superzellen-Organisation (Púčik 2015)
-    // Für ≥1cm-Hagel genügt teils auch etwas geringerer Shear
-    if (shear >= 24) score += 13;
+    if      (shear >= 24) score += 13;
     else if (shear >= 20) score += 10;
     else if (shear >= 17) score += 7;
     else if (shear >= 14) score += 4;
     else if (shear >= 10) score += 2;
 
-    // SRH – Mesozyklonen-Entwicklung (Púčik 2015, ESTOFEX)
-    // Schwerer Hagel oft in Superzellen mit hohem SRH
-    if (srh >= 250) score += 10;
+    if      (srh >= 250) score += 10;
     else if (srh >= 200) score += 8;
     else if (srh >= 150) score += 5;
     else if (srh >= 120) score += 3;
 
-    // 500 hPa-Temperatur – kritisch für Hagelwachstum (ESTOFEX)
-    // Je kälter, desto höher die Hagelproduktion (Wachstumszone)
-    if (temp500 <= -22) score += 11;
+    if      (temp500 <= -22) score += 11;
     else if (temp500 <= -20) score += 9;
     else if (temp500 <= -18) score += 6;
     else if (temp500 <= -16) score += 4;
     else if (temp500 <= -14) score += 2;
-    else if (temp500 > -10) score -= 4; // Zu warm = weniger Hagelwachstum
+    else if (temp500 > -10)  score -= 4;
 
-    // Freezing Level – kritisch für Hagel (ESTOFEX/ESSL)
-    // Für ≥1cm kann das FL etwas höher liegen als bei extrem großem Hagel
-    if (freezingLevel <= 2200) score += 13; // Sehr günstig
+    if      (freezingLevel <= 2200) score += 13;
     else if (freezingLevel <= 2700) score += 9;
     else if (freezingLevel <= 3200) score += 5;
-    else if (freezingLevel <= 3600) score += 2;
-    else if (freezingLevel > 3800) score -= 5; // Sehr hoch = Hagel schmilzt stark
+    else if (freezingLevel <= 3500) score += 2;
+    else if (freezingLevel > 3200)  score -= 5;
 
-    // Taszarek 2017, Púčik 2015: Höheres LCL = trockenere Umgebung = besseres Hagelwachstum
-    // Niedriges LCL begünstigt Tornados, NICHT Hagel
-    if (lclHeight >= 1500) score += 7;
+    if      (lclHeight >= 1500) score += 7;
     else if (lclHeight >= 1000) score += 4;
-    else if (lclHeight >= 700) score += 1;
-    else if (lclHeight < 400) score -= 5; // Sehr niedriges LCL = feucht = weniger Hagel
+    else if (lclHeight >= 700)  score += 1;
+    else if (lclHeight < 400)   score -= 5;
 
-    // Mid-Level Lapse Rate (700-500 hPa) – steile Lapse Rate = starke Aufwinde
-    // Wichtig für Hagelwachstum in der mittleren Troposphäre
-    if (midLapse >= 8.5) score += 7;
+    if      (midLapse >= 8.5) score += 7;
     else if (midLapse >= 8.0) score += 5;
     else if (midLapse >= 7.5) score += 4;
     else if (midLapse >= 7.0) score += 2;
-    else if (midLapse < 6.0) score -= 3; // Zu flach = schwache Aufwinde
+    else if (midLapse < 6.0)  score -= 3;
 
-    // Taszarek 2017: Mixing Ratio (Feuchtigkeitsgehalt BL) wichtig für großen Hagel
-    // Approximation: höherer Taupunkt 2m = höheres Mischungsverhältnis
-    const dew2m_hail = hour.dew ?? 0;
-    const e_dew = 6.112 * Math.exp((17.67 * dew2m_hail) / (dew2m_hail + 243.5));
-    const mixRatio = 622 * e_dew / (1013.25 - e_dew); // g/kg
-    if (mixRatio >= 12 && cape >= 800) score += 7;
+    const e_dew   = 6.112 * Math.exp((17.67 * dew) / (dew + 243.5));
+    const mixRatio = 622 * e_dew / (1013.25 - e_dew);
+    if      (mixRatio >= 12 && cape >= 800) score += 7;
     else if (mixRatio >= 10 && cape >= 600) score += 4;
-    else if (mixRatio >= 8 && cape >= 400) score += 2;
-    else if (mixRatio < 5 && cape < 800) score -= 4; // Zu trocken = weniger Hagel
+    else if (mixRatio >= 8  && cape >= 400) score += 2;
+    else if (mixRatio < 5   && cape < 800)  score -= 4;
 
-    // DCAPE – Downburst-Komponente (sekundär für Hagel, aber relevant)
-    // Hoher DCAPE kann Hagel nach unten transportieren
-    if (dcape >= 1000 && cape >= 700) score += 5;
-    else if (dcape >= 800 && cape >= 550) score += 3;
-    else if (dcape >= 600 && cape >= 400) score += 1;
+    if      (dcape >= 1000 && cape >= 700) score += 5;
+    else if (dcape >= 800  && cape >= 550) score += 3;
+    else if (dcape >= 600  && cape >= 400) score += 1;
 
-    // Relative Feuchte 500hPa – trockene mittlere Troposphäre begünstigt Hagel
-    // Trockene Luft = stärkere Verdunstungskälte = bessere Hagelproduktion
-    if (hour.rh500 < 30 && cape >= 700) score += 6;
+    if      (hour.rh500 < 30 && cape >= 700) score += 6;
     else if (hour.rh500 < 40 && cape >= 550) score += 4;
     else if (hour.rh500 < 50 && cape >= 450) score += 2;
-    else if (hour.rh500 > 80 && cape < 900) score -= 5; // Zu feucht = weniger Hagel
+    else if (hour.rh500 > 80 && cape < 900)  score -= 5;
 
-    // Kombinierte Faktoren-Multiplikator (ESTOFEX-Methodik)
-    // Alle kritischen Faktoren müssen zusammenkommen für Hagel ≥1cm
+    // Mittlere RH (850+700+500) als AR-CHaMo Prädiktor
+    const rh850 = calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
+    const rh700 = calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
+    const meanRH = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
+    if      (meanRH >= 70 && cape >= 600) score += 5;
+    else if (meanRH >= 60 && cape >= 400) score += 3;
+    else if (meanRH < 35)                 score -= 4;
+
     let factor = 1.0;
-    
-    // CAPE + Shear Kombination (Púčik 2015)
-    if (cape >= 900 && shear >= 17) factor = 1.15;
+    if      (cape >= 900 && shear >= 17) factor = 1.15;
     else if (cape >= 700 && shear >= 14) factor = 1.1;
-    else if (cape < 500 || shear < 10) factor = 0.7; // Beide niedrig = stark reduzieren
-
-    // Freezing Level + 500hPa Temp Kombination
-    if (freezingLevel <= 2700 && temp500 <= -18) factor *= 1.1;
-    else if (freezingLevel > 3600 || temp500 > -12) factor *= 0.8;
+    else if (cape < 500  || shear < 10)  factor = 0.7;
+    if      (freezingLevel <= 2700 && temp500 <= -18) factor *= 1.1;
+    else if (freezingLevel > 3200  || temp500 > -12)  factor *= 0.8;
 
     score = Math.round(score * factor);
-
-    // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
-    // Mindestanforderungen für Hagel ≥1cm in Europa
-    // Púčik 2015: Schwerer Hagel meist bei CAPE ≥ 600, Shear ≥ 15, WMAXSHEAR ≥ 800
-    // Für ≥1cm-Hagel etwas abgeschwächt, aber weiter mit Obergrenze
-    if (cape < 400 || shear < 12 || wmaxshear < 600) {
-        score = Math.min(score, 40); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
-    }
-
-    // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwerer Hagel)
+    if (cape < 400 || shear < 12 || wmaxshear < 600) score = Math.min(score, 40);
     if (cape >= 1500 && shear >= 20 && wmaxshear >= 1200 && freezingLevel <= 2500 && temp500 <= -18) {
-        score = Math.min(100, score + 10); // Bonus für extreme Bedingungen
+        score = Math.min(100, score + 10);
     }
-
     return Math.min(100, Math.max(0, score));
 }
 
-// Schwere/markante Winde (ab ~20–25 m/s / ≥70–90 km/h) Wahrscheinlichkeit (Europa) – ESTOFEX/ESSL-Methodik
-// Quelle: Gatzen et al. 2020 (Derechos Deutschland), Taszarek et al. 2019/2020, ESTOFEX Forecast Guidelines
-// Schwere Winde benötigen: erhöhten DCAPE, organisierte Konvektion (MCS/Derecho), erhöhten WMAXSHEAR
 function calculateWindProbability(hour, wmaxshear, dcape) {
-    const cape = Math.max(0, hour.cape ?? 0);
-    const shear = calcShear(hour);
-    const wind10m = hour.wind ?? 0;   // km/h
-    const gust = hour.gust ?? 0;      // km/h
+    const cape     = Math.max(0, hour.cape ?? 0);
+    const shear    = calcShear(hour);
+    const wind10m  = hour.wind ?? 0;
+    const gust     = hour.gust ?? 0;
     const gustDiff = gust - wind10m;
-    const temp700 = hour.temp700 ?? 0;
-    const dew700 = hour.dew700 ?? 0;
-    const temp500 = hour.temp500 ?? 0;
+    const temp700  = hour.temp700 ?? 0;
+    const dew700   = hour.dew700  ?? 0;
+    const temp500  = hour.temp500 ?? 0;
 
-    // Basis-Filter für markante bis schwere Winde (ab ca. 70–90 km/h / 20–25 m/s)
-    // Gatzen 2020: Schwere Winde in Europa meist bei DCAPE ≥ 400 J/kg, WMAXSHEAR ≥ 600
-    // Taszarek 2020: Organisierte Systeme (MCS/Derecho) benötigen hohen Shear
-    if (dcape < 250 && wmaxshear < 450) return 0; // Zu wenig DCAPE/WMAXSHEAR
-    if (shear < 9 && cape < 450) return 0; // Zu wenig organisierte Konvektion
-    if (gust < 65) return 0; // Prognostizierte Böen zu niedrig für markante/schwere Winde
+    if (dcape < 250 && wmaxshear < 450) return 0;
+    if (shear < 9 && cape < 450)        return 0;
+    if (gust < 60) return 0; // Angepasst von 65 → 60 km/h
 
     let score = 0;
 
-    // DCAPE – kritisch für schwere Downbursts (Gilmore & Wicker 1998, ESTOFEX)
-    // Gatzen 2020: Derechos Deutschland median DCAPE ~800-1000 J/kg
-    // Für "severe wind" etwas breiter gefasst
-    if (dcape >= 1400) score += 34;
+    if      (dcape >= 1400) score += 34;
     else if (dcape >= 1200) score += 29;
     else if (dcape >= 1000) score += 25;
-    else if (dcape >= 800) score += 19;
-    else if (dcape >= 600) score += 13;
-    else if (dcape >= 400) score += 7;
-    else if (dcape >= 300) score += 4;
+    else if (dcape >= 800)  score += 19;
+    else if (dcape >= 600)  score += 13;
+    else if (dcape >= 400)  score += 7;
+    else if (dcape >= 300)  score += 4;
 
-    // Europa-kalibriert nach Gatzen 2020: Derechos typisch 800–1200 m²/s²
-    if (wmaxshear >= 1200) score += 31;
+    if      (wmaxshear >= 1200) score += 31;
     else if (wmaxshear >= 1000) score += 27;
     else if (wmaxshear >= 850)  score += 21;
     else if (wmaxshear >= 700)  score += 15;
@@ -918,600 +799,380 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     else if (wmaxshear >= 450)  score += 6;
     else if (wmaxshear >= 350)  score += 3;
 
-    // Deep-Layer-Shear (0-6km) – MCS/Derecho-Organisation (Gatzen 2020)
-    // Schwere Winde oft in linienhaften Systemen mit hohem Shear
-    if (shear >= 24) score += 12;
+    if      (shear >= 24) score += 12;
     else if (shear >= 20) score += 9;
     else if (shear >= 17) score += 7;
     else if (shear >= 14) score += 4;
     else if (shear >= 11) score += 2;
-    else if (shear >= 9) score += 1;
+    else if (shear >= 9)  score += 1;
 
-    // Taszarek 2017: 0-3km Shear bester Diskriminator für extrem schwere Winde
-    const srh3km = calcSRH(hour, '0-3km');
-    const w850_low = windToUV((hour.wind_speed_850hPa ?? 0) / 3.6, hour.windDir850 ?? 0);
-    const w1000_low = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
-    const shear_low = Math.hypot(w850_low.u - w1000_low.u, w850_low.v - w1000_low.v);
-    if (shear_low >= 15) score += 10;
+    const srh3km   = calcSRH(hour, '0-3km');
+    const w850_low = windToUV((hour.wind_speed_850hPa  ?? 0) / 3.6, hour.windDir850  ?? 0);
+    const w1000_low= windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
+    const shear_low= Math.hypot(w850_low.u - w1000_low.u, w850_low.v - w1000_low.v);
+    if      (shear_low >= 15) score += 10;
     else if (shear_low >= 12) score += 7;
-    else if (shear_low >= 9) score += 4;
-    else if (shear_low >= 6) score += 2;
+    else if (shear_low >= 9)  score += 4;
+    else if (shear_low >= 6)  score += 2;
 
-    // 0-3km SRH – organisierte Rotation im unteren Bereich begünstigt schwere Winde
-    // Taszarek 2017: srh3km > 150 m²/s² = klares Signal für schwere konvektive Winde
-    if (srh3km >= 200) score += 8;
+    if      (srh3km >= 200) score += 8;
     else if (srh3km >= 150) score += 6;
     else if (srh3km >= 100) score += 4;
     else if (srh3km >= 60)  score += 2;
 
-    // CAPE – Updraft-Stärke für Downbursts (Gatzen 2020)
-    // Schwere Winde können auch bei moderatem CAPE auftreten (warm-season vs cold-season Derechos)
-    if (cape >= 1500) score += 11;
+    if      (cape >= 1500) score += 11;
     else if (cape >= 1200) score += 9;
-    else if (cape >= 800) score += 7;
-    else if (cape >= 450) score += 4;
-    else if (cape >= 250) score += 2;
-    // Low-CAPE/high-shear Fälle bleiben möglich (cold-season Derechos)
+    else if (cape >= 800)  score += 7;
+    else if (cape >= 450)  score += 4;
+    else if (cape >= 250)  score += 2;
 
-    // Böenüberschuss gegenüber Mittelwind – konvektive Böen (ESTOFEX)
-    // Großer Unterschied = starke konvektive Downbursts
-    if (gustDiff >= 40) score += 15;
+    if      (gustDiff >= 40) score += 15;
     else if (gustDiff >= 30) score += 11;
     else if (gustDiff >= 25) score += 9;
     else if (gustDiff >= 20) score += 6;
     else if (gustDiff >= 15) score += 3;
-    else if (gustDiff >= 8) score += 1;
+    else if (gustDiff >= 8)  score += 1;
 
-    // Absolutes Böenniveau – kritisch für schwere Winde (ESTOFEX)
-    // ESTOFEX Level 1: ≥25 m/s (90 km/h), Level 2: ≥30 m/s (108 km/h), Level 3: ≥35 m/s (126 km/h)
-    // Für "severe wind" werten wir 70–80 km/h bereits leicht positiv
-    if (gust >= 130) score += 20;      // ≥35 m/s (Level 3)
-    else if (gust >= 110) score += 16; // ≥30 m/s (Level 2)
-    else if (gust >= 90) score += 12;  // ≥25 m/s (Level 1)
-    else if (gust >= 80) score += 7;   // knapp unter Level 1
-    else if (gust >= 70) score += 3;   // markante Böen
-    else if (gust >= 65) score += 1;   // deutliche Böen, aber noch unter klassischer Schwelle
+    if      (gust >= 130) score += 20;
+    else if (gust >= 110) score += 16;
+    else if (gust >= 90)  score += 12;
+    else if (gust >= 80)  score += 7;
+    else if (gust >= 70)  score += 3;
+    else if (gust >= 60)  score += 1;
 
-    // 700 hPa Feuchtigkeit – wichtig für Downburst-Stärke (Gatzen 2020)
-    // Trockene 700 hPa = stärkere Verdunstungskälte = stärkere Downbursts
-    const dewDepression700 = temp700 - dew700;
-    if (dewDepression700 >= 20 && dcape >= 600) score += 8; // Sehr trocken
-    else if (dewDepression700 >= 15 && dcape >= 500) score += 5;
-    else if (dewDepression700 >= 8 && dcape >= 350) score += 3;
-    else if (dewDepression700 < 5 && dcape < 800) score -= 4; // Zu feucht = schwächere Downbursts
+    const dewDep700 = temp700 - dew700;
+    if      (dewDep700 >= 20 && dcape >= 600) score += 8;
+    else if (dewDep700 >= 15 && dcape >= 500) score += 5;
+    else if (dewDep700 >= 8  && dcape >= 350) score += 3;
+    else if (dewDep700 < 5   && dcape < 800)  score -= 4;
 
-    // 500 hPa Temperatur – kalte mittlere Troposphäre begünstigt Downbursts
-    if (temp500 <= -20 && dcape >= 600) score += 6;
+    if      (temp500 <= -20 && dcape >= 600) score += 6;
     else if (temp500 <= -16 && dcape >= 500) score += 4;
     else if (temp500 <= -12 && dcape >= 400) score += 2;
 
-    // Relative Feuchte 500hPa – trockene mittlere Troposphäre (ESTOFEX)
-    if (hour.rh500 < 35 && dcape >= 600) score += 5;
+    if      (hour.rh500 < 35 && dcape >= 600) score += 5;
     else if (hour.rh500 < 45 && dcape >= 500) score += 3;
     else if (hour.rh500 < 55 && dcape >= 400) score += 1;
 
-    // Kombinierte Faktoren-Multiplikator (ESTOFEX-Methodik)
-    // Alle kritischen Faktoren müssen zusammenkommen für markante bis schwere Winde
+    // Mittlere RH als AR-CHaMo Prädiktor
+    const rh850w = calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
+    const rh700w = calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
+    const meanRH_w = (rh850w + rh700w + (hour.rh500 ?? 50)) / 3;
+    if      (meanRH_w < 35 && dcape >= 600) score += 6; // Trocken = stärkere Downbursts
+    else if (meanRH_w < 45 && dcape >= 500) score += 3;
+    else if (meanRH_w > 75 && dcape < 800)  score -= 4;
+
     let factor = 1.0;
-    
-    // DCAPE + WMAXSHEAR Kombination (Gatzen 2020, Taszarek 2020)
-    if (dcape >= 1000 && wmaxshear >= 1100) factor = 1.2; // Sehr hohes Derecho-Potenzial
-    else if (dcape >= 800 && wmaxshear >= 900) factor = 1.15;
-    else if (dcape >= 550 && wmaxshear >= 650) factor = 1.1;
-    else if (dcape < 350 || wmaxshear < 550) factor = 0.75; // Beide niedrig = reduzieren
-
-    // Shear + CAPE Kombination (MCS-Organisation)
-    if (shear >= 17 && cape >= 550) factor *= 1.1;
-    else if (shear < 11 && cape < 350) factor *= 0.8;
-
-    // Böen + DCAPE Kombination
-    if (gust >= 100 && dcape >= 800) factor *= 1.1;
-    else if (gust < 75 && dcape < 450) factor *= 0.85;
+    if      (dcape >= 1000 && wmaxshear >= 1100) factor = 1.2;
+    else if (dcape >= 800  && wmaxshear >= 900)  factor = 1.15;
+    else if (dcape >= 550  && wmaxshear >= 650)  factor = 1.1;
+    else if (dcape < 350   || wmaxshear < 550)   factor = 0.75;
+    if (shear >= 17 && cape >= 550)              factor *= 1.1;
+    else if (shear < 11 && cape < 350)           factor *= 0.8;
+    if (gust >= 100 && dcape >= 800)             factor *= 1.1;
+    else if (gust < 75 && dcape < 450)           factor *= 0.85;
 
     score = Math.round(score * factor);
-
-    // Finale Plausibilitätsprüfung (ESTOFEX/ESSL)
-    // Mindestanforderungen für markante/schwere Winde (≥70–90 km/h) in Europa
-    // Gatzen 2020: Schwere Winde meist bei DCAPE ≥ 500, WMAXSHEAR ≥ 700, Shear ≥ 12
-    if (dcape < 350 || wmaxshear < 550 || gust < 70) {
-        score = Math.min(score, 35); // Hart begrenzen wenn Mindestanforderungen nicht erfüllt
-    }
-
-    // ESTOFEX Level 3-ähnliche Bedingungen (sehr schwere Winde ≥35 m/s)
-    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20 && gust >= 110) {
-        score = Math.min(100, score + 12); // Bonus für extreme Bedingungen
-    }
-
-    // Cold-Season Derecho-Potenzial (low-CAPE, high-shear)
-    // Gatzen 2020: Cold-season Derechos bei CAPE < 500, aber Shear ≥ 18, WMAXSHEAR ≥ 800
-    if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600) {
-        score = Math.min(100, score + 8); // Bonus für cold-season Typ
-    }
+    if (dcape < 350 || wmaxshear < 550 || gust < 70) score = Math.min(score, 35);
+    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20 && gust >= 110) score = Math.min(100, score + 12);
+    if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600)    score = Math.min(100, score + 8);
 
     return Math.min(100, Math.max(0, score));
 }
 
-// Verbesserte LCL-Berechnung nach Bolton (1980) - präziser für Europa
-function calcLCLHeight(temp2m, dew2m) {
-    if (temp2m <= 0 || dew2m <= 0) return 2000; // Fallback: hohes LCL
-    const T = temp2m + 273.15;
-    const Td = dew2m + 273.15;
-    const LCL = 125 * (temp2m - dew2m); // Vereinfachte Bolton-Formel
-    return Math.max(0, LCL);
-}
-
-// Mid-Level Lapse Rate (700-500 hPa) - wichtig für Europa
-function calcMidLevelLapseRate(temp700, temp500) {
-    // Höhendifferenz 700-500 hPa ≈ 2000 m
-    const dz = 2000;
-    if (dz <= 0) return 0;
-    return (temp700 - temp500) / (dz / 1000); // K/km
-}
-
-// Moisture Depth (850-700 hPa) - Feuchtigkeitstiefe für Konvektion
-function calcMoistureDepth(dew850, dew700, temp850, temp700) {
-    const rh850 = calcRelHum(temp850, dew850);
-    const rh700 = calcRelHum(temp700, dew700);
-    // Durchschnittliche relative Feuchte in der Schicht
-    return (rh850 + rh700) / 2;
-}
-
-// Effective Layer Instability (ELI) - ESSL-Methodik für Europa
-function calcELI(cape, cin, pblHeight) {
-    // ELI berücksichtigt CAPE, CIN und Boundary Layer Height
-    // Höhere PBL = bessere Durchmischung = höheres ELI
-    if (cape < 50) return 0;
-    const pblFactor = pblHeight > 1500 ? 1.2 : pblHeight > 1000 ? 1.0 : pblHeight > 500 ? 0.8 : 0.6;
-    // CIN negativ: je stärker (größerer Betrag), desto kleiner der Faktor
-    const magCin    = -Math.min(0, cin); // |CIN| für cin ≤ 0, sonst 0
-    const cinFactor = magCin < 25 ? 1.0
-        : magCin < 50 ? 0.9
-        : magCin < 100 ? 0.7
-        : magCin < 150 ? 0.5
-        : 0.3;
-    return cape * pblFactor * cinFactor;
-}
-
-// STP (Significant Tornado Parameter) - nach Thompson et al. (2012) / SPC fixed-layer
-// Für Europa kalibriert (ESTOFEX/ESSL-orientierte Schwellen)
-// Formel: STP = (sbCAPE/1500) * ((2000-LCL)/1000) * (SRH1/150) * (6BWD/20) * ((200+CIN)/150)
-function calcSTP(cape, srh, shear, liftedIndex, cin, temp2m = null, dew2m = null) {
-    // Europa-Schwellen (ähnlich SPC, aber CAPE-Minimum reduziert)
-    const minCAPE = 100;
-    const minSRH = 40;
-    const minShear = 6;
-    const normCAPE = 1000;
-
-    if (cape < minCAPE || srh < minSRH || shear < minShear) return 0;
-
-    // *** HARTES CUTOFF nach SPC: 6BWD < 12.5 m/s → STP = 0 ***
-    if (shear < 12.5) return 0;
-
-    // LCL-Höhe nach Bolton (1980) - verwendet verbesserte calcLCLHeight Funktion
-    let lclTerm;
-    if (temp2m !== null && dew2m !== null) {
-        const lclHeight = calcLCLHeight(temp2m, dew2m);
-        if (lclHeight < 1000) lclTerm = 1.0;
-        else if (lclHeight >= 2000) lclTerm = 0.0; // *** HARTES CUTOFF nach SPC ***
-        else lclTerm = (2000 - lclHeight) / 1000;  // lineare Interpolation wie SPC
-    } else {
-        lclTerm = liftedIndex <= -4 ? 1.0
-                : liftedIndex <= -2 ? 0.8
-                : liftedIndex <= 0  ? 0.5
-                : 0.2;
-    }
-
-    const capeTerm  = Math.min(cape / normCAPE, 3.0);
-    // *** SRH jetzt normiert mit 150 (SPC-Standard), nicht 100 ***
-    const srhTerm   = Math.min(srh / 150, 3.0);
-    // *** 6BWD normiert mit 20 m/s (SPC-Standard), cap bei 1.5 für > 30 m/s ***
-    const shearTerm = shear >= 30 ? 1.5 : (shear / 20);
-
-    // *** CIN: hartes Cutoff bei -200 J/kg, set to 1 wenn > -50 J/kg (SPC-Standard, CIN negativ) ***
-    // CIN ist hier negativ definiert (z.B. -50, -100, -200 J/kg)
-    let cinTerm;
-    if (cin >= -50) cinTerm = 1.0;            // schwache Hemmung (|CIN| ≤ 50)
-    else if (cin <= -200) cinTerm = 0.0;      // stark negative CIN → STP = 0
-    else cinTerm = (200 + cin) / 150;         // lineare Interpolation für -200 < CIN < -50
-
-    return Math.max(0, capeTerm * srhTerm * shearTerm * lclTerm * cinTerm);
-}
-
-// Hauptfunktion für Wahrscheinlichkeitsberechnung (verbessert nach ESSL/European Forecast Experiment)
 function calculateProbability(hour) {
-    const temp2m = hour.temperature ?? 0;
-    const dew = hour.dew ?? 0;
-    const cape = Math.max(0, hour.cape ?? 0);
-    // CIN wird negativ geliefert (z.B. -50, -100, -200 J/kg)
-    const cin = hour.cin ?? 0;
-    const magCin = -Math.min(0, cin); // Betrag der Hemmung |CIN| für cin ≤ 0
-    const precipAcc = hour.precipAcc ?? 0;
+    const temp2m     = hour.temperature ?? 0;
+    const dew        = hour.dew ?? 0;
+    const cape       = Math.max(0, hour.cape ?? 0);
+    const cin        = hour.cin ?? 0;
+    const magCin     = -Math.min(0, cin);
+    const precipAcc  = hour.precipAcc ?? 0;
     const precipProb = hour.precip ?? 0;
-    const pblHeight = hour.pblHeight ?? 1000;
-    
-    // Europa-Parameter (ESSL/European Forecast Experiment-orientiert)
-    // Taszarek et al. 2019/2020: Europa hat niedrigere CAPE-Schwellen, stärkere Shear-Gewichtung
-    const minTemp = 3; // Kalt-Saison-Gewitter möglich (Morgenstern 2023)
-    const minTempWithCAPE = 8;
-    const minCAPE = 150; // ESSL: Gewitter ab ~150 J/kg möglich
-    const minCAPEWithPrecip = 80;
-    
-    // Filter für Fehlalarme (Europa) - weniger restriktiv für HSLC-Fälle
-    if (temp2m < minTemp && cape < 300) return 0; // Zu kalt, außer bei sehr hohem CAPE
-    if (temp2m < minTempWithCAPE && cape < (minCAPE * 1.2)) {
-        // HSLC-Check: Bei hohem Shear auch bei niedrigem CAPE möglich
-        const shear = calcShear(hour);
-        if (shear < 15) return 0; // Kein HSLC-Potential
+    const pblHeight  = hour.pblHeight ?? 1000;
+
+    if (temp2m < 3 && cape < 300)                     return 0;
+    if (temp2m < 8 && cape < 180) {
+        if (calcShear(hour) < 15)                     return 0;
     }
-    if (cape < minCAPEWithPrecip && precipAcc < 0.1 && precipProb < 15) return 0;
-    
-    // Berechne Indizes
-    const shear = calcShear(hour);
-    const srh1km = calcSRH(hour, '0-1km');
-    const srh = calcSRH(hour, '0-3km');
-    const { kIndex, showalter, lapse, liftedIndex } = calcIndices(hour);
-    const relHum2m = calcRelHum(temp2m, dew);
-    const cloudSum = (hour.cloudLow ?? 0) + (hour.cloudMid ?? 0) + (hour.cloudHigh ?? 0);
-    
-    // Verbesserte physikalische Parameter
-    const lclHeight = calcLCLHeight(temp2m, dew);
-    const midLapse = calcMidLevelLapseRate(hour.temp700 ?? 0, hour.temp500 ?? 0);
-    const moistureDepth = calcMoistureDepth(hour.dew850 ?? 0, hour.dew700 ?? 0, hour.temp850 ?? 0, hour.temp700 ?? 0);
-    const eli = calcELI(cape, cin, pblHeight);
-    
-    // Kombinierte Indizes (Europa-optimiert)
-    const ehi = (cape * srh) / 160000;
-    const scp = calcSCP(cape, shear, srh, cin);
-    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
-    const wmaxshear = calcWMAXSHEAR(cape, shear);
-    const dcape = calcDCAPE(hour);
-    
-    // Basis-Score basierend auf kombinierten Indizes
+    if (cape < 80 && precipAcc < 0.1 && precipProb < 15) return 0;
+
+    const shear        = calcShear(hour);
+    const srh1km       = calcSRH(hour, '0-1km');
+    const srh          = calcSRH(hour, '0-3km');
+    const { kIndex, liftedIndex } = calcIndices(hour);
+    const relHum2m     = calcRelHum(temp2m, dew);
+    const lclHeight    = calcLCLHeight(temp2m, dew);
+    const midLapse     = calcMidLevelLapseRate(hour.temp700 ?? 0, hour.temp500 ?? 0);
+    const moistureDepth= calcMoistureDepth(hour.dew850 ?? 0, hour.dew700 ?? 0, hour.temp850 ?? 0, hour.temp700 ?? 0);
+    const eli          = calcELI(cape, cin, pblHeight);
+
+    // EHI mit 0-1km SRH (SPC-Standard, korrigiert von 0-3km)
+    const ehi      = (cape * srh1km) / 160000;
+    const scp      = calcSCP(cape, shear, srh, cin);
+    const stp      = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
+    const wmaxshear= calcWMAXSHEAR(cape, shear);
+    const dcape    = calcDCAPE(hour);
+
+    // Mittlere RH über 850/700/500 hPa (AR-CHaMo Prädiktor, Rädler 2018)
+    const rh850    = calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
+    const rh700    = calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
+    const meanRH   = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
+
     let score = 0;
-    
-    // CAPE-Bewertung (Europa) - niedrigere Schwellen als USA
-    // Taszarek 2020: Europa CAPE-Median ~500-800 J/kg für schwere Gewitter
-    if (cape >= 2000) score += 28;
+
+    if      (cape >= 2000) score += 28;
     else if (cape >= 1500) score += 24;
     else if (cape >= 1200) score += 20;
-    else if (cape >= 800) score += 16;
-    else if (cape >= 500) score += 12;
-    else if (cape >= 300) score += 8;
-    else if (cape >= 150) score += 4;
+    else if (cape >= 800)  score += 16;
+    else if (cape >= 500)  score += 12;
+    else if (cape >= 300)  score += 8;
+    else if (cape >= 150)  score += 4;
 
     const elTemp = hour.temp500 ?? 0;
-    if (elTemp <= -20 && cape >= 200) score += 8;
+    if      (elTemp <= -20 && cape >= 200) score += 8;
     else if (elTemp <= -15 && cape >= 150) score += 5;
     else if (elTemp <= -10 && cape >= 100) score += 3;
-    else if (elTemp > -5 && cape < 500) score -= 5; // Zu warmes EL = flache Konvektion
-    
-    // Effective Layer Instability (ELI) - ESSL-Methodik
-    if (eli >= 2000) score += 10;
+    else if (elTemp > -5   && cape < 500)  score -= 5;
+
+    if      (eli >= 2000) score += 10;
     else if (eli >= 1200) score += 7;
-    else if (eli >= 800) score += 5;
-    else if (eli >= 400) score += 3;
-    
-    // CIN-Bewertung (verbessert) - nicht nur Penalty, sondern auch positive Signale
-    // magCin = |CIN|: kleine Beträge → günstig, große Beträge → inhibierend
-    if (magCin < 25 && cape >= 300) score += 6; // Sehr günstig für Konvektion
+    else if (eli >= 800)  score += 5;
+    else if (eli >= 400)  score += 3;
+
+    if      (magCin < 25 && cape >= 300) score += 6;
     else if (magCin < 50 && cape >= 200) score += 3;
-    else if (magCin > 200) score -= 18; // Stark inhibierend
+    else if (magCin > 200) score -= 18;
     else if (magCin > 100) score -= 10;
-    else if (magCin > 50) score -= 5;
-    
-    // Kombinierte Indizes (Europa) - stärkere Gewichtung
-    if (scp >= 3.0) score += 24;
+    else if (magCin > 50)  score -= 5;
+
+    if      (scp >= 3.0) score += 24;
     else if (scp >= 2.0) score += 20;
     else if (scp >= 1.5) score += 16;
     else if (scp >= 1.0) score += 12;
     else if (scp >= 0.5) score += 6;
-    
-    if (stp >= 2.0) score += 18;
+
+    if      (stp >= 2.0) score += 18;
     else if (stp >= 1.5) score += 15;
     else if (stp >= 1.0) score += 12;
     else if (stp >= 0.5) score += 8;
     else if (stp >= 0.3) score += 4;
-    
-    // EHI-Schwellen (Europa-angepasst)
-    if (ehi >= 2.5) score += 14;
+
+    if      (ehi >= 2.5) score += 14;
     else if (ehi >= 2.0) score += 12;
     else if (ehi >= 1.0) score += 9;
     else if (ehi >= 0.5) score += 5;
     else if (ehi >= 0.3) score += 3;
-    
-    // Taszarek 2020: Europa-Schwellen für WMAXSHEAR
-    // > 600 = signifikant, > 1000 = sehr schwer, < 400 = kaum organisierte Konvektion
-    if (wmaxshear >= 1500) score += 22;
+
+    if      (wmaxshear >= 1500) score += 22;
     else if (wmaxshear >= 1200) score += 18;
-    else if (wmaxshear >= 900) score += 14;
-    else if (wmaxshear >= 700) score += 10;
-    else if (wmaxshear >= 500) score += 6;
-    else if (wmaxshear >= 400) score += 3;
-    else if (wmaxshear >= 300) score += 1; // Sehr schwach organisiert
-    
-    // Shear-Bewertung (Europa) - stärker gewichtet als CAPE
-    // Púčik 2015: Deep-Layer-Shear entscheidend für schwere Gewitter in Europa
-    if (shear >= 25) score += 14;
+    else if (wmaxshear >= 900)  score += 14;
+    else if (wmaxshear >= 700)  score += 10;
+    else if (wmaxshear >= 500)  score += 6;
+    else if (wmaxshear >= 400)  score += 3;
+    else if (wmaxshear >= 300)  score += 1;
+
+    if      (shear >= 25) score += 14;
     else if (shear >= 20) score += 11;
     else if (shear >= 15) score += 8;
     else if (shear >= 12) score += 5;
     else if (shear >= 10) score += 3;
-    else if (shear >= 8) score += 1;
-    
-    // SRH-Bewertung (Europa)
-    if (srh >= 250) score += 10;
+    else if (shear >= 8)  score += 1;
+
+    if      (srh >= 250) score += 10;
     else if (srh >= 200) score += 8;
     else if (srh >= 150) score += 6;
     else if (srh >= 120) score += 4;
-    else if (srh >= 80) score += 2;
-    
-    // LCL-Höhe (verbessert) - niedriges LCL = bessere Konvektion
-    if (lclHeight < 500) score += 8;
-    else if (lclHeight < 800) score += 6;
-    else if (lclHeight < 1200) score += 4;
-    else if (lclHeight < 1500) score += 2;
-    else if (lclHeight >= 2500) score -= 6; // Zu hohes LCL = trocken, weniger Konvektion
-    
-    // Mid-Level Lapse Rate (700-500 hPa) - wichtig für Europa
-    if (midLapse >= 8.0) score += 8;
+    else if (srh >= 80)  score += 2;
+
+    if      (lclHeight < 500)   score += 8;
+    else if (lclHeight < 800)   score += 6;
+    else if (lclHeight < 1200)  score += 4;
+    else if (lclHeight < 1500)  score += 2;
+    else if (lclHeight >= 2500) score -= 6;
+
+    if      (midLapse >= 8.0) score += 8;
     else if (midLapse >= 7.5) score += 6;
     else if (midLapse >= 7.0) score += 4;
     else if (midLapse >= 6.5) score += 2;
     else if (midLapse < 5.5 && cape < 800) score -= 5;
-    
-    // Moisture Depth (850-700 hPa) - Feuchtigkeitstiefe
-    if (moistureDepth >= 75) score += 6;
+
+    if      (moistureDepth >= 75) score += 6;
     else if (moistureDepth >= 65) score += 4;
     else if (moistureDepth >= 55) score += 2;
     else if (moistureDepth < 40 && cape < 600) score -= 4;
-    
-    // Lifted Index (Europa)
-    if (liftedIndex <= -7) score += 12;
+
+    // Mittlere RH 850/700/500 hPa (AR-CHaMo Rädler 2018 Prädiktor)
+    if      (meanRH >= 70) score += 8;
+    else if (meanRH >= 60) score += 5;
+    else if (meanRH >= 50) score += 2;
+    else if (meanRH < 35)  score -= 6;
+
+    if      (liftedIndex <= -7) score += 12;
     else if (liftedIndex <= -6) score += 10;
     else if (liftedIndex <= -4) score += 7;
     else if (liftedIndex <= -2) score += 4;
-    else if (liftedIndex <= 0) score += 1;
-    
-    // K-Index (verbessert)
-    if (kIndex >= 38) score += 8;
+    else if (liftedIndex <= 0)  score += 1;
+
+    if      (kIndex >= 38) score += 8;
     else if (kIndex >= 35) score += 6;
     else if (kIndex >= 30) score += 4;
     else if (kIndex >= 25) score += 2;
-    
-    // Feuchtigkeit und Temperatur (Europa)
-    // Taszarek 2021: Taupunkt wichtiger als absolute Temperatur
-    if (dew >= 18 && temp2m >= 18) score += 6;
+
+    if      (dew >= 18 && temp2m >= 18) score += 6;
     else if (dew >= 16 && temp2m >= 16) score += 4;
     else if (dew >= 13 && temp2m >= 13) score += 2;
-    
-    if (relHum2m >= 75 && temp2m >= 18) score += 5;
+
+    if      (relHum2m >= 75 && temp2m >= 18) score += 5;
     else if (relHum2m >= 70 && temp2m >= 16) score += 3;
     else if (relHum2m >= 65 && temp2m >= 14) score += 1;
-    
-    // Niederschlag (Europa) - stärker gewichtet
-    if (precipAcc >= 3.0 && cape >= 600) score += 8;
+
+    if      (precipAcc >= 3.0 && cape >= 600) score += 8;
     else if (precipAcc >= 2.0 && cape >= 400) score += 6;
     else if (precipAcc >= 1.0 && cape >= 300) score += 4;
     else if (precipAcc >= 0.5 && cape >= 200) score += 2;
-    
-    if (precipProb >= 70 && cape >= 500) score += 6;
+
+    if      (precipProb >= 70 && cape >= 500) score += 6;
     else if (precipProb >= 55 && cape >= 400) score += 4;
     else if (precipProb >= 40 && cape >= 300) score += 2;
-    
-    // Dauerregen-Filter (Europa) - verbessert
+
     if (precipAcc > 3 && cape < 300 && shear < 10) score -= 10;
-    else if (precipAcc > 2 && cape < 200) score -= 6;
-    
-    // Relative Feuchte 500hPa (Europa) - trockene mittlere Troposphäre begünstigt
-    if (hour.rh500 < 30 && cape >= 600) score += 7;
+    else if (precipAcc > 2 && cape < 200)           score -= 6;
+
+    if      (hour.rh500 < 30 && cape >= 600) score += 7;
     else if (hour.rh500 < 40 && cape >= 500) score += 5;
     else if (hour.rh500 < 50 && cape >= 400) score += 3;
-    else if (hour.rh500 > 90 && cape < 800) score -= 6; // Zu feucht = stabilisierend
-    
-    // Strahlung (tagsüber wichtig, Europa) - verbessert
-    const isNight = hour.directRadiation < 20;
-    const isDaytime = hour.directRadiation >= 200;
-    const isStrongDaytime = hour.directRadiation >= 600;
+    else if (hour.rh500 > 90 && cape < 800)  score -= 6;
 
-    if (isStrongDaytime && temp2m >= 14 && cape >= 300) {
-        score += 7; // Starke Sonneneinstrahlung = starke Erwärmung
-    } else if (isDaytime && temp2m >= 12 && cape >= 200) {
-        score += 4;
-    } else if (isNight) {
-        // Low-Level-Jet Detection (Europa) - verbessert
-        const llj_active = srh >= 120 && shear >= 12 && hour.wind >= 8;
-        if (llj_active && cape >= 500) {
-            score += 5; // LLJ aktiv = nächtliche Konvektion möglich
-        } else if (!llj_active && shear < 10 && cape < 400) {
-            score -= 4; // Kein LLJ, schwacher Shear = wenig nächtliche Konvektion
-        } else if (cape >= 600 && srh >= 100) {
-            score += 2; // Moderate nächtliche Bedingungen
-        }
+    const isNight        = hour.directRadiation < 20;
+    const isDaytime      = hour.directRadiation >= 200;
+    const isStrongDay    = hour.directRadiation >= 600;
+
+    if (isStrongDay && temp2m >= 14 && cape >= 300)       score += 7;
+    else if (isDaytime && temp2m >= 12 && cape >= 200)    score += 4;
+    else if (isNight) {
+        const llj = srh >= 120 && shear >= 12 && hour.wind >= 8;
+        if      (llj && cape >= 500)                      score += 5;
+        else if (!llj && shear < 10 && cape < 400)        score -= 4;
+        else if (cape >= 600 && srh >= 100)               score += 2;
     }
-    
-    // Wind (Europa) - verbessert
-    if (hour.wind >= 6 && hour.wind <= 18 && temp2m >= 12) score += 3;
-    else if (hour.wind > 18 && hour.wind <= 25 && temp2m >= 12) score += 5;
-    if (hour.wind > 30 && cape < 1200) score -= 6; // Zu starker Wind = stabilisierend
-    
-    // Böen (Europa) - verbessert
-    const gustDiff = hour.gust - hour.wind;
-    if (gustDiff > 15 && cape >= 600 && temp2m >= 12) score += 6;
-    else if (gustDiff > 12 && cape >= 500) score += 4;
-    else if (gustDiff > 8 && cape >= 300) score += 2;
 
-    // DCAPE: Downdraft-Potential (Europa-Schwellen) - verbessert
-    if (dcape >= 1000 && cape >= 400) score += 7;
-    else if (dcape >= 800 && cape >= 300) score += 5;
-    else if (dcape >= 600 && cape >= 200) score += 3;
-    else if (dcape >= 400 && cape >= 150) score += 1;
-    
-    // Boundary Layer Height - Triggering-Faktor
-    if (pblHeight >= 2000 && cape >= 300) score += 4; // Sehr hohe PBL = gute Durchmischung
+    if      (hour.wind >= 6  && hour.wind <= 18 && temp2m >= 12) score += 3;
+    else if (hour.wind > 18  && hour.wind <= 25 && temp2m >= 12) score += 5;
+    if (hour.wind > 30 && cape < 1200)                           score -= 6;
+
+    const gustDiff = hour.gust - hour.wind;
+    if      (gustDiff > 15 && cape >= 600 && temp2m >= 12) score += 6;
+    else if (gustDiff > 12 && cape >= 500)                 score += 4;
+    else if (gustDiff > 8  && cape >= 300)                 score += 2;
+
+    if      (dcape >= 1000 && cape >= 400) score += 7;
+    else if (dcape >= 800  && cape >= 300) score += 5;
+    else if (dcape >= 600  && cape >= 200) score += 3;
+    else if (dcape >= 400  && cape >= 150) score += 1;
+
+    if      (pblHeight >= 2000 && cape >= 300) score += 4;
     else if (pblHeight >= 1500 && cape >= 200) score += 2;
-    else if (pblHeight < 300 && cape < 500) score -= 3; // Zu niedrige PBL = schlechtes Triggering
-    
-    // Temperatur-Reduktion (Europa) - verbessert für HSLC-Fälle
+    else if (pblHeight < 300   && cape < 500)  score -= 3;
+
+    // Temperatur-Skalierung
     if (temp2m < 8) {
-        // Bei sehr niedriger Temperatur: nur bei hohem Shear/CAPE relevant
-        if (shear < 15 && cape < 500) {
-            score = Math.round(score * 0.4); // Stark reduzieren
-        } else {
-            score = Math.round(score * 0.6); // Moderate Reduktion für HSLC
-        }
+        score = Math.round(score * (shear < 15 && cape < 500 ? 0.4 : 0.6));
     } else if (temp2m < 12) {
         score = Math.round(score * 0.7);
     } else if (temp2m < 15) {
         score = Math.round(score * 0.85);
     }
-    
-    // Finale Plausibilitätsprüfung (Europa)
-    // Mindestanforderungen nach ESSL-Climatology
-    if (score > 0 && cape < 100 && shear < 8) {
-        score = Math.max(0, score - 10); // Zu wenig CAPE und Shear
-    }
-    // Starke Hemmung (großer |CIN|) ohne viel CAPE herunterstufen
-    if (score > 0 && magCin > 150 && cape < 1000) {
-        score = Math.max(0, score - 12); // Zu hohes CIN ohne ausreichendes CAPE
-    }
-    
-    // HSLC-Sonderfall: Bei sehr hohem Shear auch bei niedrigem CAPE möglich
-    if (shear >= 20 && cape >= 150 && score < 30) {
-        score = Math.min(score + 5, 35); // Leichter Boost für HSLC-Fälle
-    }
-    
+
+    if (score > 0 && cape < 100 && shear < 8)          score = Math.max(0, score - 10);
+    if (score > 0 && magCin > 150 && cape < 1000)       score = Math.max(0, score - 12);
+    if (shear >= 20 && cape >= 150 && score < 30)       score = Math.min(score + 5, 35);
+
     return Math.min(100, Math.max(0, Math.round(score)));
 }
 
-// Tornado-Wahrscheinlichkeitsberechnung (nur Europa)
 function calculateTornadoProbability(hour, shear, srh) {
     const temp2m = hour.temperature ?? 0;
-    const dew = hour.dew ?? 0; // für LCL-Berechnung
-    const cape = Math.max(0, hour.cape ?? 0);
-    // CIN negativ (hemmend); wir nutzen für Filter den Betrag
-    const cin = hour.cin ?? 0;
-    const magCin = -Math.min(0, cin); // |CIN| für cin ≤ 0
+    const dew    = hour.dew ?? 0;
+    const cape   = Math.max(0, hour.cape ?? 0);
+    const cin    = hour.cin ?? 0;
+    const magCin = -Math.min(0, cin);
     const { liftedIndex } = calcIndices(hour);
-    
-    // Basis-Filter für Europa: Zu kalt oder keine Instabilität = kein Tornado
-    const minTemp = 8;
-    const minCAPE = 400;
-    if (temp2m < minTemp) return 0;
-    if (cape < minCAPE) return 0;
+
+    if (temp2m < 8) return 0;
+    // minCAPE von 400 → 200 korrigiert (europäische Tornados bei niedrigerem CAPE)
+    if (cape < 200) {
+        if (shear < 18) return 0; // HSLC-Ausnahme nur bei sehr hohem Shear
+    }
     if (magCin > 200) return 0;
-    
-    // SRH für STP: 0-1 km SRH verwenden (SPC-Standard)
+
     const srh1km = calcSRH(hour, '0-1km');
-    
-    // STP berechnen (regionsspezifisch)
-    // Veer-with-Height Check: Winds müssen mit der Höhe drehen (backing am Boden → veering oben)
-    // Das ist physikalisch notwendig für positive SRH und Mesozyklonentwicklung
+
     const dir1000 = hour.windDir1000 ?? 0;
-    const dir850 = hour.windDir850 ?? 0;
-    const dir700 = hour.windDir700 ?? 0;
+    const dir850  = hour.windDir850  ?? 0;
+    const dir700  = hour.windDir700  ?? 0;
 
     function veeringAngle(d1, d2) {
         let diff = (d2 - d1 + 360) % 360;
-        return diff > 180 ? diff - 360 : diff; // positiv = Veering, negativ = Backing
+        return diff > 180 ? diff - 360 : diff;
     }
-
-    const veer850_1000 = veeringAngle(dir1000, dir850);
-    const veer700_850 = veeringAngle(dir850, dir700);
-    const totalVeering = veer850_1000 + veer700_850;
-
-    let veeringFactor = 1.0;
-    if (totalVeering < -20) veeringFactor = 0.3;
-    else if (totalVeering < 0) veeringFactor = 0.6;
-    else if (totalVeering >= 30) veeringFactor = 1.2;
-    else if (totalVeering >= 15) veeringFactor = 1.1;
+    const totalVeering = veeringAngle(dir1000, dir850) + veeringAngle(dir850, dir700);
+    const veeringFactor = totalVeering < -20 ? 0.3 : totalVeering < 0 ? 0.6
+                        : totalVeering >= 30 ? 1.2 : totalVeering >= 15 ? 1.1 : 1.0;
 
     const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew) * veeringFactor;
-    
-    // Basis-Score für Tornado-Wahrscheinlichkeit
+
     let score = 0;
-    
-    // STP ist der Hauptindikator für Tornado-Potential (Europa)
-    if (stp >= 2.0) score = 85;
+    if      (stp >= 2.0) score = 85;
     else if (stp >= 1.5) score = 70;
     else if (stp >= 1.0) score = 55;
     else if (stp >= 0.7) score = 40;
     else if (stp >= 0.5) score = 25;
     else if (stp >= 0.3) score = 12;
-    else if (stp > 0) score = 5;
-    
-    // Zusätzliche Faktoren (Europa)
-    if (cape >= 1000 && shear >= 18) score += 8;
-    else if (cape >= 800 && shear >= 15) score += 5;
-    else if (cape >= 600 && shear >= 12) score += 3;
-    
-    if (srh >= 200 && cape >= 800) score += 6;
+    else if (stp > 0)    score = 5;
+
+    if      (cape >= 1000 && shear >= 18) score += 8;
+    else if (cape >= 800  && shear >= 15) score += 5;
+    else if (cape >= 600  && shear >= 12) score += 3;
+
+    if      (srh >= 200 && cape >= 800) score += 6;
     else if (srh >= 150 && cape >= 600) score += 4;
     else if (srh >= 120 && cape >= 500) score += 2;
-    
-    if (liftedIndex <= -5 && cape >= 800) score += 5;
+
+    if      (liftedIndex <= -5 && cape >= 800) score += 5;
     else if (liftedIndex <= -3 && cape >= 600) score += 3;
-    
-    const ehi = (cape * srh) / 160000;
-    if (ehi >= 2.5) score += 8;
+
+    // EHI mit 0-1km SRH (SPC-Standard)
+    const ehi = (cape * srh1km) / 160000;
+    if      (ehi >= 2.5) score += 8;
     else if (ehi >= 1.5) score += 5;
     else if (ehi >= 1.0) score += 3;
-    
-    // Taszarek 2017: LCL < 1000m = wichtiger Tornado-Prädiktor für Europa
-    // Median LCL bei europäischen Tornados liegt unter 1000m AGL
+
     const lclTornado = calcLCLHeight(temp2m, dew);
-    if (lclTornado < 500) score += 8;
-    else if (lclTornado < 800) score += 5;
-    else if (lclTornado < 1000) score += 2;
-    else if (lclTornado >= 1500) score -= 8; // Hohes LCL = ungünstig für Tornados in Europa
+    if      (lclTornado < 500)   score += 8;
+    else if (lclTornado < 800)   score += 5;
+    else if (lclTornado < 1000)  score += 2;
+    else if (lclTornado >= 1500) score -= 8;
     else if (lclTornado >= 1200) score -= 4;
 
     if (magCin > 100) score -= 10;
-    if (shear < 10) score -= 15;
-    if (srh < 80) score -= 10;
-    
-    // Temperatur-Reduktion (nur Europa)
-    // Quellen:
-    // - Taszarek et al. 2019 (J. Climate): Europa Gewittersaison ab März/April,
-    //   Nordeuropa Mai-Oktober, Mittelmeer ganzjährig
-    // - Sherburn & Parker 2014 (Wea. Forecasting): HSLC-Ereignisse (CAPE ≤ 500, Shear ≥ 18 m/s)
-    //   bei DEUTLICH niedrigeren Temperaturen als klassische Warm-Saison-Gewitter möglich
-    // - Morgenstern et al. 2023 (WCD): Wind-field-Thunderstorms Europa = niedrige CAPE,
-    //   hoher Shear, oft Kalt-Saison → Temperaturschwelle darf nicht zu hoch sein
-    // - Taszarek BAMS 2021 (USA/Europa Trends): 95. Perzentil T2M Europa für schwere Gewitter
+    if (shear < 10)   score -= 15;
+    if (srh < 80)     score -= 10;
 
-    const tempThreshold1 = 8;
-    const tempFactor1 = 0.5;
-    const tempThreshold2 = 13;
-    const tempFactor2 = 0.75;
+    if      (temp2m < 8)  score = Math.round(score * 0.5);
+    else if (temp2m < 13) score = Math.round(score * 0.75);
 
-    if (temp2m < tempThreshold1) score = Math.round(score * tempFactor1);
-    else if (temp2m < tempThreshold2) score = Math.round(score * tempFactor2);
-
-    // Finale Plausibilitätsprüfung:
-    // HSLC-Ausnahme nach Sherburn & Parker 2014:
-    // Bei hohem Shear (≥ 18 m/s) und niedrigem CAPE ist STP nahe 0 aber Ereignisse REAL
     if (stp < 0.1 && score > 10) {
-        if (shear < 15) {
-            score = Math.min(score, 8);   // kein HSLC → hart begrenzen
-        } else {
-            score = Math.min(score, 20);  // HSLC möglich → sanfter begrenzen
-        }
+        score = Math.min(score, shear < 15 ? 8 : 20);
     }
 
-    // Minimalanforderungen (Europa) – nur noch für Grenzfälle die STP-Filter passiert haben
-    const minCAPE_EU = 200;
-    const minShear_EU = 8;
-    const minSRH_EU = 50;
-
     let failCount = 0;
-    if (cape  < minCAPE_EU  && score > 15) failCount++;
-    if (shear < minShear_EU && score > 10) failCount++;
-    if (srh   < minSRH_EU   && score > 10) failCount++;
+    if (cape  < 200 && score > 15) failCount++;
+    if (shear < 8   && score > 10) failCount++;
+    if (srh   < 50  && score > 10) failCount++;
 
-    // Eine gestufte Gesamtreduktion statt kumulativer Einzelreduktionen
-    if      (failCount === 3) score = Math.round(score * 0.35); // alle drei fehlen: stark reduzieren
-    else if (failCount === 2) score = Math.round(score * 0.55); // zwei fehlen: moderat
-    else if (failCount === 1) score = Math.round(score * 0.75); // einer fehlt: leicht reduzieren
+    if      (failCount === 3) score = Math.round(score * 0.35);
+    else if (failCount === 2) score = Math.round(score * 0.55);
+    else if (failCount === 1) score = Math.round(score * 0.75);
 
     return Math.min(100, Math.max(0, Math.round(score)));
 }
