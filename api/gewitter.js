@@ -101,7 +101,7 @@ export default async function handler(req, res) {
                         // Vorzeichen umkehren: +50 → -50
                         data.hourly[aromeKey][i] = -data.hourly[aromeKey][i];
                     }
-                    return countModels(data.hourly, 'convective_inhibition', i) >= 2
+                    return countModels(data.hourly, 'convective_inhibition', i) >= 1
                         ? getMultiModelValue(data.hourly, 'convective_inhibition', i) : 0;
                 })(),
                 liftedIndex: countModels(data.hourly, 'lifted_index', i) >= 2
