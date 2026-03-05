@@ -1125,70 +1125,61 @@ function calculateTornadoProbability(hour, shear, srh) {
     const cape   = Math.max(0, hour.cape ?? 0);
     const cin    = hour.cin ?? 0;
     const magCin = -Math.min(0, cin);
-    const { liftedIndex } = calcIndices(hour);
 
     // Basis-Filter
     if (temp2m < 5)   return 0;
     if (magCin > 200) return 0;
-    // HSLC: cape < 200 nur erlaubt wenn sehr hoher Shear + Rotation vorhanden
-    if (cape < 200 && shear < 20) return 0;
+    if (cape < 100 && shear < 20) return 0;
 
     const srh1km    = calcSRH(hour, '0-1km');
     const lclHeight = calcLCLHeight(temp2m, dew);
+    const wmaxshear = calcWMAXSHEAR(cape, shear);
 
-    // STP ohne Veering-Faktor (Europa: kein zuverlässiges Veering-Signal)
-    // normCAPE=750 (Europa-kalibriert, Taszarek 2020)
-    const stp = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
-
-    // Basis-Score aus STP – Schwellen nach oben verschoben für Europa
-    // (STP-Werte >1 sind in Europa schon außergewöhnlich)
+    // ═══════════════════════════════════════════════════════════
+    // HAUPT-PRÄDIKTOR: WMAXSHEAR × SRH1km
+    // Taszarek 2020 Part II: signifikante Tornado-Wahrscheinlichkeit
+    // in Europa am besten durch WMAXSHEAR + SRH1km beschrieben
+    // ═══════════════════════════════════════════════════════════
     let score = 0;
-    if      (stp >= 3.0) score = 75;
-    else if (stp >= 2.0) score = 55;
-    else if (stp >= 1.5) score = 40;
-    else if (stp >= 1.0) score = 25;
-    else if (stp >= 0.7) score = 15;
-    else if (stp >= 0.5) score = 8;
-    // Unter 0.5: kein Basis-Score – verhindert falsch-positive bei schwachem STP
 
-    // SRH 0-1km – wichtigster Einzel-Prädiktor (Davies-Jones 1984, ESSL-Schema)
-    // Europa: 100 m²/s² bereits signifikant (vs. USA 150+)
-    if      (srh1km >= 250) score += 8;
-    else if (srh1km >= 150) score += 5;
-    else if (srh1km >= 100) score += 3;
-    if      (srh1km < 40)   score -= 15;
-    else if (srh1km < 60)   score -= 8;
+    // WMAXSHEAR (enthält CAPE + Shear, Taszarek 2020 Haupt-Prädiktor)
+    if      (wmaxshear >= 1200) score += 35;
+    else if (wmaxshear >= 900)  score += 25;
+    else if (wmaxshear >= 700)  score += 17;
+    else if (wmaxshear >= 500)  score += 10;
+    else if (wmaxshear >= 300)  score += 4;
+    else                        score += 0;
 
-    // CAPE
-    if      (cape >= 1000) score += 6;
-    else if (cape >= 600)  score += 4;
-    else if (cape >= 300)  score += 2;
+    // SRH 0-1km – wichtigster kinematischer Prädiktor (Taszarek 2013 Polen,
+    // Taszarek 2020: Europa Median signifikanter Tornado SRH3 ~117 m²/s²)
+    // SRH1km typisch ~60-70% von SRH3 → Median SRH1km ~70-80 m²/s²
+    if      (srh1km >= 200) score += 35;
+    else if (srh1km >= 150) score += 25;
+    else if (srh1km >= 100) score += 17;
+    else if (srh1km >= 60)  score += 8;
+    else if (srh1km >= 30)  score += 2;
+    else                    score -= 15; // Keine Rotation = kein Tornado
 
-    // Shear
-    if      (shear >= 25) score += 5;
-    else if (shear >= 18) score += 3;
-    else if (shear < 12)  score -= 8;
-
-    // LCL (Taszarek 2017: Europa Tornado-Median LCL < 1000m AGL)
-    if      (lclHeight < 500)   score += 8;
-    else if (lclHeight < 800)   score += 5;
-    else if (lclHeight < 1200)  score += 2;
-    else if (lclHeight >= 2000) score -= 12;
-    else if (lclHeight >= 1500) score -= 6;
+    // LCL: in Europa schwächerer Diskriminator als USA (Taszarek 2013)
+    // Trotzdem: sehr hohes LCL hemmt Tornadogenese
+    if      (lclHeight < 800)   score += 4;
+    else if (lclHeight < 1500)  score += 1;
+    else if (lclHeight >= 2500) score -= 8;
+    else if (lclHeight >= 2000) score -= 4;
 
     // CIN
-    if (magCin > 150) score -= 12;
-    else if (magCin > 100) score -= 8;
-    else if (magCin > 50)  score -= 3;
+    if      (magCin > 150) score -= 10;
+    else if (magCin > 100) score -= 6;
+    else if (magCin > 50)  score -= 2;
 
     // Temperatur-Skalierung
     if      (temp2m < 8)  score = Math.round(score * 0.5);
     else if (temp2m < 12) score = Math.round(score * 0.75);
 
-    // Harte Obergrenzen ohne Kernparameter
+    // Harte Grenzen ohne Rotation
+    if (srh1km < 30)  return 0;
     if (srh1km < 60)  return Math.min(5,  Math.max(0, score));
-    if (srh1km < 100) return Math.min(15, Math.max(0, score));
-    if (shear  < 12)  return Math.min(5,  Math.max(0, score));
+    if (shear  < 10)  return Math.min(3,  Math.max(0, score));
 
     return Math.min(100, Math.max(0, Math.round(score)));
 }
