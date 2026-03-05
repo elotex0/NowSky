@@ -89,9 +89,13 @@ export default async function handler(req, res) {
                 rh500: getMultiModelValue(data.hourly, 'relative_humidity_500hPa', i),
                 cape: getMultiModelValue(data.hourly, 'cape', i),
                 // CIN kommt von der API als negativer Wert (Stabilisierung). Wir speichern ihn mit Vorzeichen.
-                cin: getMultiModelValue(data.hourly, 'convective_inhibition', i),
-                liftedIndex: getMultiModelValue(data.hourly, 'lifted_index', i),
-                pblHeight: getMultiModelValue(data.hourly, 'boundary_layer_height', i),
+                // Nur übernehmen wenn mindestens 2 Modelle einen Wert liefern, sonst 0 (neutral)
+                cin: countModels(data.hourly, 'convective_inhibition', i) >= 2
+                ? getMultiModelValue(data.hourly, 'convective_inhibition', i) : 0,
+                liftedIndex: countModels(data.hourly, 'lifted_index', i) >= 2
+                ? getMultiModelValue(data.hourly, 'lifted_index', i) : 0,
+                pblHeight: countModels(data.hourly, 'boundary_layer_height', i) >= 2
+                ? getMultiModelValue(data.hourly, 'boundary_layer_height', i) : 1000,       
                 directRadiation: getMultiModelValue(data.hourly, 'direct_radiation', i),
                 precipAcc: getMultiModelValue(data.hourly, 'precipitation', i, 'max'),
                 freezingLevel: getMultiModelValue(data.hourly, 'freezing_level_height', i),
@@ -247,6 +251,18 @@ export default async function handler(req, res) {
     }
 }
 
+// Gibt zurück wie viele Modelle einen Wert liefern (nicht null)
+function countModels(hourly, baseName, index) {
+    const models = ['icon_d2', 'icon_eu', 'arpege_europe', 'ecmwf_ifs025', 'gfs_global'];
+    let count = 0;
+    for (const model of models) {
+        const key = `${baseName}_${model}`;
+        const arr = hourly[key];
+        if (Array.isArray(arr) && arr[index] !== null && arr[index] !== undefined) count++;
+    }
+    return count;
+}
+
 // Hilfsfunktionen
 // Multi-Modell-Wert aus icon_eu, ecmwf_ifs025, gfs_global bilden
 function getMultiModelValue(hourly, baseName, index, agg = 'mean') {
@@ -275,26 +291,37 @@ function getMultiModelValue(hourly, baseName, index, agg = 'mean') {
     // SCHRITT 1: Sortieren
     const sorted = [...values].sort((a, b) => a - b);
 
-    // SCHRITT 2: Ausreißer entfernen über Abstand zum Median
-    // Median ist robuster als IQR bei wenigen Werten (3-5 Modelle)
+    // Median korrekt berechnen
     const mid = Math.floor(sorted.length / 2);
     const median = sorted.length % 2 !== 0
         ? sorted[mid]
         : (sorted[mid - 1] + sorted[mid]) / 2;
 
-    const abweichungen = values.map(v => Math.abs(v - median));
-    const maxErlaubteAbweichung = median * 0.6; // Wert darf max 60% vom Median abweichen
+    // SCHRITT 2: Nur filtern wenn mindestens 3 Werte vorhanden
+    // Bei 1-2 Werten: direkt zurückgeben, kein Ausreißer-Check möglich
+    if (values.length <= 2) {
+        return values.reduce((s, v) => s + v, 0) / values.length;
+    }
 
-    const filtered = values.filter((v, i) => abweichungen[i] <= maxErlaubteAbweichung);
+    // SCHRITT 3: Ausreißer entfernen
+    // Abweichung relativ zum Betrag des Medians (funktioniert auch bei negativen Werten!)
+    const absMedian = Math.abs(median);
+    const schwelle = absMedian < 5
+        ? 10        // bei kleinen/nahe-null Werten: feste Schwelle 10 Einheiten
+        : absMedian * 0.65; // sonst: 65% Abweichung erlaubt
+
+    const filtered = values.filter(v => Math.abs(v - median) <= schwelle);
     const useValues = filtered.length >= 2 ? filtered : values;
 
-    // SCHRITT 3: Gewichte berechnen (näher am Median = mehr Gewicht)
+    // SCHRITT 4: Gewichte berechnen
+    // Näher am Median = mehr Gewicht, funktioniert auch bei negativen Zahlen
     const weights = useValues.map(v => {
         const distance = Math.abs(v - median);
-        return 1 / (1 + distance / (median + 1));
+        const normDist = absMedian > 1 ? distance / absMedian : distance;
+        return 1 / (1 + normDist);
     });
 
-    // SCHRITT 4: Gewichteten Mittelwert berechnen
+    // SCHRITT 5: Gewichteten Mittelwert berechnen
     const totalWeight = weights.reduce((s, w) => s + w, 0);
     const weightedSum = useValues.reduce((s, v, i) => s + v * weights[i], 0);
     return weightedSum / totalWeight;
