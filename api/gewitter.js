@@ -20,7 +20,7 @@ export default async function handler(req, res) {
                     `wind_direction_1000hPa,wind_direction_850hPa,wind_direction_700hPa,wind_direction_500hPa,wind_direction_300hPa,` +
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
-                    `relative_humidity_500hPa,cape,` +
+                    `relative_humidity_500hPa,relative_humidity_850hPa,relative_humidity_700hPa,cape,` +
                     `dew_point_850hPa,dew_point_700hPa,direct_radiation,` +
                     `freezing_level_height,precipitation&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
 
@@ -108,7 +108,9 @@ export default async function handler(req, res) {
                 temp700:           t700 ?? (t850 + t500) / 2,
                 dew850:            d850 ?? (d2m ?? t2m - 10),
                 dew700:            d700 ?? (d2m ?? t2m - 10),
-                rh500:             get('relative_humidity_500hPa') ?? 50,
+                rh500: get('relative_humidity_500hPa') ?? 50,
+                rh700: get('relative_humidity_700hPa') ?? null,
+                rh850: get('relative_humidity_850hPa') ?? null,
                 cape:              Math.max(0, get('cape') ?? 0),
                 directRadiation:   get('direct_radiation') ?? 0,
                 precipAcc:         get('precipitation') ?? 0,
@@ -756,8 +758,8 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
     else if (hour.rh500 > 80 && cape < 900)  score -= 5;
 
     // Mittlere RH (850+700+500) als AR-CHaMo Prädiktor
-    const rh850 = calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
-    const rh700 = calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
+    const rh850  = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
+    const rh700  = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
     const meanRH = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
     if      (meanRH >= 70 && cape >= 600) score += 5;
     else if (meanRH >= 60 && cape >= 400) score += 3;
@@ -866,8 +868,8 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     else if (hour.rh500 < 55 && dcape >= 400) score += 1;
 
     // Mittlere RH als AR-CHaMo Prädiktor
-    const rh850w = calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
-    const rh700w = calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
+    const rh850w = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
+    const rh700w = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
     const meanRH_w = (rh850w + rh700w + (hour.rh500 ?? 50)) / 3;
     if      (meanRH_w < 35 && dcape >= 600) score += 6; // Trocken = stärkere Downbursts
     else if (meanRH_w < 45 && dcape >= 500) score += 3;
@@ -925,19 +927,34 @@ function calculateProbability(hour) {
     const dcape    = calcDCAPE(hour);
 
     // Mittlere RH über 850/700/500 hPa (AR-CHaMo Prädiktor, Rädler 2018)
-    const rh850    = calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
-    const rh700    = calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
-    const meanRH   = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
+    const rh850  = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
+    const rh700  = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
+    const meanRH = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
+
+     // ── HSLC-Regime (Wind-Feld-Gewitter, Tuschy / Rädler 2018) ─────────
+    // High-Shear Low-CAPE: anderer physikalischer Mechanismus als
+    // Massenfeld-Gewitter → eigener Score-Pfad, kein normaler CAPE-Score
+    const isHSLC = cape < 300 && shear >= 18;
+    if (isHSLC) {
+        let hslcScore = 0;
+        if      (shear >= 25) hslcScore += 30;
+        else if (shear >= 20) hslcScore += 20;
+        else                  hslcScore += 10;
+        if      (meanRH >= 65) hslcScore += 15;
+        else if (meanRH <  50) hslcScore -= 15;
+        if (temp2m < 8) hslcScore = Math.round(hslcScore * 0.6);
+        return Math.min(60, Math.max(0, hslcScore));
+    }
 
     let score = 0;
 
-    if      (cape >= 2000) score += 28;
-    else if (cape >= 1500) score += 24;
-    else if (cape >= 1200) score += 20;
-    else if (cape >= 800)  score += 16;
-    else if (cape >= 500)  score += 12;
-    else if (cape >= 300)  score += 8;
-    else if (cape >= 150)  score += 4;
+    if      (cape >= 2000) score += 16;
+    else if (cape >= 1500) score += 14;
+    else if (cape >= 1200) score += 12;
+    else if (cape >= 800)  score += 10;
+    else if (cape >= 500)  score += 8;
+    else if (cape >= 300)  score += 6;
+    else if (cape >= 150)  score += 3;
 
     const elTemp = hour.temp500 ?? 0;
     if      (elTemp <= -20 && cape >= 200) score += 8;
@@ -956,11 +973,11 @@ function calculateProbability(hour) {
     else if (magCin > 100) score -= 10;
     else if (magCin > 50)  score -= 5;
 
+    // SCP: erst ab 1.0 punkten (Europa-Schwelle für organisierte Konvektion)
     if      (scp >= 3.0) score += 24;
     else if (scp >= 2.0) score += 20;
     else if (scp >= 1.5) score += 16;
-    else if (scp >= 1.0) score += 12;
-    else if (scp >= 0.5) score += 6;
+    else if (scp >= 1.0) score += 12
 
     if      (stp >= 2.0) score += 18;
     else if (stp >= 1.5) score += 15;
@@ -968,11 +985,11 @@ function calculateProbability(hour) {
     else if (stp >= 0.5) score += 8;
     else if (stp >= 0.3) score += 4;
 
+    // EHI: erst ab 0.5 punkten
     if      (ehi >= 2.5) score += 14;
     else if (ehi >= 2.0) score += 12;
     else if (ehi >= 1.0) score += 9;
     else if (ehi >= 0.5) score += 5;
-    else if (ehi >= 0.3) score += 3;
 
     if      (wmaxshear >= 1500) score += 22;
     else if (wmaxshear >= 1200) score += 18;
@@ -1013,10 +1030,11 @@ function calculateProbability(hour) {
     else if (moistureDepth < 40 && cape < 600) score -= 4;
 
     // Mittlere RH 850/700/500 hPa (AR-CHaMo Rädler 2018 Prädiktor)
-    if      (meanRH >= 70) score += 8;
-    else if (meanRH >= 60) score += 5;
-    else if (meanRH >= 50) score += 2;
-    else if (meanRH < 35)  score -= 6;
+    if      (meanRH >= 75) score += 8;
+    else if (meanRH >= 65) score += 5;
+    else if (meanRH >= 55) score += 2;
+    else if (meanRH < 50)  score -= 12;  // Unter 50%: starke Suppression (Westermayer 2017)
+    else if (meanRH < 40)  score -= 20;  // Unter 40%: Gewitter fast unmöglich  
 
     if      (liftedIndex <= -7) score += 12;
     else if (liftedIndex <= -6) score += 10;
