@@ -432,31 +432,42 @@ function calcCIN(hour) {
 
 // ── Lifted Index (eigenständige Funktion) ──────────────────────────────────
 function calcLiftedIndex(hour) {
-    const t850 = hour.temp850 ?? 0;
-    const d850 = hour.dew850 ?? t850 - 10;
+    // Surface-Based LI: Parzelle startet bei 2m, nicht 850 hPa
+    // Konsistent mit Surface-Based CAPE (Taszarek 2020 / ESTOFEX-Standard)
+    // LI = T500_Umgebung - T500_Parzelle_von_Boden
+    const t2m  = hour.temperature ?? 0;
+    const d2m  = hour.dew ?? (t2m - 10);
     const t500 = hour.temp500 ?? 0;
-    if (t850 === 0 && t500 === 0) return 0;
+    if (t2m === 0 && t500 === 0) return 0;
 
-    const dewDep  = t850 - d850;
-    const T_LCL   = t850 - 0.212 * dewDep - 0.001 * dewDep * dewDep;
-    const T_K     = t850 + 273.15;
+    // Schritt 1: LCL der Bodenparzelle (Bolton 1980)
+    const dewDep  = t2m - d2m;
+    const T_LCL   = t2m - 0.212 * dewDep - 0.001 * dewDep * dewDep;
     const T_LCL_K = T_LCL + 273.15;
-    const e_d     = 6.112 * Math.exp((17.67 * d850) / (d850 + 243.5));
-    const w       = 0.622 * e_d / (1013.25 - e_d);
-    const w_gkg   = w * 1000;
-    const theta_e = T_K * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * w_gkg))
-                  * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
+    const T2m_K   = t2m + 273.15;
 
+    // Schritt 2: θe der Bodenparzelle (Bolton 1980)
+    const e_d2m   = 6.112 * Math.exp((17.67 * d2m) / (d2m + 243.5));
+    const w2m     = 0.622 * e_d2m / (1013.25 - e_d2m);
+    const w2m_gkg = w2m * 1000;
+    const theta_e = T2m_K
+        * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m_gkg))
+        * Math.exp((3.376 / T_LCL_K - 0.00254) * w2m_gkg * (1 + 0.00081 * w2m_gkg));
+
+    // Schritt 3: Feuchtadiabatisch von LCL bis 500 hPa (θe = konstant)
     let T_parcel_500 = t500 + 4;
-    for (let iter = 0; iter < 5; iter++) {
-        const T_K2 = T_parcel_500 + 273.15;
-        const es   = 6.112 * Math.exp((17.67 * T_parcel_500) / (T_parcel_500 + 243.5));
-        const ws   = 0.622 * es / (500 - es);
+    for (let iter = 0; iter < 6; iter++) {
+        const Tp_K   = T_parcel_500 + 273.15;
+        const es     = 6.112 * Math.exp((17.67 * T_parcel_500) / (T_parcel_500 + 243.5));
+        const ws     = 0.622 * es / (500 - es);
         const ws_gkg = ws * 1000;
-        const theta_e_test = T_K2 * Math.pow(1000 / 500, 0.2854 * (1 - 0.00028 * ws_gkg))
-                           * Math.exp((3.376 / T_K2 - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
+        const theta_e_test = Tp_K
+            * Math.pow(1000 / 500, 0.2854 * (1 - 0.00028 * ws_gkg))
+            * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
         T_parcel_500 += (theta_e - theta_e_test) * 0.3;
     }
+
+    // LI = Umgebung - Parzelle (negativ = instabil)
     return Math.round((t500 - T_parcel_500) * 10) / 10;
 }
 
