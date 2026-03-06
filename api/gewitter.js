@@ -308,6 +308,7 @@ export default async function handler(req, res) {
                     srh3km:   Math.round(srh * 10) / 10,
                     srh1km:   Math.round(calcSRH(mh, '0-1km') * 10) / 10,
                     wmaxshear: Math.round(wms),
+                    lcl:      Math.round(calcLCLHeight(mh.temperature ?? mh.temp2m, mh.dew ?? mh.dew2m)),
                     cin:      mh.cin,
                     li:       mh.liftedIndex,
                     meanRH:   Math.round((rh850 + rh700 + mh.rh500) / 3),
@@ -628,8 +629,12 @@ function calcWMAXSHEAR(cape, shear) {
 }
 
 function calcLCLHeight(temp2m, dew2m) {
-    if (temp2m <= 0 || dew2m <= 0) return 2000;
-    return Math.max(0, 125 * (temp2m - dew2m));
+    // Standard-Formel, auch in europäischen Studien verwendet
+    // Quelle: Púčik et al. 2015, median LCL Europa ~905m
+    const spread = temp2m - dew2m;
+    if (spread < 0) return 0;        // Nebel / gesättigte Luft
+    if (spread === 0) return 0;      // 100% relative Feuchte
+    return Math.max(0, 125 * spread);
 }
 
 function calcMidLevelLapseRate(temp700, temp500) {
@@ -834,7 +839,8 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     else if (shear < 11  && cape < 350)          factor *= 0.8;
 
     score = Math.round(score * factor);
-    if (dcape < 350 || wmaxshear < 550 ) score = Math.min(score, 35);
+    if      (dcape < 250 || wmaxshear < 400) score = Math.min(score, 10);
+    else if (dcape < 350 || wmaxshear < 550) score = Math.min(score, 25);
     if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20) score = Math.min(100, score + 12);
     if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600)    score = Math.min(100, score + 8);
 
@@ -1094,6 +1100,10 @@ function stpToPercentEurope(stp) {
 // ── Tornado-Wahrscheinlichkeit via STP ──────────────────────────────────────
 // Funktion behält den Namen calculateTornadoProbability
 function calculateTornadoProbability(hour,shear, srh) {
+
+    const thunderProb = calculateProbability(hour); // 0–100%
+    if (thunderProb < 40) return 0; // Schwelle: 40% – sonst kein Tornado
+
     const cape  = Math.max(0, hour.cape ?? 0);        // MLCAPE in J/kg
     const srh1  = calcSRH(hour, '0-1km');             // SRH 0-1 km in m²/s²                    
     const temp  = hour.temperature ?? 20;             // Boden-Temp °C
