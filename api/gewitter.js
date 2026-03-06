@@ -736,20 +736,21 @@ function calculateHailProbability(hour, wmaxshear, dcape) {
 }
 
 function calculateWindProbability(hour, wmaxshear, dcape) {
+
+    const thunderProb = calculateProbability(hour); // 0–100%
+    if (thunderProb < 5) return 0; // Schwelle: 5% – sonst kein Severe Wind
+
     const cape     = Math.max(0, hour.cape ?? 0);
     const shear    = calcShear(hour);
-    const wind10m  = hour.wind ?? 0;
-    const gust     = hour.gust ?? 0;
-    const gustDiff = gust - wind10m;
     const temp700  = hour.temp700 ?? 0;
     const dew700   = hour.dew700  ?? 0;
     const temp500  = hour.temp500 ?? 0;
     const pwat = hour.pwat ?? 0;
+    const lapseRate = calcMidLevelLapseRate(temp700, temp500);
 
     // ESTOFEX Z_wind: DCAPE + CAPE + Shear + Midlevel_dry_air + PWAT
     if (dcape < 250 && wmaxshear < 450) return 0;
     if (shear < 9 && cape < 450)        return 0;
-    if (gust < 60)                      return 0;
 
     let score = 0;
 
@@ -777,7 +778,6 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     else if (shear >= 11) score += 2;
     else if (shear >= 9)  score += 1;
 
-    const srh3km    = calcSRH(hour, '0-3km');
     const w850_low  = windToUV((hour.wind_speed_850hPa  ?? 0) / 3.6, hour.windDir850  ?? 0);
     const w1000_low = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
     const shear_low = Math.hypot(w850_low.u - w1000_low.u, w850_low.v - w1000_low.v);
@@ -786,30 +786,16 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     else if (shear_low >= 9)  score += 4;
     else if (shear_low >= 6)  score += 2;
 
-    if      (srh3km >= 200) score += 8;
-    else if (srh3km >= 150) score += 6;
-    else if (srh3km >= 100) score += 4;
-    else if (srh3km >= 60)  score += 2;
+    if      (lapseRate >= 8.0 && dcape >= 500) score += 10;
+    else if (lapseRate >= 7.0 && dcape >= 400) score += 6;
+    else if (lapseRate >= 6.5 && dcape >= 300) score += 3;
+    else if (lapseRate < 5.5)                  score -= 3;  
 
     if      (cape >= 1500) score += 11;
     else if (cape >= 1200) score += 9;
     else if (cape >= 800)  score += 7;
     else if (cape >= 450)  score += 4;
     else if (cape >= 250)  score += 2;
-
-    if      (gustDiff >= 40) score += 15;
-    else if (gustDiff >= 30) score += 11;
-    else if (gustDiff >= 25) score += 9;
-    else if (gustDiff >= 20) score += 6;
-    else if (gustDiff >= 15) score += 3;
-    else if (gustDiff >= 8)  score += 1;
-
-    if      (gust >= 130) score += 20;
-    else if (gust >= 110) score += 16;
-    else if (gust >= 90)  score += 12;
-    else if (gust >= 80)  score += 7;
-    else if (gust >= 70)  score += 3;
-    else if (gust >= 60)  score += 1;
 
     // Midlevel dry air (ESTOFEX Z_wind b4: trocken = stärkere Downbursts)
     const dewDep700 = temp700 - dew700;
@@ -846,12 +832,10 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     else if (dcape < 350   || wmaxshear < 550)   factor = 0.75;
     if      (shear >= 17 && cape >= 550)         factor *= 1.1;
     else if (shear < 11  && cape < 350)          factor *= 0.8;
-    if      (gust >= 100 && dcape >= 800)        factor *= 1.1;
-    else if (gust < 75   && dcape < 450)         factor *= 0.85;
 
     score = Math.round(score * factor);
-    if (dcape < 350 || wmaxshear < 550 || gust < 70) score = Math.min(score, 35);
-    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20 && gust >= 110) score = Math.min(100, score + 12);
+    if (dcape < 350 || wmaxshear < 550 ) score = Math.min(score, 35);
+    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20) score = Math.min(100, score + 12);
     if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600)    score = Math.min(100, score + 8);
 
     return Math.min(100, Math.max(0, score));
