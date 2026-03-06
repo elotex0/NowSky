@@ -1094,9 +1094,18 @@ function calculateProbability(hour) {
     return Math.min(100, Math.max(0, Math.round(score)));
 }
 
-// ── Optional: STP → grobe Tornado-% Wahrscheinlichkeit ──
+// ── Optional: STP → grobe Tornado-% Wahrscheinlichkeit (Europa) ──
 function stpToPercentEurope(stp) {
-    return Math.min(100, Math.round(stp * 25));
+    if (stp < 0.1) return 0;         // STP < 0.1 → fast keine Gefahr
+    if (stp < 0.5) return 5;         // kleine Gefahr, 5%
+    if (stp < 1.0) return 10;        // moderate Gefahr, 10%
+    if (stp < 1.5) return 20;
+    if (stp < 2.0) return 30;
+    if (stp < 2.5) return 40;
+    if (stp < 3.0) return 50;
+    if (stp < 4.0) return 65;
+    if (stp < 5.0) return 80;
+    return 95;                        // sehr hohe Gefahr
 }
 // ── Tornado-Wahrscheinlichkeit via STP ──────────────────────────────────────
 // Funktion behält den Namen calculateTornadoProbability
