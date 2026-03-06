@@ -430,7 +430,7 @@ function calcCIN(hour) {
         }
     }
 
-    return Math.round(Math.max(-500, Math.min(0, cin_low + cin_mid)));
+    return Math.round(Math.max(0, Math.min(0, cin_low + cin_mid)));
 }
 
 // Surface-Based LI (Bolton 1980) – konsistent mit CAPE (Taszarek 2020 / ESTOFEX)
