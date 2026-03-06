@@ -668,34 +668,43 @@ function categorizeRisk(prob) {
 // ═══════════════════════════════════════════════════════════════════════════
 // WAHRSCHEINLICHKEITS-FUNKTIONEN
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// WAHRSCHEINLICHKEITS-FUNKTIONEN – HAGEL ≥2cm nur bei Gewitter
+// ═══════════════════════════════════════════════════════════════════════════
 function calculateHailProbability(hour, wmaxshear, dcape) {
-    const cape          = Math.max(0, hour.cape ?? 0);
-    const shear         = calcShear(hour);
-    const srh           = calcSRH(hour, '0-3km');
-    const temp2m        = hour.temperature ?? 0;
-    const dew           = hour.dew ?? 0;
-    const lclHeight     = calcLCLHeight(temp2m, dew);
-    const freezingLevel = hour.freezingLevel ?? 4000;
+    // --- Prüfe zuerst, ob Gewitter vorhanden ist ---
+    const thunderProb = calculateProbability(hour); // 0–100%
+    if (thunderProb < 5) return 0; // Schwelle: 5% – sonst kein Hagel
 
-    // --- Basis-HPP (0–1) ---
+    // --- HPP-Basis wie vorher ---
+    const cape   = Math.max(0, hour.cape ?? 0);
+    const shear  = calcShear(hour);
+    const srh    = calcSRH(hour, '0-3km');
+    const temp2m = hour.temperature ?? 0;
+    const dew    = hour.dew ?? 0;
+    const lcl    = calcLCLHeight(temp2m, dew);
+    const FL     = hour.freezingLevel ?? 4000;
+
     let HPP_base = (cape/1000) * (shear/20) * (srh/150);
 
-    // --- Abschwächung für LCL, CIN, Freezing Level ---
-    let f_LCL = lclHeight > 1500 ? 0.9 : 1.0;
-    const magCIN = -Math.min(0, hour.cin ?? 0);
-    let f_CIN = magCIN > 50 ? 0.9 : 1.0;
+    // --- Abschwächungsfaktoren ---
+    let f_LCL = lcl > 1500 ? 0.9 : 1.0;
+    let magCIN = -Math.min(0, hour.cin ?? 0);
+    let f_CIN  = magCIN > 50 ? 0.9 : 1.0;
 
-    // Freezing Level Faktor für ≥2cm
     let f_FL = 1.0;
-    if      (freezingLevel < 2500) f_FL = 1.0;
-    else if (freezingLevel < 3500) f_FL = 0.8;
-    else if (freezingLevel < 4500) f_FL = 0.6;
-    else                            f_FL = 0.4;
+    if      (FL < 2500) f_FL = 1.0;
+    else if (FL < 3500) f_FL = 0.8;
+    else if (FL < 4500) f_FL = 0.6;
+    else                f_FL = 0.4;
 
-    // --- Hagel ≥2cm Wahrscheinlichkeit %
-    let hail2cmProb = Math.min(100, HPP_base * f_LCL * f_CIN * 100 * 0.6 * f_FL);
+    // --- Hagel ≥2cm Wahrscheinlichkeit bedingt auf Gewitter ---
+    let hail2cmProb = HPP_base * f_LCL * f_CIN * f_FL * 100;
 
-    return hail2cmProb;
+    // Bedingte Wahrscheinlichkeit: multipliziere mit Gewitterwahrscheinlichkeit
+    let hailConditional = Math.min(100, Math.round(hail2cmProb * (thunderProb / 100)));
+
+    return hailConditional;
 }
 
 function calculateWindProbability(hour, wmaxshear, dcape) {
