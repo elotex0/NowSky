@@ -509,6 +509,34 @@ function calcPBLHeight(hour) {
     return Math.round(Math.max(100, Math.min(4000, pblHeight)));
 }
 
+function calcEBWD(hour) {
+    const levels = [
+        {speed: hour.wind_speed_1000hPa ?? 0, dir: hour.windDir1000hPa ?? 0},
+        {speed: hour.wind_speed_975hPa  ?? 0, dir: hour.windDir975hPa  ?? 0},
+        {speed: hour.wind_speed_950hPa  ?? 0, dir: hour.windDir950hPa  ?? 0},
+        {speed: hour.wind_speed_900hPa  ?? 0, dir: hour.windDir900hPa  ?? 0},
+        {speed: hour.wind_speed_850hPa  ?? 0, dir: hour.windDir850hPa  ?? 0},
+        {speed: hour.wind_speed_800hPa  ?? 0, dir: hour.windDir800hPa  ?? 0}
+    ];
+
+    const uv = levels.map(d => {
+        const rad = d.dir * Math.PI / 180;
+        return { u: -d.speed * Math.sin(rad), v: -d.speed * Math.cos(rad) };
+    });
+
+    let maxDiff = 0;
+    for (let i = 0; i < uv.length; i++) {
+        for (let j = i+1; j < uv.length; j++) {
+            const du = uv[j].u - uv[i].u;
+            const dv = uv[j].v - uv[i].v;
+            const diff = Math.sqrt(du*du + dv*dv);
+            if (diff > maxDiff) maxDiff = diff;
+        }
+    }
+
+    return maxDiff; // EBWD in m/s
+}
+
 function calcSRH(hour, layer = '0-3km') {
     const levels = layer === '0-1km'
         ? [
@@ -1066,6 +1094,10 @@ function calculateProbability(hour) {
     return Math.min(100, Math.max(0, Math.round(score)));
 }
 
+// ── Optional: STP → grobe Tornado-% Wahrscheinlichkeit ──
+function stpToPercentEurope(stp) {
+    return Math.min(100, Math.round(stp * 25));
+}
 // ── Tornado-Wahrscheinlichkeit via STP ──────────────────────────────────────
 // Funktion behält den Namen calculateTornadoProbability
 function calculateTornadoProbability(hour,shear, srh) {
@@ -1077,24 +1109,17 @@ function calculateTornadoProbability(hour,shear, srh) {
 
     // LCL berechnen
     const lcl = calcLCLHeight(temp, dew);            // LCL in m
+    const ebwd = calcEBWD(hour);                     // m/s
 
-    // STP-Berechnung (vereinfacht, Normwerte)
-    let stp = (cape / 1500) * (srh1 / 150) * (shear / 20);
+    // CIN-Faktor
+    const cinFactor = Math.max(0, (200 + cin)/150);
 
-    // Korrekturen für LCL & CIN
-    if (lcl > 2500) stp *= 0.9;
-    else if (lcl > 2000) stp *= 0.95;
+    // LCL-Faktor
+    const lclFactor = Math.max(0, (2000 - lcl)/1000);
 
-    if (cin < -200) stp *= 0.8;
-    else if (cin < -100) stp *= 0.9;
-
-    // STP nie <0
+    // Europäische STP-Formel
+    let stp = (cape / 1500) * lclFactor * (srh1 / 150) * (ebwd / 20) * cinFactor;
     stp = Math.max(0, stp);
 
-    return stp; // STP-Index (nicht Prozent)
-}
-
-// Optional: STP → grobe Tornado-% Wahrscheinlichkeit
-function stpToPercent(stp) {
-    return Math.min(100, Math.round(stp * 25)); // STP=1 → ca. 25 %
+    return stpToPercentEurope(stp); // STP-Index
 }
