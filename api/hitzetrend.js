@@ -2,14 +2,14 @@ import fetch from "node-fetch";
 
 // Trend-Beschreibungen nach DWD
 const trendDescriptions = {
-  0: "keine Warnung bzw. kein Hitzetrend",
-  1: "Warnung vor starker Wärmebelastung",
-  2: "Warnung vor extremer Wärmebelastung",
-  3: "Hitzetrendvorhersage aktiv; Warnung möglich (wird nicht mehr verwendet)",
-  4: "Hitzetrendvorhersage aktiv; Warnung Stufe 1 gering wahrscheinlich",
-  5: "Hitzetrendvorhersage aktiv; Warnung Stufe 1 wahrscheinlich",
-  6: "Hitzetrendvorhersage aktiv; Warnung Stufe 2 gering wahrscheinlich",
-  7: "Hitzetrendvorhersage aktiv; Warnung Stufe 2 wahrscheinlich"
+  0: "Kein Hitzetrend",
+  1: "starke Wärmebelastung",
+  2: "extreme Wärmebelastung",
+  3: "wird nicht mehr verwendet",
+  4: "starke Wärmebelastung möglich",
+  5: "starke Wärmebelastung wahrscheinlich",
+  6: "extreme Wärmebelastung möglich",
+  7: "extreme Wärmebelastung wahrscheinlich"
 };
 
 // Optional: DWD JSON pro warm Function speichern
@@ -66,8 +66,7 @@ export default async function handler(req, res) {
       d.setDate(d.getDate() + idx);
       return {
         date: d.toISOString().slice(0,10),
-        trend: value,
-        description: trendDescriptions[value] || "unbekannter Trendwert"
+        trend: value
       };
     });
 
@@ -75,7 +74,8 @@ export default async function handler(req, res) {
       code: codeFound,
       county,
       state,
-      trends
+      trends,
+      descriptions: trendDescriptions
     });
 
   } catch(err) {
