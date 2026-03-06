@@ -1142,67 +1142,35 @@ function calculateProbability(hour) {
     return Math.min(100, Math.max(0, Math.round(score)));
 }
 
-// ── Tornado-Wahrscheinlichkeit ──────────────────────────────────────────────
-// Hauptprädiktoren: WMAXSHEAR + SRH 0-1km
-// Quellen: Taszarek 2020 Part II, Taszarek 2013 (Polen), Púčik 2015 (Zentraleuropa)
-// ESTOFEX Z_tornado = f(CAPE, SRH_0-1km, Shear_0-6km, LCL, Storm_motion)
-// Kein STP – zu USA-lastig auch mit normCAPE=750
-// Kein Veering-Faktor – in Europa kein zuverlässiges Signal (Púčik 2015)
-// LCL nur schwache Korrektur – kein guter Diskriminator in Europa
-function calculateTornadoProbability(hour, shear, srh) {
-    const temp2m = hour.temperature ?? 0;
-    const dew    = hour.dew ?? 0;
-    const cape   = Math.max(0, hour.cape ?? 0);
-    const cin    = hour.cin ?? 0;
-    const magCin = -Math.min(0, cin);
+// ── Tornado-Wahrscheinlichkeit via STP ──────────────────────────────────────
+// Funktion behält den Namen calculateTornadoProbability
+function calculateTornadoProbability(hour,shear, srh) {
+    const cape  = Math.max(0, hour.cape ?? 0);        // MLCAPE in J/kg
+    const srh1  = calcSRH(hour, '0-1km');             // SRH 0-1 km in m²/s²                    
+    const temp  = hour.temperature ?? 20;             // Boden-Temp °C
+    const dew   = hour.dew ?? 10;                     // Taupunkt °C
+    const cin   = hour.cin ?? 0;                      // CIN in J/kg
 
-    // Basis-Filter
-    if (temp2m < 5)    return 0;
-    if (magCin > 200)  return 0;
-    if (cape < 100)    return 0;  // Kein CAPE = kein Tornado, egal wie viel Shear
-    if (shear < 12)    return 0;  // Mindest-Shear erhöht von implizit 0 auf 12 m/s
+    // LCL berechnen
+    const lcl = calcLCLHeight(temp, dew);            // LCL in m
 
-    const srh1km    = calcSRH(hour, '0-1km');
-    const wmaxshear = calcWMAXSHEAR(cape, shear);
+    // STP-Berechnung (vereinfacht, Normwerte)
+    let stp = (cape / 1500) * (srh1 / 150) * (shear / 20);
 
-    let score = 0;
+    // Korrekturen für LCL & CIN
+    if (lcl > 2500) stp *= 0.9;
+    else if (lcl > 2000) stp *= 0.95;
 
-    // WMAXSHEAR – Haupt-Prädiktor (enthält CAPE + Shear kombiniert)
-    // Taszarek 2020: bedingte Tornadowahrsch. am besten durch WMAXSHEAR + SRH1km
-    if      (wmaxshear >= 1000) score += 30;
-    else if (wmaxshear >= 700)  score += 20;
-    else if (wmaxshear >= 500)  score += 12;
-    else if (wmaxshear >= 300)  score += 5;
-    else                        score -= 10;
+    if (cin < -200) stp *= 0.8;
+    else if (cin < -100) stp *= 0.9;
 
-    // SRH 0-1km – wichtigster kinematischer Prädiktor
-    // Taszarek 2013: Europa Median SRH3 signifikanter Tornado ~117 m²/s²
-    // SRH1km ≈ 60-70% von SRH3 → Median SRH1km ~70-80 m²/s²
-    if      (srh1km >= 200) score += 30;
-    else if (srh1km >= 150) score += 22;
-    else if (srh1km >= 100) score += 14;
-    else if (srh1km >= 60)  score += 6;
-    else if (srh1km >= 30)  score += 1;
-    else                    score -= 20;
+    // STP nie <0
+    stp = Math.max(0, stp);
 
-    // LCL: nur schwache Korrektur (Púčik 2015: kein guter Diskriminator Europa)
-    const lclHeight = calcLCLHeight(temp2m, dew);
-    if      (lclHeight >= 2500) score -= 5;
-    else if (lclHeight >= 2000) score -= 2;
+    return stp; // STP-Index (nicht Prozent)
+}
 
-    // CIN-Dämpfung
-    if      (magCin > 150) score -= 10;
-    else if (magCin > 100) score -= 6;
-    else if (magCin > 50)  score -= 2;
-
-    // Temperatur-Skalierung
-    if      (temp2m < 8)  score = Math.round(score * 0.5);
-    else if (temp2m < 12) score = Math.round(score * 0.75);
-
-    // Harte Grenzen: ohne Rotation kein Tornado
-    if (srh1km < 30)  return 0;
-    if (srh1km < 60)  return Math.min(3,  Math.max(0, score));
-    if (shear  < 10)  return Math.min(3,  Math.max(0, score));
-
-    return Math.min(100, Math.max(0, Math.round(score)));
+// Optional: STP → grobe Tornado-% Wahrscheinlichkeit
+function stpToPercent(stp) {
+    return Math.min(100, Math.round(stp * 25)); // STP=1 → ca. 25 %
 }
