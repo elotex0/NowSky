@@ -668,119 +668,34 @@ function categorizeRisk(prob) {
 // ═══════════════════════════════════════════════════════════════════════════
 // WAHRSCHEINLICHKEITS-FUNKTIONEN
 // ═══════════════════════════════════════════════════════════════════════════
-
 function calculateHailProbability(hour, wmaxshear, dcape) {
     const cape          = Math.max(0, hour.cape ?? 0);
     const shear         = calcShear(hour);
-    const temp500       = hour.temp500 ?? 0;
-    const temp700       = hour.temp700 ?? 0;
-    const freezingLevel = hour.freezingLevel ?? 4000;
+    const srh           = calcSRH(hour, '0-3km');
     const temp2m        = hour.temperature ?? 0;
     const dew           = hour.dew ?? 0;
     const lclHeight     = calcLCLHeight(temp2m, dew);
-    const midLapse      = calcMidLevelLapseRate(temp700, temp500);
-    const srh           = calcSRH(hour, '0-3km');
+    const freezingLevel = hour.freezingLevel ?? 4000;
 
-    // ESTOFEX Hagel-Guideline: CAPE > 1000, Shear > 15-20, WBZ < 3000m
-    if (cape < 250)           return 0;
-    if (shear < 10)           return 0;
-    if (wmaxshear < 450)      return 0;
-    if (freezingLevel > 3500) return 0; // WBZ > 3500m = meist kleiner Hagel
+    // --- Basis-HPP (0–1) ---
+    let HPP_base = (cape/1000) * (shear/20) * (srh/150);
 
-    let score = 0;
+    // --- Abschwächung für LCL, CIN, Freezing Level ---
+    let f_LCL = lclHeight > 1500 ? 0.9 : 1.0;
+    const magCIN = -Math.min(0, hour.cin ?? 0);
+    let f_CIN = magCIN > 50 ? 0.9 : 1.0;
 
-    // CAPE (ESTOFEX: significant hail bei > 2000 J/kg)
-    if      (cape >= 2000) score += 28;
-    else if (cape >= 1500) score += 24;
-    else if (cape >= 1200) score += 20;
-    else if (cape >= 800)  score += 15;
-    else if (cape >= 600)  score += 9;
-    else if (cape >= 350)  score += 4;
+    // Freezing Level Faktor für ≥2cm
+    let f_FL = 1.0;
+    if      (freezingLevel < 2500) f_FL = 1.0;
+    else if (freezingLevel < 3500) f_FL = 0.8;
+    else if (freezingLevel < 4500) f_FL = 0.6;
+    else                            f_FL = 0.4;
 
-    // WMAXSHEAR – Taszarek 2020 Haupt-Prädiktor
-    if      (wmaxshear >= 1700) score += 30;
-    else if (wmaxshear >= 1350) score += 26;
-    else if (wmaxshear >= 1050) score += 21;
-    else if (wmaxshear >= 850)  score += 15;
-    else if (wmaxshear >= 650)  score += 9;
-    else if (wmaxshear >= 500)  score += 4;
+    // --- Hagel ≥2cm Wahrscheinlichkeit %
+    let hail2cmProb = Math.min(100, HPP_base * f_LCL * f_CIN * 100 * 0.6 * f_FL);
 
-    // Deep-layer shear (ESTOFEX: significant hail bei > 20-25 m/s)
-    if      (shear >= 24) score += 13;
-    else if (shear >= 20) score += 10;
-    else if (shear >= 17) score += 7;
-    else if (shear >= 14) score += 4;
-    else if (shear >= 10) score += 2;
-
-    if      (srh >= 250) score += 10;
-    else if (srh >= 200) score += 8;
-    else if (srh >= 150) score += 5;
-    else if (srh >= 120) score += 3;
-
-    // EL-Temperatur Proxy via temp500 (ESTOFEX: Superzellen bei < -65°C)
-    if      (temp500 <= -22) score += 11;
-    else if (temp500 <= -20) score += 9;
-    else if (temp500 <= -18) score += 6;
-    else if (temp500 <= -16) score += 4;
-    else if (temp500 <= -14) score += 2;
-    else if (temp500 > -10)  score -= 4;
-
-    // WBZ / Gefrierniveau (ESTOFEX: < 2000m sehr großes Hagelpotential)
-    if      (freezingLevel <= 2200) score += 13;
-    else if (freezingLevel <= 2700) score += 9;
-    else if (freezingLevel <= 3200) score += 5;
-    else if (freezingLevel <= 3500) score += 2;
-    else if (freezingLevel > 3200)  score -= 5;
-
-    if      (lclHeight >= 1500) score += 7;
-    else if (lclHeight >= 1000) score += 4;
-    else if (lclHeight >= 700)  score += 1;
-    else if (lclHeight < 400)   score -= 5;
-
-    if      (midLapse >= 8.5) score += 7;
-    else if (midLapse >= 8.0) score += 5;
-    else if (midLapse >= 7.5) score += 4;
-    else if (midLapse >= 7.0) score += 2;
-    else if (midLapse < 6.0)  score -= 3;
-
-    // Mixing Ratio (ESTOFEX: > 10 g/kg gute Gewitterfeuchte)
-    const e_dew    = 6.112 * Math.exp((17.67 * dew) / (dew + 243.5));
-    const mixRatio = 622 * e_dew / (1013.25 - e_dew);
-    if      (mixRatio >= 12 && cape >= 800) score += 7;
-    else if (mixRatio >= 10 && cape >= 600) score += 4;
-    else if (mixRatio >= 8  && cape >= 400) score += 2;
-    else if (mixRatio < 5   && cape < 800)  score -= 4;
-
-    if      (dcape >= 1000 && cape >= 700) score += 5;
-    else if (dcape >= 800  && cape >= 550) score += 3;
-    else if (dcape >= 600  && cape >= 400) score += 1;
-
-    if      (hour.rh500 < 30 && cape >= 700) score += 6;
-    else if (hour.rh500 < 40 && cape >= 550) score += 4;
-    else if (hour.rh500 < 50 && cape >= 450) score += 2;
-    else if (hour.rh500 > 80 && cape < 900)  score -= 5;
-
-    // Mittlere RH (AR-CHaMo Rädler 2018 – API-Werte bevorzugt)
-    const rh850  = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
-    const rh700  = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
-    const meanRH = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
-    if      (meanRH >= 70 && cape >= 600) score += 5;
-    else if (meanRH >= 60 && cape >= 400) score += 3;
-    else if (meanRH < 35)                 score -= 4;
-
-    let factor = 1.0;
-    if      (cape >= 900 && shear >= 17) factor = 1.15;
-    else if (cape >= 700 && shear >= 14) factor = 1.1;
-    else if (cape < 500  || shear < 10)  factor = 0.7;
-    if      (freezingLevel <= 2700 && temp500 <= -18) factor *= 1.1;
-    else if (freezingLevel > 3200  || temp500 > -12)  factor *= 0.8;
-
-    score = Math.round(score * factor);
-    if (cape < 400 || shear < 12 || wmaxshear < 600) score = Math.min(score, 40);
-    if (cape >= 1500 && shear >= 20 && wmaxshear >= 1200 && freezingLevel <= 2500 && temp500 <= -18) {
-        score = Math.min(100, score + 10);
-    }
-    return Math.min(100, Math.max(0, score));
+    return hail2cmProb;
 }
 
 function calculateWindProbability(hour, wmaxshear, dcape) {
