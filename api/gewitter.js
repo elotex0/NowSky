@@ -525,8 +525,14 @@ function calcLiftedIndex(hour) {
         * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m_gkg))
         * Math.exp((3.376 / T_LCL_K - 0.00254) * w2m_gkg * (1 + 0.00081 * w2m_gkg));
 
-    let T_parcel_500 = t500 + 4;
-    for (let iter = 0; iter < 6; iter++) {
+    // Besserer Startwert: trockenadiabatisch bis LCL, dann feuchtadiabatisch
+    // Faustregel: Parcel bei 500hPa ≈ T_LCL − 6K/km * (5500−z_LCL)/1000
+    const z_LCL = 125 * dewDep;
+    const dz_moist = (5500 - z_LCL) / 1000; // km über LCL bis 500 hPa
+    let T_parcel_500 = T_LCL - 6.0 * dz_moist; // 6 K/km feuchtadiabatisch
+
+    // Mehr Iterationen + kleinere Schrittweite für bessere Konvergenz
+    for (let iter = 0; iter < 20; iter++) {
         const Tp_K   = T_parcel_500 + 273.15;
         const es     = 6.112 * Math.exp((17.67 * T_parcel_500) / (T_parcel_500 + 243.5));
         const ws     = 0.622 * es / (500 - es);
@@ -534,7 +540,9 @@ function calcLiftedIndex(hour) {
         const theta_e_test = Tp_K
             * Math.pow(1000 / 500, 0.2854 * (1 - 0.00028 * ws_gkg))
             * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
-        T_parcel_500 += (theta_e - theta_e_test) * 0.3;
+        const delta = (theta_e - theta_e_test) * 0.15; // kleinere Schrittweite
+        T_parcel_500 += delta;
+        if (Math.abs(delta) < 0.001) break; // Konvergenz-Check
     }
 
     return Math.round((t500 - T_parcel_500) * 10) / 10;
