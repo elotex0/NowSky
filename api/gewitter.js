@@ -1083,7 +1083,16 @@ function calculateProbability(hour) {
         if      (meanRH >= 65) hslcScore += 15;
         else if (meanRH <  50) hslcScore -= 15;
         if (temp2m < 8) hslcScore = Math.round(hslcScore * 0.6);
-        return Math.min(hardCap, Math.min(60, Math.max(0, hslcScore)));
+
+        // ── NEU: LI-Dämpfung auch im HSLC-Pfad ──────────────────────────
+        // LI=5.5 bedeutet: trotz hohem Shear ist die Atmosphäre sehr stabil
+        // HSLC funktioniert typischerweise bei LI 0–3, nicht bei LI > 4
+        if      (li > 5) hslcScore = Math.round(hslcScore * 0.3);
+        else if (li > 4) hslcScore = Math.round(hslcScore * 0.5);
+        else if (li > 3) hslcScore = Math.round(hslcScore * 0.7);
+        else if (li > 2) hslcScore = Math.round(hslcScore * 0.85);
+
+        return Math.min(40, Math.max(0, hslcScore));
     }
 
     let score = 0;
