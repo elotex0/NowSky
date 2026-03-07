@@ -847,7 +847,7 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     return Math.min(100, Math.max(0, score));
 }
 
-unction calculateProbability(hour) {
+function calculateProbability(hour) {
     const temp2m     = hour.temperature ?? 0;
     const dew        = hour.dew ?? 0;
     const cape       = Math.max(0, hour.cape ?? 0);
