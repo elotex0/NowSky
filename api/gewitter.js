@@ -285,39 +285,112 @@ export default async function handler(req, res) {
                 wind_risk:     categorizeRisk(day.maxWindProbability),
             }));
 
-        // Debug: erste 5 Stunden mit Modell-Einzelwerten + srh1km + meanRH
+        // Debug: erste 5 Stunden mit ALLEN Modell-Einzelwerten
         const debugStunden = nextHours.slice(0, 5).map((h) => {
             const i = data.hourly.time.indexOf(h.time);
             const perModel = {};
             for (const model of MODELS) {
                 const mh = extractModelHour(data.hourly, i, model);
                 if (!mh) { perModel[model] = null; continue; }
-                const shear = calcShear(mh);
-                const srh   = calcSRH(mh, '0-3km');
-                const dcape = calcDCAPE(mh);
-                const wms   = calcWMAXSHEAR(mh.cape, shear);
-                const rh850 = mh.rh850 ?? calcRelHum(mh.temp850, mh.dew850);
-                const rh700 = mh.rh700 ?? calcRelHum(mh.temp700, mh.dew700);
+
+                const shear    = calcShear(mh);
+                const srh3km   = calcSRH(mh, '0-3km');
+                const srh1km   = calcSRH(mh, '0-1km');
+                const dcape    = calcDCAPE(mh);
+                const wms      = calcWMAXSHEAR(mh.cape, shear);
+                const ebwd     = calcEBWD(mh);
+                const scp      = calcSCP(mh.cape, shear, srh3km, mh.cin);
+                const stp      = calcSTP(mh.cape, srh1km, shear, mh.liftedIndex, mh.cin, mh.temperature, mh.dew);
+                const ehi      = (mh.cape * srh1km) / 160000;
+                const lcl      = calcLCLHeight(mh.temperature ?? 0, mh.dew ?? 0);
+                const eli      = calcELI(mh.cape, mh.cin, mh.pblHeight);
+                const wmaxshear = calcWMAXSHEAR(mh.cape, shear);
+                const { kIndex, showalter, lapse, liftedIndex } = calcIndices(mh);
+                const thetaE850 = calcThetaE(mh.temp850 ?? 0, mh.dew850 ?? 0, 850);
+                const thetaE700 = calcThetaE(mh.temp700 ?? 0, mh.dew700 ?? 0, 700);
+                const midLapse  = calcMidLevelLapseRate(mh.temp700 ?? 0, mh.temp500 ?? 0);
+                const rh850     = mh.rh850 ?? calcRelHum(mh.temp850 ?? 0, mh.dew850 ?? 0);
+                const rh700     = mh.rh700 ?? calcRelHum(mh.temp700 ?? 0, mh.dew700 ?? 0);
+                const meanRH    = (rh850 + rh700 + (mh.rh500 ?? 50)) / 3;
+                const moistureDepth = calcMoistureDepth(mh.dew850 ?? 0, mh.dew700 ?? 0, mh.temp850 ?? 0, mh.temp700 ?? 0);
+                const relHum2m  = calcRelHum(mh.temperature ?? 0, mh.dew ?? 0);
+                const e850_dew  = 6.112 * Math.exp((17.67 * (mh.dew850 ?? 0)) / ((mh.dew850 ?? 0) + 243.5));
+                const mixR850   = 1000 * 0.622 * e850_dew / (850 - e850_dew);
+
                 perModel[model] = {
-                    gewitter: calculateProbability(mh),
-                    tornado:  calculateTornadoProbability(mh, shear, srh),
-                    hagel:    calculateHailProbability(mh, wms, dcape),
-                    wind:     calculateWindProbability(mh, wms, dcape),
-                    cape:     Math.round(mh.cape),
-                    shear:    Math.round(shear * 10) / 10,
-                    srh3km:   Math.round(srh * 10) / 10,
-                    srh1km:   Math.round(calcSRH(mh, '0-1km') * 10) / 10,
-                    wmaxshear: Math.round(wms),
-                    lcl:      Math.round(calcLCLHeight(mh.temperature ?? mh.temp2m, mh.dew ?? mh.dew2m)),
-                    cin:      mh.cin,
-                    li:       mh.liftedIndex,
-                    meanRH:   Math.round((rh850 + rh700 + mh.rh500) / 3),
+                    // ── Wahrscheinlichkeiten ──────────────────────────────────────
+                    gewitter:  calculateProbability(mh),
+                    tornado:   calculateTornadoProbability(mh, shear, srh3km),
+                    hagel:     calculateHailProbability(mh, wms, dcape),
+                    wind:      calculateWindProbability(mh, wms, dcape),
+
+                    // ── Thermodynamik ─────────────────────────────────────────────
+                    cape:        Math.round(mh.cape),
+                    cin:         Math.round(mh.cin ?? 0),
+                    dcape:       Math.round(dcape),
+                    eli:         Math.round(eli),
+                    lcl:         Math.round(lcl),
+                    freezingLevel: Math.round(mh.freezingLevel ?? 0),
+                    pblHeight:   Math.round(mh.pblHeight ?? 0),
+
+                    // ── Temperatur/Taupunkt ───────────────────────────────────────
+                    temp2m:    Math.round(mh.temperature * 10) / 10,
+                    dew2m:     Math.round(mh.dew * 10) / 10,
+                    temp500:   Math.round(mh.temp500 * 10) / 10,
+                    temp700:   Math.round(mh.temp700 * 10) / 10,
+                    temp850:   Math.round(mh.temp850 * 10) / 10,
+                    dew700:    Math.round(mh.dew700 * 10) / 10,
+                    dew850:    Math.round(mh.dew850 * 10) / 10,
+
+                    // ── Feuchte ───────────────────────────────────────────────────
+                    relHum2m:      Math.round(relHum2m),
+                    rh500:         Math.round(mh.rh500 ?? 0),
+                    rh700:         Math.round(rh700),
+                    rh850:         Math.round(rh850),
+                    meanRH:        Math.round(meanRH),
+                    moistureDepth: Math.round(moistureDepth),
+                    mixR850:       Math.round(mixR850 * 10) / 10,
+                    pwat:          Math.round(mh.pwat ?? 0),
+                    thetaE850:     Math.round(thetaE850 * 10) / 10,
+                    thetaE700:     Math.round(thetaE700 * 10) / 10,
+
+                    // ── Instabilitätsindizes ──────────────────────────────────────
+                    liftedIndex: Math.round(liftedIndex * 10) / 10,
+                    kIndex:      Math.round(kIndex * 10) / 10,
+                    showalter:   Math.round(showalter * 10) / 10,
+                    midLapse:    Math.round(midLapse * 10) / 10,
+
+                    // ── Scherung & Rotation ───────────────────────────────────────
+                    shear:     Math.round(shear * 10) / 10,
+                    srh1km:    Math.round(srh1km * 10) / 10,
+                    srh3km:    Math.round(srh3km * 10) / 10,
+                    ebwd:      Math.round(ebwd * 10) / 10,
+                    wmaxshear: Math.round(wmaxshear),
+
+                    // ── Komposit-Indizes ──────────────────────────────────────────
+                    scp:  Math.round(scp * 100) / 100,
+                    stp:  Math.round(stp * 100) / 100,
+                    ehi:  Math.round(ehi * 100) / 100,
+
+                    // ── Bodenwind ─────────────────────────────────────────────────
+                    wind10m:   Math.round(mh.wind * 10) / 10,
+                    gust10m:   Math.round(mh.gust * 10) / 10,
+
+                    // ── Wolken & Niederschlag ─────────────────────────────────────
+                    cloudLow:    Math.round(mh.cloudLow ?? 0),
+                    cloudMid:    Math.round(mh.cloudMid ?? 0),
+                    cloudHigh:   Math.round(mh.cloudHigh ?? 0),
+                    precipProb:  Math.round(mh.precip ?? 0),
+                    precipAcc:   Math.round(mh.precipAcc * 10) / 10,
+                    radiation:   Math.round(mh.directRadiation ?? 0),
                 };
             }
             return {
                 timestamp:         h.time,
                 ensemble_gewitter: h.probability,
                 ensemble_tornado:  h.tornadoProbability,
+                ensemble_hagel:    h.hailProbability,
+                ensemble_wind:     h.windProbability,
                 per_modell:        perModel,
             };
         });
