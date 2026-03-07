@@ -300,7 +300,7 @@ export default async function handler(req, res) {
                 const wms      = calcWMAXSHEAR(mh.cape, shear);
                 const ebwd     = calcEBWD(mh);
                 const scp      = calcSCP(mh.cape, shear, srh3km, mh.cin);
-                const stp      = calcSTP(mh.cape, srh1km, shear, mh.liftedIndex, mh.cin, mh.temperature, mh.dew);
+                const stp      = calcSTP(mh.cape, srh1km, shear, mh.liftedIndex, mh.cin, mh.temperature, mh.dew, mh);
                 const ehi      = (mh.cape * srh1km) / 160000;
                 const lcl      = calcLCLHeight(mh.temperature ?? 0, mh.dew ?? 0);
                 const eli      = calcELI(mh.cape, mh.cin, mh.pblHeight);
@@ -803,9 +803,12 @@ function calcELI(cape, cin, pblHeight) {
 }
 
 // normCAPE=750 (Europa-kalibriert, Taszarek 2020: Median Tornado-CAPE ~470 J/kg)
-function calcSTP(cape, srh, shear, liftedIndex, cin, temp2m = null, dew2m = null) {
-    if (cape < 80 || srh < 40 || shear < 6 || shear < 12.5) return 0;
+function calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m = null, dew2m = null, hour = null) {
+    // Europa-kalibrierte STP-Formel — konsistent mit calculateTornadoProbability
+    // Quelle: Púčik et al. 2015, Taszarek 2020 (normCAPE=1500 für Europa)
+    if (cape < 80 || srh1km < 40 || shear < 12.5) return 0;
 
+    // LCL-Term
     let lclTerm;
     if (temp2m !== null && dew2m !== null) {
         const lclHeight = calcLCLHeight(temp2m, dew2m);
@@ -816,10 +819,17 @@ function calcSTP(cape, srh, shear, liftedIndex, cin, temp2m = null, dew2m = null
         lclTerm = liftedIndex <= -4 ? 1.0 : liftedIndex <= -2 ? 0.8 : liftedIndex <= 0 ? 0.5 : 0.2;
     }
 
-    const capeTerm  = Math.min(cape / 750, 3.0);
-    const srhTerm   = Math.min(srh / 150, 3.0);
-    const shearTerm = shear >= 30 ? 1.5 : (shear / 20);
+    // CAPE-Term: normCAPE=1500 (Europa, Taszarek 2020)
+    const capeTerm = Math.min(cape / 1500, 3.0);
 
+    // SRH-Term: 0-1km
+    const srhTerm = Math.min(srh1km / 150, 3.0);
+
+    // Scherung: EBWD wenn hour verfügbar, sonst bulk shear als Fallback
+    const ebwd = hour ? calcEBWD(hour) : shear;
+    const shearTerm = Math.min(ebwd / 20, 2.0);
+
+    // CIN-Term
     let cinTerm;
     if      (cin >= -50)  cinTerm = 1.0;
     else if (cin <= -200) cinTerm = 0.0;
@@ -1069,7 +1079,7 @@ function calculateProbability(hour) {
     const eli           = calcELI(cape, cin, pblHeight);
     const ehi           = (cape * srh1km) / 160000;
     const scp           = calcSCP(cape, shear, srh, cin);
-    const stp           = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
+    const stp           = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew, hour);
     const wmaxshear     = calcWMAXSHEAR(cape, shear);
     const dcape         = calcDCAPE(hour);
     const thetaE850     = calcThetaE(hour.temp850 ?? 0, hour.dew850 ?? 0, 850);
