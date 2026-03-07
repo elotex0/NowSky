@@ -671,11 +671,49 @@ function calcIndices(hour) {
     const temp700 = hour.temp700 ?? 0;
     const dew850  = hour.dew850  ?? 0;
     const dew700  = hour.dew700  ?? 0;
+
+    // ── Showalter: korrekte Implementierung (Bolton 1980) ──────────────
+    // Schritt 1: LCL von 850 hPa aus
+    const dewDep850 = temp850 - dew850;
+    const T_LCL850  = temp850 - 0.212 * dewDep850 - 0.001 * dewDep850 * dewDep850;
+    const T_LCL850_K = T_LCL850 + 273.15;
+    const T850_K     = temp850 + 273.15;
+
+    // Schritt 2: Theta-E des 850-hPa-Parcels
+    const e850   = 6.112 * Math.exp((17.67 * dew850) / (dew850 + 243.5));
+    const w850   = 0.622 * e850 / (850 - e850);
+    const w850_gkg = w850 * 1000;
+    const theta_e850 = T850_K
+        * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * w850_gkg))
+        * Math.exp((3.376 / T_LCL850_K - 0.00254) * w850_gkg * (1 + 0.00081 * w850_gkg));
+
+    // Schritt 3: Parcel-Temperatur bei 500 hPa iterativ bestimmen
+    // Startwert: feuchtadiabatisch von LCL bis 500 hPa (~2.5 km über 850 hPa)
+    const z_LCL850 = 125 * dewDep850; // Höhe LCL über 850-hPa-Niveau (m)
+    const dz_moist = (3000 - z_LCL850) / 1000; // km von LCL bis ~500 hPa
+    let T_parcel_500_SI = T_LCL850 - 6.0 * dz_moist;
+
+    for (let iter = 0; iter < 20; iter++) {
+        const Tp_K   = T_parcel_500_SI + 273.15;
+        const es     = 6.112 * Math.exp((17.67 * T_parcel_500_SI) / (T_parcel_500_SI + 243.5));
+        const ws     = 0.622 * es / (500 - es);
+        const ws_gkg = ws * 1000;
+        const theta_e_test = Tp_K
+            * Math.pow(1000 / 500, 0.2854 * (1 - 0.00028 * ws_gkg))
+            * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
+        const delta = (theta_e850 - theta_e_test) * 0.15;
+        T_parcel_500_SI += delta;
+        if (Math.abs(delta) < 0.001) break;
+    }
+
+    const showalter = Math.round((temp500 - T_parcel_500_SI) * 10) / 10;
+    // ───────────────────────────────────────────────────────────────────
+
     return {
         kIndex:      temp850 - temp500 + dew850 - (temp700 - dew700),
-        showalter:   temp500 - (temp850 - 9.8 * 1.5),
+        showalter,
         lapse:       (temp850 - temp500) / 3.5,
-        liftedIndex: hour.liftedIndex ?? (temp500 - (temp850 - 9.8 * 1.5)),
+        liftedIndex: hour.liftedIndex ?? calcLiftedIndex(hour),
     };
 }
 
