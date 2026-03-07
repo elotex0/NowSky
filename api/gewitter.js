@@ -857,59 +857,35 @@ function calculateProbability(hour) {
     const precipProb = hour.precip ?? 0;
     const pblHeight  = hour.pblHeight ?? 1000;
 
-    // ── Hilfswerte früh berechnen, damit Guards sie nutzen können ──────────
-    const shear      = calcShear(hour);
-    const srh1km     = calcSRH(hour, '0-1km');
-    const srh        = calcSRH(hour, '0-3km');
-    const { kIndex, liftedIndex } = calcIndices(hour);
-    const relHum2m   = calcRelHum(temp2m, dew);
-    const lclHeight  = calcLCLHeight(temp2m, dew);
-    const midLapse   = calcMidLevelLapseRate(hour.temp700 ?? 0, hour.temp500 ?? 0);
-    const moistureDepth = calcMoistureDepth(hour.dew850 ?? 0, hour.dew700 ?? 0, hour.temp850 ?? 0, hour.temp700 ?? 0);
-    const eli        = calcELI(cape, cin, pblHeight);
-    const ehi        = (cape * srh1km) / 160000;
-    const scp        = calcSCP(cape, shear, srh, cin);
-    const stp        = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
-    const wmaxshear  = calcWMAXSHEAR(cape, shear);
-    const dcape      = calcDCAPE(hour);
+    if (temp2m < 3 && cape < 300)                          return 0;
+    if (temp2m < 8 && cape < 180 && calcShear(hour) < 15) return 0;
+    if (cape < 80 && precipAcc < 0.1 && precipProb < 15)  return 0;
 
-    const rh850   = hour.rh850  ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
-    const rh700   = hour.rh700  ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
-    const meanRH  = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
+    const shear         = calcShear(hour);
+    const srh1km        = calcSRH(hour, '0-1km');
+    const srh           = calcSRH(hour, '0-3km');
+    const { kIndex, liftedIndex } = calcIndices(hour);
+    const relHum2m      = calcRelHum(temp2m, dew);
+    const lclHeight     = calcLCLHeight(temp2m, dew);
+    const midLapse      = calcMidLevelLapseRate(hour.temp700 ?? 0, hour.temp500 ?? 0);
+    const moistureDepth = calcMoistureDepth(hour.dew850 ?? 0, hour.dew700 ?? 0, hour.temp850 ?? 0, hour.temp700 ?? 0);
+    const eli           = calcELI(cape, cin, pblHeight);
+    const ehi           = (cape * srh1km) / 160000;
+    const scp           = calcSCP(cape, shear, srh, cin);
+    const stp           = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
+    const wmaxshear     = calcWMAXSHEAR(cape, shear);
+    const dcape         = calcDCAPE(hour);
+
+    // Mittlere RH 850/700/500 hPa (AR-CHaMo Rädler 2018 – API-Werte bevorzugt)
+    const rh850  = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
+    const rh700  = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
+    const meanRH = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
+
+    // Theta-E 850 hPa (ESTOFEX-Standard)
     const thetaE850 = calcThetaE(hour.temp850 ?? 0, hour.dew850 ?? 0, 850);
 
-    // ── Mixing Ratio 850 hPa (früh für Guards benötigt) ───────────────────
-    const e850_dew = 6.112 * Math.exp((17.67 * (hour.dew850 ?? 0)) / ((hour.dew850 ?? 0) + 243.5));
-    const mixR850  = 1000 * 0.622 * e850_dew / (850 - e850_dew);
-
-    // =========================================================================
-    // MINDESTANFORDERUNGEN – AR-CHaMo/ESTOFEX/ESSL-konform
-    //
-    // Prinzip: CAPE=0 kann ein Modellartefakt sein (zu grobe Gitterbox, fehlende
-    //          Oberflächeninhomogenitäten). LI, Feuchte, Scherung und dynamische
-    //          Hebung (SRH, CIN) dienen als Ersatzindikatoren für latente
-    //          Instabilität – exakt wie in Rädler et al. 2018 (AR-CHaMo) und
-    //          Westermayer et al. 2017 beschrieben.
-    //
-    // Guard 1: Echter Kältehochausschluss (polar/arktisch, keine Dynamik)
-    if (temp2m < 3 && cape < 300 && liftedIndex > 2 && shear < 15) return 0;
-
-    // Guard 2: Winterlicher Kaltluft-Ausschluss ohne Scherunterstützung
-    if (temp2m < 8 && cape < 180 && shear < 15 && liftedIndex > 1) return 0;
-
-    // Guard 3 (ersetzt alten cape<80-Guard): Echte Minimum-Instabilität
-    // CAPE=0 + positiver LI = definitiv stabil, ausser dynamische Hebung
-    // durch Scherung+Feuchte ersetzt latente Instabilität (Frontkonvektion)
-    const hasInstability   = cape >= 80 || liftedIndex <= 0;
-    const hasMoistTrigger  = precipAcc >= 0.1 || precipProb >= 15 || meanRH >= 65;
-    // Dynamischer Hebungs-Proxy: Frontkonvektion ohne nennenswerte CAPE
-    // (Tuschy 2001, ESTOFEX: SRH+Shear als Mindestvoraussetzung)
-    const hasDynamicLift   = shear >= 12 && srh >= 60 && meanRH >= 60;
-
-    if (!hasInstability && !hasMoistTrigger && !hasDynamicLift) return 0;
-
-    // ── HSLC-Regime (Wind-Feld-Gewitter, Tuschy / Rädler 2018) ──────────────
-    // CAPE < 300 + hoher Shear = eigener Pfad, unabhängig von CAPE-Schwellen
+    // ── HSLC-Regime (Wind-Feld-Gewitter) ──────────────────────────────────
+    // Tuschy / Rädler 2018: CAPE < 300 + hoher Shear = eigener Pfad
     const isHSLC = cape < 300 && shear >= 18;
     if (isHSLC) {
         let hslcScore = 0;
@@ -922,12 +898,9 @@ function calculateProbability(hour) {
         return Math.min(60, Math.max(0, hslcScore));
     }
 
-    // =========================================================================
-    // SCORE-BERECHNUNG
-    // =========================================================================
     let score = 0;
 
-    // ── CAPE – abgeflachte Kurve (Westermayer 2017) ───────────────────────
+    // CAPE – abgeflachte Kurve (Westermayer 2017: ab ~400 J/kg kaum mehr Zunahme)
     if      (cape >= 2000) score += 16;
     else if (cape >= 1500) score += 14;
     else if (cape >= 1200) score += 12;
@@ -936,39 +909,25 @@ function calculateProbability(hour) {
     else if (cape >= 300)  score += 6;
     else if (cape >= 150)  score += 3;
 
-    // ── LI-Fallback-Instabilität ──────────────────────────────────────────
-    // Aktiv wenn CAPE < 80: NWP-Modellartefakt-Korrektur.
-    // LI wird von AR-CHaMo als primärer Instabilitätsindikator verwendet,
-    // da er bei grober Gitterauflösung robuster ist als CAPE.
-    // Voraussetzung: mindestens moderate Feuchte, damit echter Trigger möglich.
-    if (cape < 80) {
-        if      (liftedIndex <= -4 && meanRH >= 60) score += 12;
-        else if (liftedIndex <= -2 && meanRH >= 60) score += 8;
-        else if (liftedIndex <= -1 && meanRH >= 65) score += 5;
-        else if (liftedIndex <=  0 && meanRH >= 70) score += 3;
-        // Positiver LI ohne CAPE → kein Beitrag
-    }
-
-    // ── EL-Temperatur Proxy (ESTOFEX: -60°C starke Gewitter) ─────────────
+    // EL-Temperatur Proxy (ESTOFEX: -60°C starke Gewitter, < -65°C Superzellen)
     const elTemp = hour.temp500 ?? 0;
-    if      (elTemp <= -20 && (cape >= 200 || liftedIndex <= -2)) score += 8;
-    else if (elTemp <= -15 && (cape >= 150 || liftedIndex <= -1)) score += 5;
-    else if (elTemp <= -10 && (cape >= 100 || liftedIndex <=  0)) score += 3;
-    else if (elTemp >  -5  &&  cape < 500 && liftedIndex > 1)     score -= 5;
+    if      (elTemp <= -20 && cape >= 200) score += 8;
+    else if (elTemp <= -15 && cape >= 150) score += 5;
+    else if (elTemp <= -10 && cape >= 100) score += 3;
+    else if (elTemp > -5   && cape < 500)  score -= 5;
 
     if      (eli >= 2000) score += 10;
     else if (eli >= 1200) score += 7;
     else if (eli >= 800)  score += 5;
     else if (eli >= 400)  score += 3;
 
-    // ── CIN – Hemmungskorrektur ────────────────────────────────────────────
-    if      (magCin < 25 && (cape >= 300 || liftedIndex <= -1)) score += 6;
-    else if (magCin < 50 && (cape >= 200 || liftedIndex <=  0)) score += 3;
+    if      (magCin < 25 && cape >= 300) score += 6;
+    else if (magCin < 50 && cape >= 200) score += 3;
     else if (magCin > 200) score -= 18;
     else if (magCin > 100) score -= 10;
     else if (magCin > 50)  score -= 5;
 
-    // ── Kombi-Indizes (bleiben unverändert, da robust bei CAPE=0 möglich) ──
+    // SCP: erst ab 1.0 (Europa-Schwelle für organisierte Konvektion)
     if      (scp >= 3.0) score += 24;
     else if (scp >= 2.0) score += 20;
     else if (scp >= 1.5) score += 16;
@@ -980,6 +939,7 @@ function calculateProbability(hour) {
     else if (stp >= 0.5) score += 8;
     else if (stp >= 0.3) score += 4;
 
+    // EHI: erst ab 0.5
     if      (ehi >= 2.5) score += 14;
     else if (ehi >= 2.0) score += 12;
     else if (ehi >= 1.0) score += 9;
@@ -1016,21 +976,22 @@ function calculateProbability(hour) {
     else if (midLapse >= 7.5) score += 6;
     else if (midLapse >= 7.0) score += 4;
     else if (midLapse >= 6.5) score += 2;
-    else if (midLapse < 5.5 && cape < 800 && liftedIndex > 2) score -= 5;
+    else if (midLapse < 5.5 && cape < 800) score -= 5;
 
     if      (moistureDepth >= 75) score += 6;
     else if (moistureDepth >= 65) score += 4;
     else if (moistureDepth >= 55) score += 2;
-    else if (moistureDepth < 40 && cape < 600 && liftedIndex > 1) score -= 4;
+    else if (moistureDepth < 40 && cape < 600) score -= 4;
 
-    // ── Mittlere RH (AR-CHaMo / Westermayer 2017) ─────────────────────────
+    // Mittlere RH (AR-CHaMo / Westermayer 2017)
+    // < 50%: starke Unterdrückung der Blitzaktivität
     if      (meanRH >= 75) score += 8;
     else if (meanRH >= 65) score += 5;
     else if (meanRH >= 55) score += 2;
     else if (meanRH < 50)  score -= 12;
     else if (meanRH < 40)  score -= 20;
 
-    // ── Theta-E 850 hPa (ESTOFEX: >335K gut, >345K sehr instabil) ─────────
+    // Theta-E 850 hPa (ESTOFEX: > 335K gute Gewitterumgebung, > 345K sehr instabil)
     if      (thetaE850 >= 345) score += 8;
     else if (thetaE850 >= 335) score += 5;
     else if (thetaE850 >= 325) score += 2;
@@ -1047,7 +1008,9 @@ function calculateProbability(hour) {
     else if (kIndex >= 30) score += 4;
     else if (kIndex >= 25) score += 2;
 
-    // ── Mixing Ratio 850 hPa (ESTOFEX: >10 g/kg gut, >13 sehr feucht) ────
+    // Mixing Ratio 850 hPa (ESTOFEX: > 10 g/kg gute Gewitterfeuchte, > 13 sehr feucht)
+    const e850_dew = 6.112 * Math.exp((17.67 * (hour.dew850 ?? 0)) / ((hour.dew850 ?? 0) + 243.5));
+    const mixR850  = 1000 * 0.622 * e850_dew / (850 - e850_dew);
     if      (mixR850 >= 13) score += 8;
     else if (mixR850 >= 10) score += 5;
     else if (mixR850 >= 6)  score += 2;
@@ -1061,68 +1024,62 @@ function calculateProbability(hour) {
     else if (relHum2m >= 70 && temp2m >= 16) score += 3;
     else if (relHum2m >= 65 && temp2m >= 14) score += 1;
 
-    if      (precipAcc >= 3.0 && (cape >= 600 || liftedIndex <= -2)) score += 8;
-    else if (precipAcc >= 2.0 && (cape >= 400 || liftedIndex <= -1)) score += 6;
-    else if (precipAcc >= 1.0 && (cape >= 300 || liftedIndex <=  0)) score += 4;
-    else if (precipAcc >= 0.5 && (cape >= 200 || liftedIndex <=  0)) score += 2;
+    if      (precipAcc >= 3.0 && cape >= 600) score += 8;
+    else if (precipAcc >= 2.0 && cape >= 400) score += 6;
+    else if (precipAcc >= 1.0 && cape >= 300) score += 4;
+    else if (precipAcc >= 0.5 && cape >= 200) score += 2;
 
-    if      (precipProb >= 70 && (cape >= 500 || liftedIndex <= -2)) score += 6;
-    else if (precipProb >= 55 && (cape >= 400 || liftedIndex <= -1)) score += 4;
-    else if (precipProb >= 40 && (cape >= 300 || liftedIndex <=  0)) score += 2;
+    if      (precipProb >= 70 && cape >= 500) score += 6;
+    else if (precipProb >= 55 && cape >= 400) score += 4;
+    else if (precipProb >= 40 && cape >= 300) score += 2;
 
-    // ── Niederschlags-Malus: stratiformer Regen ohne Konvektion ──────────
-    if (precipAcc > 3 && cape < 300 && liftedIndex > 1 && shear < 10) score -= 10;
-    else if (precipAcc > 2 && cape < 200 && liftedIndex > 2)           score -= 6;
+    if (precipAcc > 3 && cape < 300 && shear < 10) score -= 10;
+    else if (precipAcc > 2 && cape < 200)           score -= 6;
 
-    if      (hour.rh500 < 30 && (cape >= 600 || liftedIndex <= -3)) score += 7;
-    else if (hour.rh500 < 40 && (cape >= 500 || liftedIndex <= -2)) score += 5;
-    else if (hour.rh500 < 50 && (cape >= 400 || liftedIndex <= -1)) score += 3;
-    else if (hour.rh500 > 90 && cape < 800 && liftedIndex > 0)      score -= 6;
+    if      (hour.rh500 < 30 && cape >= 600) score += 7;
+    else if (hour.rh500 < 40 && cape >= 500) score += 5;
+    else if (hour.rh500 < 50 && cape >= 400) score += 3;
+    else if (hour.rh500 > 90 && cape < 800)  score -= 6;
 
-    // ── Tageszeit / Strahlung ─────────────────────────────────────────────
     const isNight     = hour.directRadiation < 20;
     const isDaytime   = hour.directRadiation >= 200;
     const isStrongDay = hour.directRadiation >= 600;
 
-    if      (isStrongDay && temp2m >= 14 && (cape >= 300 || liftedIndex <= -1)) score += 7;
-    else if (isDaytime   && temp2m >= 12 && (cape >= 200 || liftedIndex <=  0)) score += 4;
+    if      (isStrongDay && temp2m >= 14 && cape >= 300)    score += 7;
+    else if (isDaytime   && temp2m >= 12 && cape >= 200)    score += 4;
     else if (isNight) {
         const llj = srh >= 120 && shear >= 12 && hour.wind >= 8;
-        if      (llj && (cape >= 500 || liftedIndex <= -2))       score += 5;
-        else if (!llj && shear < 10 && cape < 400 && liftedIndex > 1) score -= 4;
-        else if ((cape >= 600 || liftedIndex <= -2) && srh >= 100) score += 2;
+        if      (llj && cape >= 500)              score += 5;
+        else if (!llj && shear < 10 && cape < 400) score -= 4;
+        else if (cape >= 600 && srh >= 100)       score += 2;
     }
 
     if      (hour.wind >= 6  && hour.wind <= 18 && temp2m >= 12) score += 3;
     else if (hour.wind > 18  && hour.wind <= 25 && temp2m >= 12) score += 5;
-    if      (hour.wind > 30  && cape < 1200 && liftedIndex > 0)  score -= 6;
+    if      (hour.wind > 30  && cape < 1200)                     score -= 6;
 
     const gustDiff = hour.gust - hour.wind;
-    if      (gustDiff > 15 && (cape >= 600 || liftedIndex <= -2) && temp2m >= 12) score += 6;
-    else if (gustDiff > 12 && (cape >= 500 || liftedIndex <= -1))                 score += 4;
-    else if (gustDiff > 8  && (cape >= 300 || liftedIndex <=  0))                 score += 2;
+    if      (gustDiff > 15 && cape >= 600 && temp2m >= 12) score += 6;
+    else if (gustDiff > 12 && cape >= 500)                 score += 4;
+    else if (gustDiff > 8  && cape >= 300)                 score += 2;
 
-    if      (dcape >= 1000 && (cape >= 400 || liftedIndex <= -2)) score += 7;
-    else if (dcape >= 800  && (cape >= 300 || liftedIndex <= -1)) score += 5;
-    else if (dcape >= 600  && (cape >= 200 || liftedIndex <=  0)) score += 3;
-    else if (dcape >= 400  && (cape >= 150 || liftedIndex <=  0)) score += 1;
+    if      (dcape >= 1000 && cape >= 400) score += 7;
+    else if (dcape >= 800  && cape >= 300) score += 5;
+    else if (dcape >= 600  && cape >= 200) score += 3;
+    else if (dcape >= 400  && cape >= 150) score += 1;
 
-    if      (pblHeight >= 2000 && (cape >= 300 || liftedIndex <= -1)) score += 4;
-    else if (pblHeight >= 1500 && (cape >= 200 || liftedIndex <=  0)) score += 2;
-    else if (pblHeight < 300   && cape < 500 && liftedIndex > 1)      score -= 3;
+    if      (pblHeight >= 2000 && cape >= 300) score += 4;
+    else if (pblHeight >= 1500 && cape >= 200) score += 2;
+    else if (pblHeight < 300   && cape < 500)  score -= 3;
 
-    // ── Temperatur-Skalierung ────────────────────────────────────────────
+    // Temperatur-Skalierung
     if      (temp2m < 8)  score = Math.round(score * (shear < 15 && cape < 500 ? 0.4 : 0.6));
     else if (temp2m < 12) score = Math.round(score * 0.7);
     else if (temp2m < 15) score = Math.round(score * 0.85);
 
-    // ── Finale Korrekturen ───────────────────────────────────────────────
-    // Schwacher Score ohne jede Instabilität
-    if (score > 0 && cape < 100 && liftedIndex > 2 && shear < 8) score = Math.max(0, score - 10);
-    // Starke CIN ohne ausreichende CAPE/LI
-    if (score > 0 && magCin > 150 && cape < 1000 && liftedIndex > 1) score = Math.max(0, score - 12);
-    // Scherungsboost für gut organisierte Systeme
-    if (shear >= 20 && (cape >= 150 || liftedIndex <= -1) && score < 30) score = Math.min(score + 5, 35);
+    if (score > 0 && cape < 100 && shear < 8)     score = Math.max(0, score - 10);
+    if (score > 0 && magCin > 150 && cape < 1000) score = Math.max(0, score - 12);
+    if (shear >= 20 && cape >= 150 && score < 30) score = Math.min(score + 5, 35);
 
     return Math.min(100, Math.max(0, Math.round(score)));
 }
