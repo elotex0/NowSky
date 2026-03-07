@@ -1006,23 +1006,9 @@ function calculateProbability(hour) {
     const precipProb = hour.precip ?? 0;
     const pblHeight  = hour.pblHeight ?? 1000;
 
-    const shearEarly = calcShear(hour);
-    const liEarly    = calcIndices(hour).liftedIndex;
-
-    // Absolutes Gate: CAPE = 0 und stabiles Profil → immer 0
-    if (cape === 0 && liEarly >= 0) return 0;
-
-    // Schwaches CAPE braucht negativen LI als Mindestzeichen für Instabilität
-    // (Westermayer 2017: untere CAPE-Grenze für europäische Gewitter ~50-80 J/kg)
-    if (cape < 50 && liEarly >= -1) return 0;
-
-    // Selbst HSLC-Regime (Rädler 2018) benötigt mindestens marginale Instabilität
-    if (cape < 30 && liEarly >= 0) return 0;
-
-    // Bestehende Temperatur/Shear/CAPE Checks
     if (temp2m < 3 && cape < 300)                          return 0;
-    if (temp2m < 8 && cape < 180 && shearEarly < 15)       return 0;
-    if (cape < 80 && precipAcc < 0.1 && precipProb < 15)   return 0;
+    if (temp2m < 8 && cape < 180 && calcShear(hour) < 15) return 0;
+    if (cape < 80 && precipAcc < 0.1 && precipProb < 15)  return 0;
 
     const shear         = calcShear(hour);
     const srh1km        = calcSRH(hour, '0-1km');
