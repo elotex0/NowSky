@@ -1006,11 +1006,59 @@ function calculateProbability(hour) {
     const precipProb = hour.precip ?? 0;
     const pblHeight  = hour.pblHeight ?? 1000;
 
-    if (temp2m < 3 && cape < 300)                          return 0;
-    if (temp2m < 8 && cape < 180 && calcShear(hour) < 15) return 0;
-    if (cape < 80 && precipAcc < 0.1 && precipProb < 15)  return 0;
+    const shear    = calcShear(hour);
+    const li       = hour.liftedIndex ?? calcLiftedIndex(hour);
+    const rh850    = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
+    const rh700    = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
+    const meanRH   = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
 
-    const shear         = calcShear(hour);
+    // Spezifische Feuchte 925 hPa (Bodennähe als Proxy, Battaglioli 2023)
+    const e925     = 6.112 * Math.exp((17.67 * dew) / (dew + 243.5));
+    const q925_gkg = 1000 * 0.622 * e925 / (1013.25 - e925);
+
+    // ════════════════════════════════════════════════════════════════════
+    // SCHRITT 1: AR-CHaMo Logit-Gate (Rädler 2018 / Battaglioli 2023)
+    // P(storm) via logistische Regression: f(LI, meanRH, CAPE, q925)
+    // Verhindert Trigger durch precipProb/precip allein bei CAPE=0
+    // ════════════════════════════════════════════════════════════════════
+
+    // Harte Ausschlüsse
+    if (temp2m < 3 && cape < 300)                          return 0;
+    if (temp2m < 8 && cape < 180 && shear < 15)           return 0;
+
+    // Logit: LI und meanRH sind Kernprädiktoren (Rädler 2018)
+    // CAPE log-transformiert (Sättigung ab ~200 J/kg, Westermayer 2017)
+    let logit = -4.2;
+    logit += -li * 0.60;                            // LI: Hauptprädiktor
+    logit += (meanRH - 55) / 25 * 1.80;            // meanRH: gleichrangig
+    logit += (cape > 0 ? Math.log1p(cape / 150) * 1.2 : 0); // CAPE: log-sättigend
+    logit += (q925_gkg - 5) / 4 * 0.90;            // q925: Niedrigpegel-Feuchte
+    if (magCin > 50)  logit -= (magCin - 50) / 100 * 1.2;
+    if (magCin > 150) logit -= 1.0;
+    if (temp2m < 8)   logit -= 1.0;
+    else if (temp2m < 12) logit -= 0.4;
+
+    // HSLC-Pfad: hoher Shear kompensiert fehlende CAPE (Rädler 2018)
+    const isHSLC = cape < 300 && shear >= 18;
+    if (isHSLC && meanRH >= 55) {
+        logit += (shear - 18) / 12 * 1.0;
+    }
+
+    // Basiswahrscheinlichkeit aus Logit
+    const pBase = 1 / (1 + Math.exp(-logit)); // 0.0–1.0
+
+    // Wenn Atmosphäre grundsätzlich zu stabil → frühzeitig begrenzen
+    // LI > 3 UND meanRH < 50%: Score kann maximal ~10% erreichen
+    const hardCap = (li > 3 && meanRH < 50) ? 10
+                  : (li > 2 && meanRH < 55) ? 20
+                  : (li > 1 && cape === 0)  ? 25
+                  : 100;
+
+    // ════════════════════════════════════════════════════════════════════
+    // SCHRITT 2: Score-System für severe-weather Differenzierung
+    // (bleibt erhalten – ist gut für SCP/STP/EHI/wmaxshear-Regime)
+    // ════════════════════════════════════════════════════════════════════
+
     const srh1km        = calcSRH(hour, '0-1km');
     const srh           = calcSRH(hour, '0-3km');
     const { kIndex, liftedIndex } = calcIndices(hour);
@@ -1024,18 +1072,9 @@ function calculateProbability(hour) {
     const stp           = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew);
     const wmaxshear     = calcWMAXSHEAR(cape, shear);
     const dcape         = calcDCAPE(hour);
+    const thetaE850     = calcThetaE(hour.temp850 ?? 0, hour.dew850 ?? 0, 850);
 
-    // Mittlere RH 850/700/500 hPa (AR-CHaMo Rädler 2018 – API-Werte bevorzugt)
-    const rh850  = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
-    const rh700  = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
-    const meanRH = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
-
-    // Theta-E 850 hPa (ESTOFEX-Standard)
-    const thetaE850 = calcThetaE(hour.temp850 ?? 0, hour.dew850 ?? 0, 850);
-
-    // ── HSLC-Regime (Wind-Feld-Gewitter) ──────────────────────────────────
-    // Tuschy / Rädler 2018: CAPE < 300 + hoher Shear = eigener Pfad
-    const isHSLC = cape < 300 && shear >= 18;
+    // HSLC direkt zurückgeben (Gate bereits oben passiert)
     if (isHSLC) {
         let hslcScore = 0;
         if      (shear >= 25) hslcScore += 30;
@@ -1044,12 +1083,12 @@ function calculateProbability(hour) {
         if      (meanRH >= 65) hslcScore += 15;
         else if (meanRH <  50) hslcScore -= 15;
         if (temp2m < 8) hslcScore = Math.round(hslcScore * 0.6);
-        return Math.min(60, Math.max(0, hslcScore));
+        return Math.min(hardCap, Math.min(60, Math.max(0, hslcScore)));
     }
 
     let score = 0;
 
-    // CAPE – abgeflachte Kurve (Westermayer 2017: ab ~400 J/kg kaum mehr Zunahme)
+    // CAPE
     if      (cape >= 2000) score += 16;
     else if (cape >= 1500) score += 14;
     else if (cape >= 1200) score += 12;
@@ -1058,7 +1097,7 @@ function calculateProbability(hour) {
     else if (cape >= 300)  score += 6;
     else if (cape >= 150)  score += 3;
 
-    // EL-Temperatur Proxy (ESTOFEX: -60°C starke Gewitter, < -65°C Superzellen)
+    // EL-Temperatur Proxy
     const elTemp = hour.temp500 ?? 0;
     if      (elTemp <= -20 && cape >= 200) score += 8;
     else if (elTemp <= -15 && cape >= 150) score += 5;
@@ -1076,7 +1115,6 @@ function calculateProbability(hour) {
     else if (magCin > 100) score -= 10;
     else if (magCin > 50)  score -= 5;
 
-    // SCP: erst ab 1.0 (Europa-Schwelle für organisierte Konvektion)
     if      (scp >= 3.0) score += 24;
     else if (scp >= 2.0) score += 20;
     else if (scp >= 1.5) score += 16;
@@ -1088,7 +1126,6 @@ function calculateProbability(hour) {
     else if (stp >= 0.5) score += 8;
     else if (stp >= 0.3) score += 4;
 
-    // EHI: erst ab 0.5
     if      (ehi >= 2.5) score += 14;
     else if (ehi >= 2.0) score += 12;
     else if (ehi >= 1.0) score += 9;
@@ -1132,15 +1169,12 @@ function calculateProbability(hour) {
     else if (moistureDepth >= 55) score += 2;
     else if (moistureDepth < 40 && cape < 600) score -= 4;
 
-    // Mittlere RH (AR-CHaMo / Westermayer 2017)
-    // < 50%: starke Unterdrückung der Blitzaktivität
     if      (meanRH >= 75) score += 8;
     else if (meanRH >= 65) score += 5;
     else if (meanRH >= 55) score += 2;
     else if (meanRH < 50)  score -= 12;
     else if (meanRH < 40)  score -= 20;
 
-    // Theta-E 850 hPa (ESTOFEX: > 335K gute Gewitterumgebung, > 345K sehr instabil)
     if      (thetaE850 >= 345) score += 8;
     else if (thetaE850 >= 335) score += 5;
     else if (thetaE850 >= 325) score += 2;
@@ -1157,7 +1191,6 @@ function calculateProbability(hour) {
     else if (kIndex >= 30) score += 4;
     else if (kIndex >= 25) score += 2;
 
-    // Mixing Ratio 850 hPa (ESTOFEX: > 10 g/kg gute Gewitterfeuchte, > 13 sehr feucht)
     const e850_dew = 6.112 * Math.exp((17.67 * (hour.dew850 ?? 0)) / ((hour.dew850 ?? 0) + 243.5));
     const mixR850  = 1000 * 0.622 * e850_dew / (850 - e850_dew);
     if      (mixR850 >= 13) score += 8;
@@ -1173,11 +1206,13 @@ function calculateProbability(hour) {
     else if (relHum2m >= 70 && temp2m >= 16) score += 3;
     else if (relHum2m >= 65 && temp2m >= 14) score += 1;
 
+    // precipAcc nur noch mit CAPE-Bedingung (kein Trigger bei CAPE=0)
     if      (precipAcc >= 3.0 && cape >= 600) score += 8;
     else if (precipAcc >= 2.0 && cape >= 400) score += 6;
     else if (precipAcc >= 1.0 && cape >= 300) score += 4;
     else if (precipAcc >= 0.5 && cape >= 200) score += 2;
 
+    // precipProb nur noch mit CAPE-Bedingung
     if      (precipProb >= 70 && cape >= 500) score += 6;
     else if (precipProb >= 55 && cape >= 400) score += 4;
     else if (precipProb >= 40 && cape >= 300) score += 2;
@@ -1194,13 +1229,13 @@ function calculateProbability(hour) {
     const isDaytime   = hour.directRadiation >= 200;
     const isStrongDay = hour.directRadiation >= 600;
 
-    if      (isStrongDay && temp2m >= 14 && cape >= 300)    score += 7;
-    else if (isDaytime   && temp2m >= 12 && cape >= 200)    score += 4;
+    if      (isStrongDay && temp2m >= 14 && cape >= 300) score += 7;
+    else if (isDaytime   && temp2m >= 12 && cape >= 200) score += 4;
     else if (isNight) {
         const llj = srh >= 120 && shear >= 12 && hour.wind >= 8;
-        if      (llj && cape >= 500)              score += 5;
+        if      (llj && cape >= 500)               score += 5;
         else if (!llj && shear < 10 && cape < 400) score -= 4;
-        else if (cape >= 600 && srh >= 100)       score += 2;
+        else if (cape >= 600 && srh >= 100)        score += 2;
     }
 
     if      (hour.wind >= 6  && hour.wind <= 18 && temp2m >= 12) score += 3;
@@ -1230,7 +1265,17 @@ function calculateProbability(hour) {
     if (score > 0 && magCin > 150 && cape < 1000) score = Math.max(0, score - 12);
     if (shear >= 20 && cape >= 150 && score < 30) score = Math.min(score + 5, 35);
 
-    return Math.min(100, Math.max(0, Math.round(score)));
+    // ════════════════════════════════════════════════════════════════════
+    // SCHRITT 3: Score mit AR-CHaMo Gate kombinieren
+    // pBase skaliert den Score — stabile Atmosphäre begrenzt das Maximum
+    // ════════════════════════════════════════════════════════════════════
+
+    // pBase wirkt als Multiplikator: bei pBase=0.05 (stabil) → Score stark gedämpft
+    // bei pBase=0.5 (labil) → Score läuft normal durch
+    const gateMultiplier = Math.min(1.0, pBase * 4.0); // 0.0–1.0
+    score = Math.round(score * gateMultiplier);
+
+    return Math.min(hardCap, Math.min(100, Math.max(0, score)));
 }
 
 // ── Optional: STP → grobe Tornado-% Wahrscheinlichkeit (Europa) ──
