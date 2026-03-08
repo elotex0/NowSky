@@ -286,7 +286,7 @@ export default async function handler(req, res) {
             }));
 
         // Debug: erste 5 Stunden mit ALLEN Modell-Einzelwerten
-        const debugStunden = nextHours.slice(0, 5).map((h) => {
+        const debugStunden = nextHours.slice(0, 12).map((h) => {
             const i = data.hourly.time.indexOf(h.time);
             const perModel = {};
             for (const model of MODELS) {
@@ -862,72 +862,40 @@ function categorizeRisk(prob) {
 // ═══════════════════════════════════════════════════════════════════════════
 // WAHRSCHEINLICHKEITS-FUNKTIONEN – HAGEL ≥2cm nur bei Gewitter
 // ═══════════════════════════════════════════════════════════════════════════
-function calculateHailProbability(hour, wmaxshear, dcape) {
-    const thunderProb = calculateProbability(hour);
-    if (thunderProb < 5) return 0;
+function calculateHailProbability(hour) {
+    // --- Prüfe zuerst, ob Gewitter vorhanden ist ---
+    const thunderProb = calculateProbability(hour); // 0–100%
+    if (thunderProb < 5) return 0; // Schwelle: 5% – sonst kein Hagel
 
+    // --- HPP-Basis wie vorher ---
     const cape   = Math.max(0, hour.cape ?? 0);
     const shear  = calcShear(hour);
-    const FL     = hour.freezingLevel ?? 4000;
-    const cin    = hour.cin ?? 0;
+    const srh    = calcSRH(hour, '0-3km');
     const temp2m = hour.temperature ?? 0;
     const dew    = hour.dew ?? 0;
     const lcl    = calcLCLHeight(temp2m, dew);
+    const FL     = hour.freezingLevel ?? 4000;
 
-    // ── Gates für Hagel ≥2cm ─────────────────────────────────────────────
-    if (cape < 200)  return 0;
-    if (shear < 8)   return 0;
-    if (FL > 3200)   return 0;  // Hagel schmilzt komplett (Púčik 2015)
-    if (temp2m < 5)  return 0;
+    let HPP_base = (cape/1000) * (shear/20) * (srh/150);
 
-    // ── CAPE-Term: normiert auf 1000 J/kg ────────────────────────────────
-    const capeTerm = Math.min(cape / 1000, 3.0);
+    // --- Abschwächungsfaktoren ---
+    let f_LCL = lcl > 1500 ? 0.9 : 1.0;
+    let magCIN = -Math.min(0, hour.cin ?? 0);
+    let f_CIN  = magCIN > 50 ? 0.9 : 1.0;
 
-    // ── WMAXSHEAR-Term: bester Einzelprädiktor (Taszarek 2021) ───────────
-    const wmsTerm = Math.min(wmaxshear / 600, 3.0);
+    let f_FL = 1.0;
+    if      (FL < 2500) f_FL = 1.0;
+    else if (FL < 3500) f_FL = 0.8;
+    else if (FL < 4500) f_FL = 0.6;
+    else                f_FL = 0.4;
 
-    // ── Shear-Term: normiert auf 15 m/s ──────────────────────────────────
-    const shearTerm = Math.min(shear / 15, 2.0);
+    // --- Hagel ≥2cm Wahrscheinlichkeit bedingt auf Gewitter ---
+    let hail2cmProb = HPP_base * f_LCL * f_CIN * f_FL * 100;
 
-    // ── Gefrierniveau-Term: kalibriert für ≥2cm (Púčik 2015) ─────────────
-    // FL < 1800m → optimal, FL > 3200m → unmöglich
-    let flTerm;
-    if      (FL <= 1800) flTerm = 1.0;
-    else if (FL <= 2500) flTerm = 1.0 - 0.7 * (FL - 1800) / 700;  // 1.0→0.3
-    else if (FL <= 3200) flTerm = 0.3 - 0.3 * (FL - 2500) / 700;  // 0.3→0.0
-    else                 flTerm = 0.0;
+    // Bedingte Wahrscheinlichkeit: multipliziere mit Gewitterwahrscheinlichkeit
+    let hailConditional = Math.min(100, Math.round(hail2cmProb * (thunderProb / 100)));
 
-    // ── CIN-Term: analog STP ──────────────────────────────────────────────
-    let cinTerm;
-    if      (cin >= -50)  cinTerm = 1.0;
-    else if (cin <= -200) cinTerm = 0.0;
-    else                  cinTerm = (200 + cin) / 150;
-
-    // ── LCL-Term: niedrig = feuchte Luft = stärkerer Aufwind ─────────────
-    let lclTerm;
-    if      (lcl < 800)   lclTerm = 1.0;
-    else if (lcl >= 2500) lclTerm = 0.3;
-    else                  lclTerm = 1.0 - 0.7 * (lcl - 800) / 1700;
-
-    // ── HPP-Index ─────────────────────────────────────────────────────────
-    const hpp = capeTerm * wmsTerm * shearTerm * flTerm * cinTerm * lclTerm;
-
-    // ── HPP → Wahrscheinlichkeit (Europa-kalibriert) ──────────────────────
-    // hpp=1.0 ≈ 30%, hpp=2.0 ≈ 55%, hpp=4.0 ≈ 85%
-    let hailProb;
-    if      (hpp <= 0)    hailProb = 0;
-    else if (hpp < 0.3)   hailProb = hpp * 20;
-    else if (hpp < 1.0)   hailProb = 6  + (hpp - 0.3)  * (24 / 0.7);
-    else if (hpp < 2.0)   hailProb = 30 + (hpp - 1.0)  * 25;
-    else if (hpp < 4.0)   hailProb = 55 + (hpp - 2.0)  * 15;
-    else                  hailProb = 85 + (hpp - 4.0)  * 5;
-
-    // ── Temperatur-Skalierung ─────────────────────────────────────────────
-    if      (temp2m < 10) hailProb *= 0.6;
-    else if (temp2m < 14) hailProb *= 0.85;
-
-    // ── Bedingt auf Gewitterwahrscheinlichkeit ────────────────────────────
-    return Math.min(100, Math.round(hailProb * (thunderProb / 100)));
+    return hailConditional;
 }
 
 function calculateWindProbability(hour, wmaxshear, dcape) {
