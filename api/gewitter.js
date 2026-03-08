@@ -592,31 +592,30 @@ function calcPBLHeight(hour) {
 }
 
 function calcEBWD(hour) {
+    // EBWD = Effective Bulk Wind Difference (vereinfacht: 1000→850 hPa)
+    // Quelle: Thompson et al. 2003, Rasmussen 2003
+    // Feldnamen konsistent mit extractModelHour
+
     const levels = [
-        {speed: hour.wind_speed_1000hPa ?? 0, dir: hour.windDir1000hPa ?? 0},
-        {speed: hour.wind_speed_975hPa  ?? 0, dir: hour.windDir975hPa  ?? 0},
-        {speed: hour.wind_speed_950hPa  ?? 0, dir: hour.windDir950hPa  ?? 0},
-        {speed: hour.wind_speed_900hPa  ?? 0, dir: hour.windDir900hPa  ?? 0},
-        {speed: hour.wind_speed_850hPa  ?? 0, dir: hour.windDir850hPa  ?? 0},
-        {speed: hour.wind_speed_800hPa  ?? 0, dir: hour.windDir800hPa  ?? 0}
+        { speed: (hour.wind_speed_1000hPa ?? 0) / 3.6, dir: hour.windDir1000 ?? 0 },
+        { speed: (hour.wind_speed_975hPa  ?? 0) / 3.6, dir: hour.windDir975  ?? 0 },
+        { speed: (hour.wind_speed_950hPa  ?? 0) / 3.6, dir: hour.windDir950  ?? 0 },
+        { speed: (hour.wind_speed_925hPa  ?? 0) / 3.6, dir: hour.windDir925  ?? 0 },
+        { speed: (hour.wind_speed_900hPa  ?? 0) / 3.6, dir: hour.windDir900  ?? 0 },
+        { speed: (hour.wind_speed_850hPa  ?? 0) / 3.6, dir: hour.windDir850  ?? 0 },
     ];
 
-    const uv = levels.map(d => {
-        const rad = d.dir * Math.PI / 180;
-        return { u: -d.speed * Math.sin(rad), v: -d.speed * Math.cos(rad) };
-    });
+    const uv = levels.map(l => windToUV(l.speed, l.dir));
 
-    let maxDiff = 0;
-    for (let i = 0; i < uv.length; i++) {
-        for (let j = i+1; j < uv.length; j++) {
-            const du = uv[j].u - uv[i].u;
-            const dv = uv[j].v - uv[i].v;
-            const diff = Math.sqrt(du*du + dv*dv);
-            if (diff > maxDiff) maxDiff = diff;
-        }
-    }
+    // Massengewichteter Mittelwind der Einströmschicht (1000–850 hPa)
+    const meanU = uv.reduce((s, w) => s + w.u, 0) / uv.length;
+    const meanV = uv.reduce((s, w) => s + w.v, 0) / uv.length;
 
-    return maxDiff; // EBWD in m/s
+    // EBWD = Differenz zwischen Oberrand (850 hPa) und Mittelwind
+    const du = uv[uv.length - 1].u - meanU;
+    const dv = uv[uv.length - 1].v - meanV;
+
+    return Math.round(Math.hypot(du, dv) * 10) / 10; // m/s
 }
 
 function calcSRH(hour, layer = '0-3km') {
