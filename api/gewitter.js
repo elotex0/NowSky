@@ -458,10 +458,10 @@ function calcCIN(hour) {
     // ── MLCIN50: Mittelwert über 1000/975/950 hPa ──────────────────────
     // ESSL-Empfehlung: ML50-Parcel (Groenemeijer et al. 2019, ECMWF TM 852)
     const mlLevels = [
-        { temp: hour.t1000, dew: hour.dew1000, w: 1.0 },
-        { temp: hour.t975,  dew: hour.dew975,  w: 1.0 },
-        { temp: hour.t950,  dew: hour.dew950,  w: 1.0 },
-        { temp: hour.t925,  dew: hour.dew925,  w: 0.5 },
+        { temp: hour.temp1000, dew: hour.dew1000, w: 1.0 },
+        { temp: hour.temp975,  dew: hour.dew975,  w: 1.0 },
+        { temp: hour.temp950,  dew: hour.dew950,  w: 1.0 },
+        { temp: hour.temp925,  dew: hour.dew925,  w: 0.5 },
     ].filter(l => l.temp !== null && l.dew !== null);
 
     // Fallback auf 2m wenn keine Druckniveau-Daten
@@ -475,8 +475,8 @@ function calcCIN(hour) {
         ? mlLevels.reduce((s, l) => s + l.dew * l.w, 0) / totalW
         : (hour.dew ?? ml_temp - 10);
 
-    const t850 = hour.t850 ?? 0;
-    const t700 = hour.t700 ?? 0;
+    const t850 = hour.temp850 ?? 0;
+    const t700 = hour.temp700 ?? 0;
     if (ml_temp === 0 && t850 === 0) return 0;
 
     const dewDep  = Math.max(0, ml_temp - ml_dew);
