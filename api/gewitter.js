@@ -24,7 +24,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,relative_humidity_850hPa,relative_humidity_700hPa,cape,` +
                     `dew_point_850hPa,dew_point_700hPa,direct_radiation,total_column_integrated_water_vapour,` +
-                    `freezing_level_height,precipitation,boundary_layer_height,convective_inhibition,lifted_index&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
+                    `freezing_level_height,precipitation,boundary_layer_height,convective_inhibition,lifted_index&forecast_days=16&models=icon_seamless,ecmwf_ifs025,gfs_global&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
         // Quelle: Rädler et al. 2018 (AR-CHaMo), ESSL Technical Note 2023
         // ═══════════════════════════════════════════════════════════════════
 
-        const MODELS = ['icon_eu', 'ecmwf_ifs025', 'gfs_global'];
+        const MODELS = ['icon_seamless', 'ecmwf_ifs025', 'gfs_global'];
 
         const now = new Date();
         const currentTimeStr = now.toLocaleString('en-US', {
@@ -136,11 +136,11 @@ export default async function handler(req, res) {
         // Quelle: Haiden et al. 2018 (ECMWF Technical Memorandum), DWD NWP-Verification
         function getModelWeight(model, leadtimeHours) {
             if (leadtimeHours <= 48) {
-                return { icon_eu: 0.45, ecmwf_ifs025: 0.35, gfs_global: 0.20 }[model] ?? 0.33;
+                return { icon_seamless: 0.45, ecmwf_ifs025: 0.35, gfs_global: 0.20 }[model] ?? 0.33;
             } else if (leadtimeHours <= 120) {
-                return { icon_eu: 0.33, ecmwf_ifs025: 0.42, gfs_global: 0.25 }[model] ?? 0.33;
+                return { icon_seamless: 0.33, ecmwf_ifs025: 0.42, gfs_global: 0.25 }[model] ?? 0.33;
             } else {
-                return { icon_eu: 0.20, ecmwf_ifs025: 0.55, gfs_global: 0.25 }[model] ?? 0.33;
+                return { icon_seamless: 0.20, ecmwf_ifs025: 0.55, gfs_global: 0.25 }[model] ?? 0.33;
             }
         }
 
@@ -856,9 +856,6 @@ function categorizeRisk(prob) {
     return { level: 0, label: 'none' };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// WAHRSCHEINLICHKEITS-FUNKTIONEN
-// ═══════════════════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════════════════
 // WAHRSCHEINLICHKEITS-FUNKTIONEN – HAGEL ≥2cm nur bei Gewitter
 // ═══════════════════════════════════════════════════════════════════════════
