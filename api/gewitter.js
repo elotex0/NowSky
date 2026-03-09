@@ -24,7 +24,7 @@ export default async function handler(req, res) {
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
                     `relative_humidity_500hPa,relative_humidity_850hPa,relative_humidity_700hPa,cape,` +
                     `dew_point_850hPa,dew_point_700hPa,direct_radiation,total_column_integrated_water_vapour,` +
-                    `freezing_level_height,precipitation,boundary_layer_height,convective_inhibition,lifted_index&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
+                    `freezing_level_height,precipitation,boundary_layer_height,convective_inhibition,lifted_index&forecast_days=16&models=icon_seamless,ecmwf_ifs025,gfs_global&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
         // Quelle: Rädler et al. 2018 (AR-CHaMo), ESSL Technical Note 2023
         // ═══════════════════════════════════════════════════════════════════
 
-        const MODELS = ['icon_eu', 'ecmwf_ifs025', 'gfs_global'];
+        const MODELS = ['icon_seamless', 'ecmwf_ifs025', 'gfs_global'];
 
         const now = new Date();
         const currentTimeStr = now.toLocaleString('en-US', {
@@ -229,7 +229,7 @@ export default async function handler(req, res) {
                 const [hr] = tp.split(':').map(Number);
                 return dp > currentDateStr || (dp === currentDateStr && hr >= currentHour);
             })
-            .slice(0, 24);
+            .slice(0, 72); // max 72 Stunden
 
         const daysMap = new Map();
         hours.forEach(h => {
@@ -280,7 +280,7 @@ export default async function handler(req, res) {
             }));
 
         // Debug: erste 3 Stunden mit ALLEN Modell-Einzelwerten
-        const debugStunden = nextHours.slice(0, 3).map((h) => {
+        const debugStunden = nextHours.slice(0, 72).map((h) => {
             const i = data.hourly.time.indexOf(h.time);
             const perModel = {};
             for (const model of MODELS) {
