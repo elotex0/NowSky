@@ -243,7 +243,7 @@ export default async function handler(req, res) {
                 const [hr] = tp.split(':').map(Number);
                 return dp > currentDateStr || (dp === currentDateStr && hr >= currentHour);
             })
-            .slice(0, 24);
+            .slice(0, 72);
 
         const daysMap = new Map();
         hours.forEach(h => {
