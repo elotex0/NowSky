@@ -21,8 +21,11 @@ export default async function handler(req, res) {
                     `wind_direction_975hPa,wind_direction_950hPa,wind_direction_925hPa,wind_direction_900hPa,` +
                     `wind_speed_1000hPa,wind_speed_850hPa,wind_speed_700hPa,wind_speed_500hPa,wind_speed_300hPa,` +
                     `wind_speed_975hPa,wind_speed_950hPa,wind_speed_925hPa,wind_speed_900hPa,` +
+                    `temperature_1000hPa,temperature_975hPa,temperature_950hPa,temperature_925hPa,` +
                     `temperature_500hPa,temperature_850hPa,temperature_700hPa,` +
+                    `relative_humidity_1000hPa,relative_humidity_975hPa,relative_humidity_950hPa,relative_humidity_925hPa,` +
                     `relative_humidity_500hPa,relative_humidity_850hPa,relative_humidity_700hPa,cape,` +
+                    `dew_point_1000hPa,dew_point_975hPa,dew_point_950hPa,dew_point_925hPa,` +
                     `dew_point_850hPa,dew_point_700hPa,direct_radiation,total_column_integrated_water_vapour,` +
                     `freezing_level_height,precipitation,boundary_layer_height,convective_inhibition,lifted_index&forecast_days=16&models=icon_seamless,ecmwf_ifs025,gfs_global&timezone=auto`;
 
@@ -70,11 +73,19 @@ export default async function handler(req, res) {
 
             const t2m  = get('temperature_2m');
             const d2m  = get('dew_point_2m');
+            const t1000 = get('temperature_1000hPa');
+            const t975 = get('temperature_975hPa');
+            const t950 = get('temperature_950hPa');
+            const t925 = get('temperature_925hPa');
             const t850 = get('temperature_850hPa');
-            const d850 = get('dew_point_850hPa');
             const t700 = get('temperature_700hPa');
-            const d700 = get('dew_point_700hPa');
             const t500 = get('temperature_500hPa');
+            const d1000 = get('dew_point_1000hPa');
+            const d975 = get('dew_point_975hPa');
+            const d950 = get('dew_point_950hPa');
+            const d925 = get('dew_point_925hPa');
+            const d850 = get('dew_point_850hPa');
+            const d700 = get('dew_point_700hPa');
 
             if (t2m === null || t850 === null || t500 === null) return null;
 
@@ -107,12 +118,24 @@ export default async function handler(req, res) {
                 wind_speed_925hPa:  get('wind_speed_925hPa') ?? 0,
                 wind_speed_900hPa:  get('wind_speed_900hPa') ?? 0,
                 pwat:               get('total_column_integrated_water_vapour') ?? 25,
+                temp1000:           t1000,
+                temp975:            t975,
+                temp950:            t950,
+                temp925:            t925,
                 temp500:            t500,
                 temp850:            t850,
                 temp700:            t700 ?? (t850 + t500) / 2,
+                dew1000:            d1000 ?? (d2m ?? t2m - 10),
+                dew975:             d975 ?? (d2m ?? t2m - 10),
+                dew950:             d950 ?? (d2m ?? t2m - 10),
+                dew925:             d925 ?? (d2m ?? t2m - 10),
                 dew850:             d850 ?? (d2m ?? t2m - 10),
                 dew700:             d700 ?? (d2m ?? t2m - 10),
                 // RH direkt von API – genauer als Berechnung aus Taupunkt
+                rh1000:              get('relative_humidity_1000hPa') ?? 100,
+                rh975:               get('relative_humidity_975hPa') ?? 100,
+                rh950:               get('relative_humidity_950hPa') ?? 100,
+                rh925:               get('relative_humidity_925hPa') ?? 100,
                 rh500:              get('relative_humidity_500hPa') ?? 50,
                 rh700:              get('relative_humidity_700hPa') ?? null,
                 rh850:              get('relative_humidity_850hPa') ?? null,
@@ -427,32 +450,49 @@ function calcRelHum(temp, dew) {
 }
 
 function calcCIN(hour) {
-    const t2m  = hour.temperature ?? 0;
-    const d2m  = hour.dew ?? t2m - 10;
-    const t850 = hour.temp850 ?? 0;
-    const t700 = hour.temp700 ?? 0;
+    const g    = 9.81;
+    const DALR = 9.8;
+    const z850 = 1500;
+    const z700 = 3000;
 
-    if (t2m === 0 && t850 === 0) return 0;
+    // ── MLCIN50: Mittelwert über 1000/975/950 hPa ──────────────────────
+    // ESSL-Empfehlung: ML50-Parcel (Groenemeijer et al. 2019, ECMWF TM 852)
+    const mlLevels = [
+        { temp: hour.t1000, dew: hour.dew1000, w: 1.0 },
+        { temp: hour.t975,  dew: hour.dew975,  w: 1.0 },
+        { temp: hour.t950,  dew: hour.dew950,  w: 1.0 },
+        { temp: hour.t925,  dew: hour.dew925,  w: 0.5 },
+    ].filter(l => l.temp !== null && l.dew !== null);
 
-    const dewDep2m = Math.max(0, t2m - d2m);
-    const T_LCL    = t2m - 0.212 * dewDep2m - 0.001 * dewDep2m * dewDep2m;
-    const z_LCL    = 125 * dewDep2m;
-    const T_LCL_K  = T_LCL + 273.15;
-    const T2m_K    = t2m + 273.15;
-    const DALR     = 9.8;
-    const g        = 9.81;
-    const z850     = 1500;
-    const z700     = 3000;
+    // Fallback auf 2m wenn keine Druckniveau-Daten
+    const totalW  = mlLevels.length
+        ? mlLevels.reduce((s, l) => s + l.w, 0)
+        : 1;
+    const ml_temp = mlLevels.length
+        ? mlLevels.reduce((s, l) => s + l.temp * l.w, 0) / totalW
+        : (hour.temperature ?? 0);
+    const ml_dew  = mlLevels.length
+        ? mlLevels.reduce((s, l) => s + l.dew * l.w, 0) / totalW
+        : (hour.dew ?? ml_temp - 10);
 
-    // Theta-E Oberfläche
-    const e_d2m   = 6.112 * Math.exp((17.67 * d2m) / (d2m + 243.5));
-    const w2m     = 0.622 * e_d2m / (1013.25 - e_d2m);
-    const w2m_gkg = w2m * 1000;
-    const theta_e_surface = T2m_K
-        * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m_gkg))
-        * Math.exp((3.376 / T_LCL_K - 0.00254) * w2m_gkg * (1 + 0.00081 * w2m_gkg));
+    const t850 = hour.t850 ?? 0;
+    const t700 = hour.t700 ?? 0;
+    if (ml_temp === 0 && t850 === 0) return 0;
 
-    // ── Hilfsfunktion: Theta-E iterativ lösen ────────────────────────────
+    const dewDep  = Math.max(0, ml_temp - ml_dew);
+    const T_LCL   = ml_temp - 0.212 * dewDep - 0.001 * dewDep * dewDep;
+    const z_LCL   = 125 * dewDep;
+    const T_LCL_K = T_LCL + 273.15;
+    const T_ml_K  = ml_temp + 273.15;
+
+    // Theta-E des ML-Parcels (Bolton 1980)
+    const e_dew     = 6.112 * Math.exp((17.67 * ml_dew) / (ml_dew + 243.5));
+    const w_ml      = 0.622 * e_dew / (1013.25 - e_dew);
+    const w_gkg     = w_ml * 1000;
+    const theta_e_ml = T_ml_K
+        * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w_gkg))
+        * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
+
     function parcelTempAtPressure(pressHPa, startTemp, theta_e_target) {
         const dz_from_lcl = pressHPa === 850
             ? Math.max(0, z850 - z_LCL) / 1000
@@ -473,85 +513,59 @@ function calcCIN(hour) {
         return T;
     }
 
-    // ── Parcel-Temperaturen berechnen ────────────────────────────────────
-    // Bei 850 hPa
+    // Parcel-Temp bei 850 hPa
     let T_parcel_850;
     if (z_LCL >= z850) {
-        // Komplett trockenadiabatisch bis 850 hPa
-        T_parcel_850 = t2m - DALR * (z850 / 1000);
+        T_parcel_850 = ml_temp - DALR * (z850 / 1000);
     } else {
-        // Trockenadiabatisch bis LCL, dann feuchtadiabatisch
-        const T_at_LCL = t2m - DALR * (z_LCL / 1000);
-        T_parcel_850   = parcelTempAtPressure(850, T_at_LCL, theta_e_surface);
+        const T_at_LCL = ml_temp - DALR * (z_LCL / 1000);
+        T_parcel_850   = parcelTempAtPressure(850, T_at_LCL, theta_e_ml);
     }
 
-    // Bei 700 hPa (immer feuchtadiabatisch ab LCL)
-    const T_at_LCL_for700 = z_LCL < z850
-        ? t2m - DALR * (z_LCL / 1000)
-        : T_parcel_850; // LCL liegt über 850 hPa
+    // Parcel-Temp bei 700 hPa
     let T_parcel_700;
     if (z_LCL >= z700) {
-        T_parcel_700 = t2m - DALR * (z700 / 1000);
+        T_parcel_700 = ml_temp - DALR * (z700 / 1000);
     } else {
-        T_parcel_700 = parcelTempAtPressure(700, T_parcel_850, theta_e_surface);
+        T_parcel_700 = parcelTempAtPressure(700, T_parcel_850, theta_e_ml);
     }
 
-    // ── CIN-Integration über 3 Layer ────────────────────────────────────
-    // Layer 1: Boden → LCL (trockenadiabatisch)
-    // Layer 2: LCL → 850 hPa (feuchtadiabatisch)
-    // Layer 3: 850 → 700 hPa (feuchtadiabatisch)
-    // Nur negative dT-Bereiche tragen bei
-
+    // ── CIN-Integration (3 Layer) ────────────────────────────────────────
     let cin = 0;
 
-    // Layer 1: Boden (t2m) → LCL
-    // Parcel am Boden = t2m, am LCL = T_LCL
-    // Umgebung am Boden = t2m, am LCL interpoliert
+    // Layer 1: Boden → LCL
     if (z_LCL > 0 && z_LCL < z850) {
-        const t_env_lcl = t2m - (t2m - t850) * (z_LCL / z850); // linear interpoliert
-        const dT_bottom = 0;                    // Parcel = Umgebung am Boden
-        const dT_lcl    = T_LCL - t_env_lcl;   // Differenz am LCL
+        const t_env_lcl = ml_temp - (ml_temp - t850) * (z_LCL / z850);
+        const dT_lcl    = T_LCL - t_env_lcl;
         if (dT_lcl < 0) {
-            // Parcel kälter am LCL → CIN im oberen Teil des Layer 1
-            const meanDT  = dT_lcl / 2;
-            const T_mid_K = ((t2m + t_env_lcl) / 2) + 273.15;
-            cin += (meanDT / T_mid_K) * g * z_LCL;
+            cin += (dT_lcl / 2 / (((ml_temp + t_env_lcl) / 2) + 273.15)) * g * z_LCL;
         }
     }
 
     // Layer 2: LCL → 850 hPa
     const dT_850 = T_parcel_850 - t850;
     if (z_LCL < z850) {
-        const t_env_lcl  = t2m - (t2m - t850) * (z_LCL / z850);
-        const dT_at_lcl  = T_LCL - t_env_lcl; // am LCL (Parcel - Umgebung)
+        const t_env_lcl = ml_temp - (ml_temp - t850) * (z_LCL / z850);
+        const dT_at_lcl = T_LCL - t_env_lcl;
         if (dT_850 < 0 || dT_at_lcl < 0) {
-            const meanDT  = (Math.min(0, dT_at_lcl) + dT_850) / 2;
+            const meanDT = (Math.min(0, dT_at_lcl) + dT_850) / 2;
             if (meanDT < 0) {
-                const T_mid_K = ((t_env_lcl + t850) / 2) + 273.15;
-                cin += (meanDT / T_mid_K) * g * (z850 - z_LCL);
+                cin += (meanDT / (((t_env_lcl + t850) / 2) + 273.15)) * g * (z850 - z_LCL);
             }
         }
     } else if (dT_850 < 0) {
-        // LCL liegt über 850 hPa, komplett trockenadiabatisch
-        const meanDT  = dT_850 / 2;
-        const T_mid_K = ((t2m + t850) / 2) + 273.15;
-        cin += (meanDT / T_mid_K) * g * z850;
+        cin += (dT_850 / 2 / (((ml_temp + t850) / 2) + 273.15)) * g * z850;
     }
 
     // Layer 3: 850 → 700 hPa
     if (dT_850 < 0) {
         const dT_700 = T_parcel_700 - t700;
         if (dT_700 < 0) {
-            const meanDT  = (dT_850 + dT_700) / 2;
-            const T_mid_K = ((t850 + t700) / 2) + 273.15;
-            cin += (meanDT / T_mid_K) * g * (z700 - z850);
+            cin += ((dT_850 + dT_700) / 2 / (((t850 + t700) / 2) + 273.15)) * g * (z700 - z850);
         } else {
             // LFC zwischen 850 und 700 hPa
             const fraction = dT_850 / (dT_850 - dT_700);
-            const dz_neg   = fraction * (z700 - z850);
-            const meanDT   = dT_850 / 2;
-            const T_mid_K  = (t850 + 273.15);
-            cin += (meanDT / T_mid_K) * g * dz_neg;
+            cin += (dT_850 / 2 / (t850 + 273.15)) * g * (fraction * (z700 - z850));
         }
     }
 
