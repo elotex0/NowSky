@@ -135,21 +135,7 @@ export default async function handler(req, res) {
         // ── Schritt 2: Modellgewichtung nach Leadtime ──────────────────────
         // Quelle: Haiden et al. 2018 (ECMWF Technical Memorandum), DWD NWP-Verification
         function getModelWeight(model, leadtimeHours) {
-            // Sanfte lineare Interpolation statt harter Sprünge
-            const t = Math.min(1, Math.max(0, (leadtimeHours - 48) / (120 - 48)));
-            
-            const weights = {
-                icon_eu:      0.45 + t * (0.20 - 0.45),       // 0.45 → 0.20
-                ecmwf_ifs025: 0.35 + t * (0.55 - 0.35),       // 0.35 → 0.55
-                gfs_global:   0.20 + t * (0.25 - 0.20),       // 0.20 → 0.25
-            };
-            
-            // Jenseits 120h: fixe Endgewichte
-            if (leadtimeHours > 120) {
-                return { icon_eu: 0.20, ecmwf_ifs025: 0.55, gfs_global: 0.25 }[model] ?? 0.33;
-            }
-            
-            return weights[model] ?? 0.33;
+            return 1/3;
         }
 
         function ensembleProb(probsByModel, leadtimeHours) {
@@ -243,7 +229,7 @@ export default async function handler(req, res) {
                 const [hr] = tp.split(':').map(Number);
                 return dp > currentDateStr || (dp === currentDateStr && hr >= currentHour);
             })
-            .slice(0, 72);
+            .slice(0, 24);
 
         const daysMap = new Map();
         hours.forEach(h => {
@@ -293,8 +279,8 @@ export default async function handler(req, res) {
                 wind_risk:     categorizeRisk(day.maxWindProbability),
             }));
 
-        // Debug: erste 72 Stunden mit ALLEN Modell-Einzelwerten
-        const debugStunden = nextHours.slice(0, 72).map((h) => {
+        // Debug: erste 3 Stunden mit ALLEN Modell-Einzelwerten
+        const debugStunden = nextHours.slice(0, 3).map((h) => {
             const i = data.hourly.time.indexOf(h.time);
             const perModel = {};
             for (const model of MODELS) {
