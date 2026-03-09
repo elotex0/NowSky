@@ -436,11 +436,15 @@ function calcCIN(hour) {
 
     const dewDep2m = Math.max(0, t2m - d2m);
     const T_LCL    = t2m - 0.212 * dewDep2m - 0.001 * dewDep2m * dewDep2m;
-    const z_LCL    = 125 * dewDep2m; // m
-    const T2m_K    = t2m + 273.15;
+    const z_LCL    = 125 * dewDep2m;
     const T_LCL_K  = T_LCL + 273.15;
+    const T2m_K    = t2m + 273.15;
+    const DALR     = 9.8;
+    const g        = 9.81;
+    const z850     = 1500;
+    const z700     = 3000;
 
-    // Theta-E des Oberflächenparcels (Bolton 1980)
+    // Theta-E Oberfläche
     const e_d2m   = 6.112 * Math.exp((17.67 * d2m) / (d2m + 243.5));
     const w2m     = 0.622 * e_d2m / (1013.25 - e_d2m);
     const w2m_gkg = w2m * 1000;
@@ -448,94 +452,110 @@ function calcCIN(hour) {
         * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m_gkg))
         * Math.exp((3.376 / T_LCL_K - 0.00254) * w2m_gkg * (1 + 0.00081 * w2m_gkg));
 
-    const z850 = 1500; // m
-    const z700 = 3000; // m
-    const DALR = 9.8;  // K/km
-    const g    = 9.81;
+    // ── Hilfsfunktion: Theta-E iterativ lösen ────────────────────────────
+    function parcelTempAtPressure(pressHPa, startTemp, theta_e_target) {
+        const dz_from_lcl = pressHPa === 850
+            ? Math.max(0, z850 - z_LCL) / 1000
+            : (z700 - Math.max(z_LCL, z850)) / 1000;
+        let T = startTemp - 6.0 * dz_from_lcl;
+        for (let iter = 0; iter < 20; iter++) {
+            const Tp_K   = T + 273.15;
+            const es     = 6.112 * Math.exp((17.67 * T) / (T + 243.5));
+            const ws     = 0.622 * es / (pressHPa - es);
+            const ws_gkg = ws * 1000;
+            const theta_e_test = Tp_K
+                * Math.pow(1000 / pressHPa, 0.2854 * (1 - 0.00028 * ws_gkg))
+                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
+            const delta = (theta_e_target - theta_e_test) * 0.15;
+            T += delta;
+            if (Math.abs(delta) < 0.001) break;
+        }
+        return T;
+    }
 
-    // ── Parcel bei 850 hPa ───────────────────────────────────────────────
+    // ── Parcel-Temperaturen berechnen ────────────────────────────────────
+    // Bei 850 hPa
     let T_parcel_850;
     if (z_LCL >= z850) {
-        // LCL liegt über 850 hPa → trockenadiabatisch die ganze Strecke
+        // Komplett trockenadiabatisch bis 850 hPa
         T_parcel_850 = t2m - DALR * (z850 / 1000);
     } else {
-        // Besserer Startwert: feuchtadiabatisch von LCL bis 850 hPa
-        const dz_moist = (z850 - z_LCL) / 1000; // km
-        T_parcel_850 = T_LCL - 6.0 * dz_moist;
-        for (let iter = 0; iter < 20; iter++) {
-            const Tp_K   = T_parcel_850 + 273.15;
-            const es     = 6.112 * Math.exp((17.67 * T_parcel_850) / (T_parcel_850 + 243.5));
-            const ws     = 0.622 * es / (850 - es);
-            const ws_gkg = ws * 1000;
-            const theta_e_test = Tp_K
-                * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * ws_gkg))
-                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
-            const delta = (theta_e_surface - theta_e_test) * 0.15;
-            T_parcel_850 += delta;
-            if (Math.abs(delta) < 0.001) break;
+        // Trockenadiabatisch bis LCL, dann feuchtadiabatisch
+        const T_at_LCL = t2m - DALR * (z_LCL / 1000);
+        T_parcel_850   = parcelTempAtPressure(850, T_at_LCL, theta_e_surface);
+    }
+
+    // Bei 700 hPa (immer feuchtadiabatisch ab LCL)
+    const T_at_LCL_for700 = z_LCL < z850
+        ? t2m - DALR * (z_LCL / 1000)
+        : T_parcel_850; // LCL liegt über 850 hPa
+    let T_parcel_700;
+    if (z_LCL >= z700) {
+        T_parcel_700 = t2m - DALR * (z700 / 1000);
+    } else {
+        T_parcel_700 = parcelTempAtPressure(700, T_parcel_850, theta_e_surface);
+    }
+
+    // ── CIN-Integration über 3 Layer ────────────────────────────────────
+    // Layer 1: Boden → LCL (trockenadiabatisch)
+    // Layer 2: LCL → 850 hPa (feuchtadiabatisch)
+    // Layer 3: 850 → 700 hPa (feuchtadiabatisch)
+    // Nur negative dT-Bereiche tragen bei
+
+    let cin = 0;
+
+    // Layer 1: Boden (t2m) → LCL
+    // Parcel am Boden = t2m, am LCL = T_LCL
+    // Umgebung am Boden = t2m, am LCL interpoliert
+    if (z_LCL > 0 && z_LCL < z850) {
+        const t_env_lcl = t2m - (t2m - t850) * (z_LCL / z850); // linear interpoliert
+        const dT_bottom = 0;                    // Parcel = Umgebung am Boden
+        const dT_lcl    = T_LCL - t_env_lcl;   // Differenz am LCL
+        if (dT_lcl < 0) {
+            // Parcel kälter am LCL → CIN im oberen Teil des Layer 1
+            const meanDT  = dT_lcl / 2;
+            const T_mid_K = ((t2m + t_env_lcl) / 2) + 273.15;
+            cin += (meanDT / T_mid_K) * g * z_LCL;
         }
     }
 
-    // ── CIN Boden→850 hPa ────────────────────────────────────────────────
-    // Unterhalb LCL: Parcel trockenadiabatisch → oft wärmer als Umgebung
-    // CIN entsteht erst ab LCL wenn feuchtadiabatische Rate < Umgebungslapse
-    let cin_low = 0;
+    // Layer 2: LCL → 850 hPa
     const dT_850 = T_parcel_850 - t850;
-
-    if (dT_850 < 0) {
-        if (z_LCL >= z850) {
-            // Komplett trockenadiabatisch, trotzdem kälter → CIN über ganzen Layer
-            const meanDT  = dT_850 / 2;
-            const T_mid_K = ((t2m + t850) / 2) + 273.15;
-            cin_low = (meanDT / T_mid_K) * g * z850;
-        } else {
-            // Nur der Anteil ab LCL trägt zur CIN bei
-            // Parcel am LCL = Umgebungstemperatur (per Definition des LCL)
-            // → CIN nur im Layer LCL→850 hPa
-            const dz_cin  = z850 - z_LCL; // m
-            const meanDT  = dT_850 / 2;   // linear von 0 bei LCL bis dT_850 bei 850
-            const T_mid_K = ((T_LCL + t850) / 2) + 273.15;
-            cin_low = (meanDT / T_mid_K) * g * dz_cin;
+    if (z_LCL < z850) {
+        const t_env_lcl  = t2m - (t2m - t850) * (z_LCL / z850);
+        const dT_at_lcl  = T_LCL - t_env_lcl; // am LCL (Parcel - Umgebung)
+        if (dT_850 < 0 || dT_at_lcl < 0) {
+            const meanDT  = (Math.min(0, dT_at_lcl) + dT_850) / 2;
+            if (meanDT < 0) {
+                const T_mid_K = ((t_env_lcl + t850) / 2) + 273.15;
+                cin += (meanDT / T_mid_K) * g * (z850 - z_LCL);
+            }
         }
+    } else if (dT_850 < 0) {
+        // LCL liegt über 850 hPa, komplett trockenadiabatisch
+        const meanDT  = dT_850 / 2;
+        const T_mid_K = ((t2m + t850) / 2) + 273.15;
+        cin += (meanDT / T_mid_K) * g * z850;
     }
 
-    // ── CIN 850→700 hPa ──────────────────────────────────────────────────
-    let cin_mid = 0;
+    // Layer 3: 850 → 700 hPa
     if (dT_850 < 0) {
-        // Startwert: feuchtadiabatisch von 850 weiter nach 700 hPa
-        const dz_moist700 = (z700 - z850) / 1000;
-        let T_parcel_700 = T_parcel_850 - 6.0 * dz_moist700;
-        for (let iter = 0; iter < 20; iter++) {
-            const Tp_K   = T_parcel_700 + 273.15;
-            const es     = 6.112 * Math.exp((17.67 * T_parcel_700) / (T_parcel_700 + 243.5));
-            const ws     = 0.622 * es / (700 - es);
-            const ws_gkg = ws * 1000;
-            const theta_e_test = Tp_K
-                * Math.pow(1000 / 700, 0.2854 * (1 - 0.00028 * ws_gkg))
-                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
-            const delta = (theta_e_surface - theta_e_test) * 0.15;
-            T_parcel_700 += delta;
-            if (Math.abs(delta) < 0.001) break;
-        }
-
         const dT_700 = T_parcel_700 - t700;
         if (dT_700 < 0) {
-            // Parcel bleibt kälter bis 700 hPa
             const meanDT  = (dT_850 + dT_700) / 2;
             const T_mid_K = ((t850 + t700) / 2) + 273.15;
-            cin_mid = (meanDT / T_mid_K) * g * (z700 - z850);
+            cin += (meanDT / T_mid_K) * g * (z700 - z850);
         } else {
-            // Parcel wird irgendwo zwischen 850 und 700 wärmer (LFC)
-            // linearer Nulldurchgang
+            // LFC zwischen 850 und 700 hPa
             const fraction = dT_850 / (dT_850 - dT_700);
             const dz_neg   = fraction * (z700 - z850);
             const meanDT   = dT_850 / 2;
             const T_mid_K  = (t850 + 273.15);
-            cin_mid = (meanDT / T_mid_K) * g * dz_neg;
+            cin += (meanDT / T_mid_K) * g * dz_neg;
         }
     }
 
-    return Math.round(Math.max(-500, Math.min(0, cin_low + cin_mid)));
+    return Math.round(Math.max(-500, Math.min(0, cin)));
 }
 
 // Surface-Based LI (Bolton 1980) – konsistent mit CAPE (Taszarek 2020 / ESTOFEX)
