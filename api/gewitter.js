@@ -303,7 +303,7 @@ export default async function handler(req, res) {
             }));
 
         // Debug: erste 3 Stunden mit ALLEN Modell-Einzelwerten
-        const debugStunden = nextHours.slice(0, 3).map((h) => {
+        const debugStunden = nextHours.slice(0, 24).map((h) => {
             const i = data.hourly.time.indexOf(h.time);
             const perModel = {};
             for (const model of MODELS) {
