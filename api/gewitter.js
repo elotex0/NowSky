@@ -243,7 +243,7 @@ export default async function handler(req, res) {
                 const [hr] = tp.split(':').map(Number);
                 return dp > currentDateStr || (dp === currentDateStr && hr >= currentHour);
             })
-            .slice(0, 24);
+            .slice(0, 72);
 
         const daysMap = new Map();
         hours.forEach(h => {
@@ -294,7 +294,7 @@ export default async function handler(req, res) {
             }));
 
         // Debug: erste 5 Stunden mit ALLEN Modell-Einzelwerten
-        const debugStunden = nextHours.slice(0, 12).map((h) => {
+        const debugStunden = nextHours.slice(0, 3).map((h) => {
             const i = data.hourly.time.indexOf(h.time);
             const perModel = {};
             for (const model of MODELS) {
