@@ -724,43 +724,37 @@ function calcSCP(cape, shear, srh, cin) {
 function calcDCAPE(hour) {
     const temp700 = hour.temp700 ?? 0;
     const dew700  = hour.dew700  ?? 0;
-    const temp500 = hour.temp500 ?? 0;
+    const temp2m  = hour.temperature ?? 0;
     const temp850 = hour.temp850 ?? 0;
 
-    // Zu trocken: kaum Verdunstungskühlung möglich
     const dewDep700 = temp700 - dew700;
-    if (dewDep700 > 35) return 0;
+    if (dewDep700 > 40) return 0;
 
-    // Wetbulb bei 700 hPa (Normand, psychrometrischer Koeff. ~0.43 bei 700 hPa)
-    // Quelle: Bolton 1980, angepasst für 700 hPa
+    // Wetbulb bei 700 hPa (Normand-Methode)
     const wetBulb700 = temp700 - 0.43 * dewDep700;
 
-    // Absinkpotenzial: Wetbulb 700 hPa vs. Umgebung bei 850 hPa
-    // Schichtdicke 700→850 hPa ≈ 1500m (Standardatmosphäre)
-    // Quelle: Knapp & Emanuel 1994, vereinfacht für NWP-Anwendung
-    const tempDiff = wetBulb700 - temp850;
+    // Parcel sinkt moist-adiabatisch von 700 hPa (~3000m) zur Oberfläche
+    // Erwärmt sich trocken-adiabatisch: DALR = 9.8 K/km × 3 km = +29.4 K
+    const T_parcel_sfc = wetBulb700 + 9.8 * 3.0;
+
+    // Vergleich mit Bodentemperatur (Ziel = Oberfläche, nicht 850 hPa!)
+    const tempDiff = T_parcel_sfc - temp2m;
     if (tempDiff <= 0) return 0;
 
-    // Feuchtefaktor: optimal bei mitteltrockener Luft (dewDep 8-15°C)
-    // Zu feucht → wenig Verdunstungskühlung, zu trocken → kein Wasser verfügbar
-    // Quelle: Gilmore & Wicker 1998 (mesoskalige Downburst-Studie)
+    // Feuchtefaktor (Gilmore & Wicker 1998)
     let moistFactor;
-    if      (dewDep700 <= 2)  moistFactor = 0.2;  // fast gesättigt, kaum Kühlung
+    if      (dewDep700 <= 2)  moistFactor = 0.2;
     else if (dewDep700 <= 5)  moistFactor = 0.5;
-    else if (dewDep700 <= 10) moistFactor = 0.9;  // optimal
-    else if (dewDep700 <= 15) moistFactor = 1.0;  // optimal
+    else if (dewDep700 <= 10) moistFactor = 0.9;
+    else if (dewDep700 <= 15) moistFactor = 1.0;
     else if (dewDep700 <= 20) moistFactor = 0.8;
-    else if (dewDep700 <= 25) moistFactor = 0.5;
-    else                      moistFactor = 0.3;  // sehr trocken, wenig Wasser
+    else if (dewDep700 <= 25) moistFactor = 0.6;
+    else if (dewDep700 <= 30) moistFactor = 0.4;
+    else                      moistFactor = 0.2;
 
-    // DCAPE = g × (ΔT/T_mean) × Δz
-    // T_mean zwischen 700 und 850 hPa
-    const T_mean_K = ((temp700 + temp850) / 2) + 273.15;
-    const dz = 1500; // m (700→850 hPa Standardatmosphäre)
-
-    return Math.round(Math.max(0,
-        (tempDiff / T_mean_K) * 9.81 * dz * moistFactor
-    ));
+    // DCAPE = g × (ΔT / T_mean) × Δz  (700 hPa bis Oberfläche = 3000m)
+    const T_mean_K = ((wetBulb700 + temp2m) / 2) + 273.15;
+    return Math.round(Math.max(0, (tempDiff / T_mean_K) * 9.81 * 3000 * moistFactor));
 }
 
 function calcWMAXSHEAR(cape, shear) {
@@ -835,13 +829,20 @@ function calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m = null, dew2m = n
 // Theta-E nach Bolton 1980 (ESTOFEX-Standard)
 // Schwellen aus Guide: < 320K stabil, 320-335 schwach, 335-345 gut, > 345 sehr instabil
 function calcThetaE(tempC, dewC, pressHPa) {
+    // Bolton 1980 – ESTOFEX-Standard, feuchtekorrigierter Exponent
     const T_K = tempC + 273.15;
     const e   = 6.112 * Math.exp((17.67 * dewC) / (dewC + 243.5));
-    const q   = 0.622 * e / (pressHPa - e);
-    const Lv  = 2.501e6;
-    const cp  = 1005;
-    return T_K * Math.pow(1000 / pressHPa, 0.285) * Math.exp((Lv * q) / (cp * T_K));
+    const w   = 0.622 * e / (pressHPa - e);   // Mischungsverhältnis kg/kg
+    const w_gkg = w * 1000;
+    const T_LCL_K = (dewC + 273.15) - 0.212 * (tempC - dewC); // LCL-Näherung
+
+    // Bolton 1980 Gleichung 43 – korrekte feuchtekorrigierte Form
+    return T_K
+        * Math.pow(1000 / pressHPa, 0.2854 * (1 - 0.00028 * w_gkg))
+        * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
 }
+
+// Kategorisierung der Gewitterwahrscheinlichkeit in 4 Stufen (ESTOFEX-Standard)
 
 function categorizeRisk(prob) {
     const p = Math.max(0, Math.min(100, Math.round(prob ?? 0)));
