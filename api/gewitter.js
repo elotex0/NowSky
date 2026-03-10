@@ -1042,7 +1042,6 @@ function calculateProbability(hour) {
     // Harte Ausschlüsse
     if (temp2m < 3 && cape < 300)                          return 0;
     if (temp2m < 8 && cape < 180 && shear < 15)           return 0;
-    if (cape === 0 && liftedIndex > 2.0) return 0;
 
     // Logit: LI und meanRH sind Kernprädiktoren (Rädler 2018)
     // CAPE log-transformiert (Sättigung ab ~200 J/kg, Westermayer 2017)
@@ -1094,6 +1093,8 @@ function calculateProbability(hour) {
     const wmaxshear     = calcWMAXSHEAR(cape, shear);
     const dcape         = calcDCAPE(hour);
     const thetaE850     = calcThetaE(hour.temp850 ?? 0, hour.dew850 ?? 0, 850);
+
+    if (cape === 0 && liftedIndex > 2.0) return 0;
 
     // HSLC direkt zurückgeben (Gate bereits oben passiert)
     if (isHSLC) {
