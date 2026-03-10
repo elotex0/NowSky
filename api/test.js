@@ -180,36 +180,133 @@ function calcSTP(hour) {
 }
 
 function calcSevereWindProb(hour) {
-    // Severe Wind Wahrscheinlichkeit (>25 m/s Böen)
-    const gusts = hour.wind_gusts_10m ?? 0;
-    const dcape = hour.dcape ?? calcDCAPE(hour);
-    const cape = hour.cape ?? 0;
-    const blh = hour.boundary_layer_height ?? 1000;
+    // Konvektiver Severe Wind (Downburst/Böenlinie) — KEIN allgemeiner Sturm!
+    // Basiert ausschließlich auf konvektiven Parametern: DCAPE, CAPE, Scherung, LI
+    const dcape = hour.dcape ?? 0;
+    const cape  = hour.cape  ?? 0;
+    const li    = hour.liftedIndex ?? 0;
     const ws500 = hour.wind_speed_500hPa ?? 0;
+    const ws850 = hour.wind_speed_850hPa ?? 0;
+    const ws925 = hour.wind_speed_925hPa ?? 0;
+    const blh   = hour.boundary_layer_height ?? 1000;
+    const rh700 = hour.relative_humidity_700hPa ?? 50;
+
+    // Keine Konvektion → kein konvektiver Wind
+    if (cape < 200 && dcape < 200) return 0;
 
     let prob = 0;
 
-    // Direkte Böenkomponente
-    if (gusts >= 25) prob += 40;
-    else if (gusts >= 20) prob += 20;
-    else if (gusts >= 15) prob += 10;
+    // DCAPE: Haupttreiber für Downbursts (Gilmore & Wicker)
+    // >800 J/kg: signifikantes Downburst-Potenzial
+    if (dcape >= 1500) prob += 45;
+    else if (dcape >= 1000) prob += 30;
+    else if (dcape >= 600)  prob += 18;
+    else if (dcape >= 300)  prob += 8;
 
-    // DCAPE-Komponente (Downburst-Potenzial)
-    if (dcape != null) {
-        if (dcape >= 1000) prob += 30;
-        else if (dcape >= 500) prob += 15;
-        else if (dcape >= 200) prob += 5;
-    }
+    // CAPE: Konvektive Energie (nur bei vorhandener Instabilität)
+    if (cape >= 2000) prob += 20;
+    else if (cape >= 1000) prob += 12;
+    else if (cape >= 500)  prob += 6;
 
-    // Instabilität
-    if (cape >= 1000) prob += 15;
-    else if (cape >= 500) prob += 8;
+    // Trockene Mittelschicht (700 hPa) fördert Downbursts durch Verdunstungskühlung
+    if (rh700 < 40) prob += 15;
+    else if (rh700 < 60) prob += 8;
 
-    // Höhenwind
-    if (ws500 >= 30) prob += 15;
-    else if (ws500 >= 20) prob += 8;
+    // Vertikale Windscherung 925–500 hPa als Proxy für Böenlinienpotenzial
+    const shear = Math.abs(ws500 - ws925);
+    if (shear >= 20) prob += 15;
+    else if (shear >= 12) prob += 8;
+    else if (shear >= 6)  prob += 3;
+
+    // LI: Starke Instabilität verstärkt Aufwinde → stärkere Downdrafts
+    if (li <= -4) prob += 10;
+    else if (li <= -2) prob += 5;
+
+    // Grenzschichthöhe: Tiefe GS hemmt Konvektion
+    if (blh < 500) prob = Math.round(prob * 0.5);
 
     return Math.min(100, Math.round(prob));
+}
+
+// ─── LPI – Lightning Potential Index (nach Lynn & Yair, 2010) ─────────────────
+// Europäischer Standard-Index für Gewitterwahrscheinlichkeit (ECMWF operationell)
+// LPI = Integral(w * sqrt(Lv/cp * dqice/dz) dz) über konvektive Schicht
+// Näherung aus verfügbaren Open-Meteo-Feldern
+
+function calcLPI(hour) {
+    const cape   = hour.cape  ?? 0;
+    const cin    = hour.cin   ?? 0;
+    const li     = hour.liftedIndex ?? 0;
+    const t2m    = hour.temperature_2m ?? 15;
+    const td2m   = hour.dew_point_2m  ?? 5;
+    const rh850  = hour.relative_humidity_850hPa ?? 50;
+    const rh700  = hour.relative_humidity_700hPa ?? 50;
+    const t500   = hour.temperature_500hPa ?? -20;
+    const t700   = hour.temperature_700hPa ?? -5;
+    const t850   = hour.temperature_850hPa ?? 5;
+    const ws500  = hour.wind_speed_500hPa ?? 0;
+    const ws850  = hour.wind_speed_850hPa ?? 0;
+    const blh    = hour.boundary_layer_height ?? 1000;
+    const rad    = hour.direct_radiation ?? 0;
+
+    // Keine Basis → kein Gewitter
+    if (cape < 50 || li > 2) return 0;
+
+    // ── Kernterm: CAPE * Eisbildungspotenzial ──────────────────────────────────
+    // Gefrierschicht muss zwischen 700 und 500 hPa liegen für Eisphasen-Auftrieb
+    const freeze_zone = (t700 <= 0 && t500 <= -10) ? 1.0
+                      : (t850 <= 0)                 ? 0.5
+                      :                               0.2;
+
+    // Mischungsschicht-Feuchte: Differenz Taupunkt/Temperatur
+    const td_deficit = Math.max(0, t2m - td2m);
+    const moisture_factor = Math.max(0.1, 1 - td_deficit / 20);
+
+    // Mittlere Schicht-Feuchte (kritisch für Gewitterentwicklung)
+    const mid_rh = (rh850 + rh700) / 2;
+    const rh_factor = mid_rh >= 70 ? 1.2 : mid_rh >= 50 ? 1.0 : mid_rh >= 30 ? 0.7 : 0.3;
+
+    // ── LPI-Kern nach Lynn & Yair ──────────────────────────────────────────────
+    // LPI ~ CAPE^0.5 * Eisphasen-Faktor * Feuchte * (1/(1 + CIN/100))
+    const cin_inhibit = Math.max(0.05, 1 / (1 + Math.abs(Math.min(0, cin)) / 100));
+    const li_factor   = li <= 0 ? Math.min(2.5, Math.pow(Math.abs(li), 0.7)) : 0;
+
+    // Vertikalscherung verstärkt Aufwindrotation → mehr Blitze
+    const shear = Math.abs(ws500 - ws850);
+    const shear_factor = 1 + Math.min(0.5, shear / 40);
+
+    // Strahlung: Tageszeitliche Heizung fördert Konvektion
+    const rad_factor = rad > 400 ? 1.3 : rad > 200 ? 1.1 : rad > 50 ? 1.0 : 0.7;
+
+    // Grenzschicht: Tiefe GS hemmt Durchmischung
+    const blh_factor = blh >= 1500 ? 1.2 : blh >= 800 ? 1.0 : 0.6;
+
+    const lpi_raw = Math.sqrt(Math.max(0, cape)) *
+                    freeze_zone *
+                    moisture_factor *
+                    rh_factor *
+                    cin_inhibit *
+                    li_factor *
+                    shear_factor *
+                    rad_factor *
+                    blh_factor * 0.08;
+
+    return Math.round(Math.min(10, lpi_raw) * 100) / 100;
+}
+
+function lpiProbabilities(lpi) {
+    // LPI → Gewitterwahrscheinlichkeit nach ECMWF-Skala
+    // LPI > 0.5: schwache Gewitter möglich
+    // LPI > 1.5: mäßige Gewitter wahrscheinlich
+    // LPI > 3.0: starke Gewitter
+    // LPI > 5.0: sehr starke/organisierte Gewitter
+    if (lpi == null) return { low: 0, moderate: 0, high: 0, extreme: 0 };
+    return {
+        low:      lpi >= 0.5 ? Math.min(100, Math.round(lpi * 20 + 10)) : 0,
+        moderate: lpi >= 1.5 ? Math.min(100, Math.round((lpi - 1.5) * 18 + 25)) : 0,
+        high:     lpi >= 3.0 ? Math.min(100, Math.round((lpi - 3.0) * 15 + 45)) : 0,
+        extreme:  lpi >= 5.0 ? Math.min(100, Math.round((lpi - 5.0) * 10 + 60)) : 0,
+    };
 }
 
 // ─── Wahrscheinlichkeits-Klassen ──────────────────────────────────────────────
@@ -234,13 +331,13 @@ function stpProbabilities(stp) {
     };
 }
 
-function windProbabilities(prob, gusts) {
-    const g = gusts ?? 0;
+function windProbabilities(prob) {
+    // Konvektive Severe-Wind-Wahrscheinlichkeit in 4 Stufen
     return {
-        low:      g >= 15 ? Math.min(100, Math.round(prob * 0.8)) : 0,
-        moderate: g >= 20 ? Math.min(100, Math.round(prob * 0.65)) : 0,
-        high:     g >= 25 ? Math.min(100, Math.round(prob * 0.5)) : 0,
-        extreme:  g >= 33 ? Math.min(100, Math.round(prob * 0.35)) : 0,
+        low:      prob >= 15 ? Math.min(100, Math.round(prob * 0.9)) : 0,
+        moderate: prob >= 30 ? Math.min(100, Math.round(prob * 0.75)) : 0,
+        high:     prob >= 50 ? Math.min(100, Math.round(prob * 0.6)) : 0,
+        extreme:  prob >= 70 ? Math.min(100, Math.round(prob * 0.45)) : 0,
     };
 }
 
@@ -299,6 +396,7 @@ function extractModelHours(data, modelSuffix) {
             freezing_level_height:       getArr('freezing_level_height')[i],
             precipitation:               getArr('precipitation')[i],
             precipitation_probability:   getArr('precipitation_probability')[i],
+            direct_radiation:            getArr('direct_radiation')[i],
         };
 
         // CIN & LI: aus API oder berechnen (wie estefex/essl Pattern)
@@ -311,29 +409,37 @@ function extractModelHours(data, modelSuffix) {
 }
 
 function processHour(hour) {
-    const ship = calcSHIP(hour);
-    const stp  = calcSTP(hour);
+    const ship     = calcSHIP(hour);
+    const stp      = calcSTP(hour);
     const windProb = calcSevereWindProb(hour);
+    const lpi      = calcLPI(hour);
 
     return {
         ship,
-        ship_probs: shipProbabilities(ship),
+        ship_probs:       shipProbabilities(ship),
         stp,
-        stp_probs:  stpProbabilities(stp),
+        stp_probs:        stpProbabilities(stp),
         severe_wind_prob: windProb,
-        wind_probs: windProbabilities(windProb, hour.wind_gusts_10m),
+        wind_probs:       windProbabilities(windProb),
+        lpi,
+        lpi_probs:        lpiProbabilities(lpi),
         // Rohdaten für Transparenz
         raw: {
-            cape:               hour.cape,
-            cin:                hour.cin,
-            lifted_index:       hour.liftedIndex,
-            dcape:              hour.dcape,
-            wind_gusts_10m:     hour.wind_gusts_10m,
-            wind_speed_10m:     hour.wind_speed_10m,
-            temperature_2m:     hour.temperature_2m,
-            dew_point_2m:       hour.dew_point_2m,
+            cape:                  hour.cape,
+            cin:                   hour.cin,
+            lifted_index:          hour.liftedIndex,
+            dcape:                 hour.dcape,
+            wind_speed_10m:        hour.wind_speed_10m,
+            wind_speed_500hPa:     hour.wind_speed_500hPa,
+            wind_speed_850hPa:     hour.wind_speed_850hPa,
+            temperature_2m:        hour.temperature_2m,
+            dew_point_2m:          hour.dew_point_2m,
+            temperature_500hPa:    hour.temperature_500hPa,
+            temperature_700hPa:    hour.temperature_700hPa,
+            relative_humidity_700hPa: hour.relative_humidity_700hPa,
             freezing_level_height: hour.freezing_level_height,
             boundary_layer_height: hour.boundary_layer_height,
+            direct_radiation:      hour.direct_radiation,
         }
     };
 }
@@ -387,8 +493,8 @@ function processMultiModelData(data, latitude, longitude) {
 }
 
 function buildEnsemble(perModel, models) {
-    const fields = ['ship', 'stp', 'severe_wind_prob'];
-    const probFields = ['ship_probs', 'stp_probs', 'wind_probs'];
+    const fields    = ['ship', 'stp', 'severe_wind_prob', 'lpi'];
+    const probFields = ['ship_probs', 'stp_probs', 'wind_probs', 'lpi_probs'];
     const probKeys   = ['low', 'moderate', 'high', 'extreme'];
 
     const ens = {};
@@ -437,9 +543,11 @@ function buildDailyMax(allTimes, modelHours, models, startIdx) {
                 ship:             Math.max(...hours.map(h => h.ship ?? 0)),
                 stp:              Math.max(...hours.map(h => h.stp  ?? 0)),
                 severe_wind_prob: Math.max(...hours.map(h => h.severe_wind_prob ?? 0)),
+                lpi:              Math.max(...hours.map(h => h.lpi  ?? 0)),
                 ship_probs:       maxProbs(hours.map(h => h.ship_probs)),
                 stp_probs:        maxProbs(hours.map(h => h.stp_probs)),
                 wind_probs:       maxProbs(hours.map(h => h.wind_probs)),
+                lpi_probs:        maxProbs(hours.map(h => h.lpi_probs)),
             };
         }
         const ensemble = buildEnsemble(perModel, models);
