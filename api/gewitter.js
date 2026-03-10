@@ -133,9 +133,54 @@ export default async function handler(req, res) {
         }
 
         // ── Schritt 2: Modellgewichtung nach Leadtime ──────────────────────
-        // Quelle: Haiden et al. 2018 (ECMWF Technical Memorandum), DWD NWP-Verification
+        // Leitlinien:
+        // - ECMWF IFS: höchste mittelfristige Güte weltweit, sehr gut auch in Europa
+        //   (Haiden et al. 2018, ECMWF Technical Memoranda; DWD/ECMWF Verification)
+        // - ICON: sehr hohe Auflösung und gute Kurzfrist-Skill über Europa (0–36 h),
+        //   häufig vom DWD und ESSL/ESTOFEX für konvektive Lagen bevorzugt.
+        // - GFS: solide, aber in Europa bei Konvektion tendenziell etwas schwächer;
+        //   bleibt als drittes, unabhängiges Modell wichtig.
+        //
+        // Gewichtungsidee (heuristisch, aber literatur-konsistent):
+        // - 0–12 h: ICON leicht bevorzugt (Nowcasting/kurzfristige Konvektion)
+        // - 12–36 h: ICON ≈ ECMWF, GFS geringere, aber konstante Gewichtung
+        // - 36–72 h: ECMWF klar vorn, ICON noch nützlich, GFS konstant
+        // - 72–120 h: ECMWF dominiert den Skill, ICON nimmt ab, GFS bleibt niedrig
+        // - >120 h: rein mittelfristig, ECMWF und GFS dominanter als ICON
+        //
+        // Die Gewichte sind so gewählt, dass sie pro Leadtime näherungsweise 1 ergeben.
         function getModelWeight(model, leadtimeHours) {
-            return 1/3;
+            const lt = Math.max(0, leadtimeHours ?? 0);
+
+            if (lt <= 12) {
+                // sehr kurzfristig: ICON-Konvektion über Europa meist führend
+                if (model === 'icon_seamless') return 0.45;
+                if (model === 'ecmwf_ifs025')  return 0.35;
+                if (model === 'gfs_global')    return 0.20;
+            } else if (lt <= 36) {
+                // kurzfristig bis knapp +36h: ICON ≈ ECMWF
+                if (model === 'icon_seamless') return 0.40;
+                if (model === 'ecmwf_ifs025')  return 0.40;
+                if (model === 'gfs_global')    return 0.20;
+            } else if (lt <= 72) {
+                // +36 bis +72h: ECMWF bekommt klaren Bonus
+                if (model === 'icon_seamless') return 0.30;
+                if (model === 'ecmwf_ifs025')  return 0.50;
+                if (model === 'gfs_global')    return 0.20;
+            } else if (lt <= 120) {
+                // +72 bis +120h: klassische ECMWF-Domäne
+                if (model === 'icon_seamless') return 0.20;
+                if (model === 'ecmwf_ifs025')  return 0.60;
+                if (model === 'gfs_global')    return 0.20;
+            } else {
+                // > +120h: mittelfristig; ECMWF bleibt führend, GFS leicht höher gewichtet
+                if (model === 'icon_seamless') return 0.20;
+                if (model === 'ecmwf_ifs025')  return 0.50;
+                if (model === 'gfs_global')    return 0.30;
+            }
+
+            // Fallback – sollte nicht erreicht werden
+            return 1 / 3;
         }
 
         function ensembleProb(probsByModel, leadtimeHours) {
