@@ -930,7 +930,8 @@ function calcSHIP(hour) {
 // ═══════════════════════════════════════════════════════════════════════════
 function calculateHailProbability(hour) {
     const thunderProb = calculateProbability(hour);
-    if (thunderProb < 5) return 0;
+    // Konservativer: nur bei klaren Gewitterlagen überhaupt Hagel prüfen
+    if (thunderProb < 15) return 0;
 
     const ship = calcSHIP(hour);
 
@@ -946,14 +947,16 @@ function calculateHailProbability(hour) {
     else if (ship >= 0.2) hailProb = 6;
     else                  hailProb = 0;
 
-    // Bedingt auf Gewitterwahrscheinlichkeit
-    return Math.min(100, Math.round(hailProb * (thunderProb / 100)));
+    // Bedingt auf Gewitterwahrscheinlichkeit, zusätzlich konservativ gedämpft
+    const combined = hailProb * (thunderProb / 100);
+    return Math.min(100, Math.round(combined * 0.8));
 }
 
 function calculateWindProbability(hour, wmaxshear, dcape) {
 
     const thunderProb = calculateProbability(hour); // 0–100%
-    if (thunderProb < 5) return 0; // Schwelle: 5% – sonst kein Severe Wind
+    // Konservativer: Severe-Wind nur bei deutlichen Gewitterlagen
+    if (thunderProb < 15) return 0; // vorher 5%
 
     const cape     = Math.max(0, hour.cape ?? 0);
     const shear    = calcShear(hour);
@@ -1051,8 +1054,11 @@ function calculateWindProbability(hour, wmaxshear, dcape) {
     score = Math.round(score * factor);
     if      (dcape < 250 || wmaxshear < 400) score = Math.min(score, 10);
     else if (dcape < 350 || wmaxshear < 550) score = Math.min(score, 25);
-    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20) score = Math.min(100, score + 12);
-    if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600)    score = Math.min(100, score + 8);
+    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20) score = Math.min(100, score + 10);
+    if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600)    score = Math.min(100, score + 6);
+
+    // Insgesamt konservativ leicht dämpfen
+    score = Math.round(score * 0.85);
 
     return Math.min(100, Math.max(0, score));
 }
@@ -1072,7 +1078,8 @@ function calculateProbability(hour) {
     const rh850    = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
     const rh700    = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
     const meanRH   = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
-    if (meanRH < 35) return 0;
+    // sehr trockene Profile: praktisch keine Gewitter (konservativer: Schwelle leicht erhöht)
+    if (meanRH < 40) return 0;
 
     // Spezifische Feuchte 925 hPa (Bodennähe als Proxy, Battaglioli 2023)
     const e850_logit = 6.112 * Math.exp((17.67 * (hour.dew850 ?? dew)) / ((hour.dew850 ?? dew) + 243.5));
@@ -1112,11 +1119,15 @@ function calculateProbability(hour) {
     // Basiswahrscheinlichkeit aus Logit
     const pBase = 1 / (1 + Math.exp(-logit)); // 0.0–1.0
 
+    // Konservatives Gate: wenn die logistische Basiswahrscheinlichkeit sehr klein ist,
+    // wird komplett auf 0 gesetzt, um „kriechende“ Fehlarlarme zu vermeiden.
+    if (pBase < 0.08) return 0;
+
     // Wenn Atmosphäre grundsätzlich zu stabil → frühzeitig begrenzen
     // LI > 3 UND meanRH < 50%: Score kann maximal ~10% erreichen
-    const hardCap = (li > 3 && meanRH < 50) ? 10
-                  : (li > 2 && meanRH < 55) ? 20
-                  : (li > 1 && cape === 0)  ? 25
+    const hardCap = (li > 3 && meanRH < 50) ? 8
+                  : (li > 2 && meanRH < 55) ? 18
+                  : (li > 1 && cape === 0)  ? 20
                   : 100;
 
     // ════════════════════════════════════════════════════════════════════
@@ -1155,12 +1166,13 @@ function calculateProbability(hour) {
         // ── NEU: LI-Dämpfung auch im HSLC-Pfad ──────────────────────────
         // LI=5.5 bedeutet: trotz hohem Shear ist die Atmosphäre sehr stabil
         // HSLC funktioniert typischerweise bei LI 0–3, nicht bei LI > 4
-        if      (li > 5) hslcScore = Math.round(hslcScore * 0.3);
-        else if (li > 4) hslcScore = Math.round(hslcScore * 0.5);
-        else if (li > 3) hslcScore = Math.round(hslcScore * 0.7);
-        else if (li > 2) hslcScore = Math.round(hslcScore * 0.85);
+        if      (li > 5) hslcScore = Math.round(hslcScore * 0.25);
+        else if (li > 4) hslcScore = Math.round(hslcScore * 0.45);
+        else if (li > 3) hslcScore = Math.round(hslcScore * 0.65);
+        else if (li > 2) hslcScore = Math.round(hslcScore * 0.8);
 
-        return Math.min(40, Math.max(0, hslcScore));
+        // HSLC insgesamt etwas strenger deckeln
+        return Math.min(35, Math.max(0, hslcScore));
     }
 
     let score = 0;
@@ -1354,8 +1366,13 @@ function calculateProbability(hour) {
 
     // pBase wirkt als Multiplikator: bei pBase=0.05 (stabil) → Score stark gedämpft
     // bei pBase=0.5 (labil) → Score läuft normal durch
-    const gateMultiplier = Math.min(1.0, 0.3 + pBase * 3.0);
+    const gateMultiplier = Math.min(0.9, 0.25 + pBase * 2.5);
     score = Math.round(score * gateMultiplier);
+
+    // Sehr kleine Scores komplett unterdrücken (Filter gegen „Rauschen“)
+    if (score < 12) return 0;
+    // Moderat erhöhte Werte leicht dämpfen, um zu häufige „tstorm“-Signale zu vermeiden
+    if (score < 35) score = Math.round(score * 0.85);
 
     return Math.min(hardCap, Math.min(100, Math.max(0, score)));
 }
@@ -1378,7 +1395,8 @@ function stpToPercentEurope(stp) {
 function calculateTornadoProbability(hour,shear, srh) {
 
     const thunderProb = calculateProbability(hour); // 0–100%
-    if (thunderProb < 40) return 0; // Schwelle: 40% – sonst kein Tornado
+    // Konservativer: Tornado nur bei sehr hohen Gewitterwahrscheinlichkeiten
+    if (thunderProb < 50) return 0; // vorher 40
 
     const cape  = Math.max(0, hour.cape ?? 0);        // MLCAPE in J/kg
     const srh1  = calcSRH(hour, '0-1km');             // SRH 0-1 km in m²/s²                    
@@ -1400,5 +1418,8 @@ function calculateTornadoProbability(hour,shear, srh) {
     let stp = (cape / 1500) * lclFactor * (srh1 / 150) * (ebwd / 20) * cinFactor;
     stp = Math.max(0, stp);
 
-    return stpToPercentEurope(stp); // STP-Index
+    let percent = stpToPercentEurope(stp); // STP-Index
+    // Kleine STP-Werte komplett unterdrücken, Rest leicht dämpfen
+    if (percent < 10) return 0;
+    return Math.round(percent * 0.85);
 }
