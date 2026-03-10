@@ -1059,7 +1059,7 @@ function calculateProbability(hour) {
     logit += Math.log1p(wmaxshear_logit / 300) * 0.9;
 
     // HSLC-Pfad: hoher Shear kompensiert fehlende CAPE (Rädler 2018)
-    const isHSLC = cape < 300 && shear >= 15;
+    const isHSLC = cape >= 50 && cape < 300 && shear >= 15;
     if (isHSLC && meanRH >= 55) {
         logit += (shear - 18) / 12 * 1.0;
     }
@@ -1096,6 +1096,7 @@ function calculateProbability(hour) {
 
     // HSLC direkt zurückgeben (Gate bereits oben passiert)
     if (isHSLC) {
+        if (cape === 0) return 0;
         let hslcScore = 0;
         if      (shear >= 25) hslcScore += 30;
         else if (shear >= 20) hslcScore += 20;
@@ -1206,10 +1207,13 @@ function calculateProbability(hour) {
     else if (meanRH < 50)  score -= 12;
     else if (meanRH < 40)  score -= 20;
 
-    if      (thetaE850 >= 345) score += 8;
-    else if (thetaE850 >= 335) score += 5;
-    else if (thetaE850 >= 325) score += 2;
-    else if (thetaE850 < 315)  score -= 4;
+    // Saisonale Anpassung: März/April = Frühling, Schwellen -15K (Taszarek 2020)
+    const month = new Date().getMonth() + 1; // 1=Jan, 12=Dez
+    const thetaOffset = month <= 4 ? -15 : month >= 10 ? -10 : 0;
+    if      (thetaE850 >= 345 + thetaOffset) score += 8;
+    else if (thetaE850 >= 335 + thetaOffset) score += 5;
+    else if (thetaE850 >= 325 + thetaOffset) score += 2;
+    else if (thetaE850 <  315 + thetaOffset) score -= 4;
 
     if      (liftedIndex <= -7) score += 12;
     else if (liftedIndex <= -6) score += 10;
@@ -1303,7 +1307,7 @@ function calculateProbability(hour) {
 
     // pBase wirkt als Multiplikator: bei pBase=0.05 (stabil) → Score stark gedämpft
     // bei pBase=0.5 (labil) → Score läuft normal durch
-    const gateMultiplier = Math.min(1.0, pBase * 4.0); // 0.0–1.0
+    const gateMultiplier = Math.min(1.0, 0.3 + pBase * 3.0);
     score = Math.round(score * gateMultiplier);
 
     return Math.min(hardCap, Math.min(100, Math.max(0, score)));
