@@ -1058,7 +1058,7 @@ function calculateProbability(hour) {
     logit += Math.log1p(wmaxshear_logit / 300) * 0.9;
 
     // HSLC-Pfad: hoher Shear kompensiert fehlende CAPE (Rädler 2018)
-    const isHSLC = cape < 300 && shear >= 18;
+    const isHSLC = cape < 300 && shear >= 15;
     if (isHSLC && meanRH >= 55) {
         logit += (shear - 18) / 12 * 1.0;
     }
@@ -1143,10 +1143,12 @@ function calculateProbability(hour) {
     else if (magCin > 100) score -= 10;
     else if (magCin > 50)  score -= 5;
 
-    if      (scp >= 3.0) score += 24;
-    else if (scp >= 2.0) score += 20;
-    else if (scp >= 1.5) score += 16;
-    else if (scp >= 1.0) score += 12;
+    // Europa-kalibriert: Taszarek 2020, Púčik 2015
+    // SCP ≥ 1.0 bereits signifikant in Europa (US-Schwellen zu hoch)
+    if      (scp >= 2.0) score += 24;
+    else if (scp >= 1.5) score += 20;
+    else if (scp >= 1.0) score += 16;
+    else if (scp >= 0.5) score += 10;
 
     if      (stp >= 2.0) score += 18;
     else if (stp >= 1.5) score += 15;
