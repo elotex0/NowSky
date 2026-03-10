@@ -278,23 +278,30 @@ export default async function handler(req, res) {
 
         const daysMap = new Map();
         hours.forEach(h => {
-            const [dp] = h.time.split('T');
-            if (dp >= currentDateStr) {
-                if (!daysMap.has(dp)) {
-                    daysMap.set(dp, {
-                        date: dp,
-                        maxProbability:        h.probability,
-                        maxTornadoProbability: h.tornadoProbability,
-                        maxHailProbability:    h.hailProbability,
-                        maxWindProbability:    h.windProbability,
-                    });
-                } else {
-                    const d = daysMap.get(dp);
-                    d.maxProbability        = Math.max(d.maxProbability,        h.probability);
-                    d.maxTornadoProbability = Math.max(d.maxTornadoProbability, h.tornadoProbability);
-                    d.maxHailProbability    = Math.max(d.maxHailProbability,    h.hailProbability);
-                    d.maxWindProbability    = Math.max(d.maxWindProbability,    h.windProbability);
-                }
+            const [dp, tp] = h.time.split('T');
+            const [hr] = tp.split(':').map(Number);
+
+            // Vergangene Tage ignorieren komplett
+            if (dp < currentDateStr) return;
+
+            // Für HEUTE: nur noch Stunden ab aktueller Stunde berücksichtigen,
+            // damit bereits vergangene Maxima nicht mehr angezeigt werden.
+            if (dp === currentDateStr && hr < currentHour) return;
+
+            if (!daysMap.has(dp)) {
+                daysMap.set(dp, {
+                    date: dp,
+                    maxProbability:        h.probability,
+                    maxTornadoProbability: h.tornadoProbability,
+                    maxHailProbability:    h.hailProbability,
+                    maxWindProbability:    h.windProbability,
+                });
+            } else {
+                const d = daysMap.get(dp);
+                d.maxProbability        = Math.max(d.maxProbability,        h.probability);
+                d.maxTornadoProbability = Math.max(d.maxTornadoProbability, h.tornadoProbability);
+                d.maxHailProbability    = Math.max(d.maxHailProbability,    h.hailProbability);
+                d.maxWindProbability    = Math.max(d.maxWindProbability,    h.windProbability);
             }
         });
 
