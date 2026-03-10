@@ -377,6 +377,7 @@ export default async function handler(req, res) {
                     precipProb:  Math.round(mh.precip ?? 0),
                     precipAcc:   Math.round(mh.precipAcc * 10) / 10,
                     radiation:   Math.round(mh.directRadiation ?? 0),
+                     ship:        Math.round(calcSHIP(mh) * 100) / 100,
                 };
             }
             return {
@@ -850,43 +851,57 @@ function categorizeRisk(prob) {
     return { level: 0, label: 'none' };
 }
 
+function calcSHIP(hour) {
+    const cape    = Math.max(0, hour.cape ?? 0);
+    const temp500 = hour.temp500 ?? 0;
+    const shear   = calcShear(hour); // bereits 0-5.5km in m/s
+
+    // Mischungsverhältnis MU-Parcel: hier 850 hPa als Proxy
+    // (MUCAPE-Parcel kommt in Europa oft aus 850-950 hPa)
+    const e850    = 6.112 * Math.exp((17.67 * (hour.dew850 ?? 0)) / ((hour.dew850 ?? 0) + 243.5));
+    const mixR850 = 1000 * 0.622 * e850 / (850 - e850); // g/kg
+
+    // 700-500 hPa Lapserate (K/km) — 700→500 hPa ≈ 2.5 km
+    const lapse = calcMidLevelLapseRate(hour.temp700 ?? 0, hour.temp500 ?? 0);
+
+    // Harte Ausschlüsse (physikalisch sinnlos darunter)
+    if (cape < 100)      return 0;
+    if (temp500 >= -5)   return 0; // zu warm → Hagel schmilzt
+    if (mixR850 < 5)     return 0; // zu trocken
+    if (shear < 7)       return 0;
+    if (lapse < 5.5)     return 0; // zu stabile Mittelschicht
+
+    const ship = (cape * mixR850 * lapse * Math.abs(temp500) * shear) / 28000000;
+    //                                                          ↑
+    //                         EU-Normierung: ~37% niedriger als NOAA
+    //                         → SHIP=1.0 entspricht ca. EU-Signifikanzgrenze
+
+    return Math.max(0, Math.round(ship * 100) / 100);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WAHRSCHEINLICHKEITS-FUNKTIONEN – HAGEL ≥2cm nur bei Gewitter
 // ═══════════════════════════════════════════════════════════════════════════
 function calculateHailProbability(hour) {
-    // --- Prüfe zuerst, ob Gewitter vorhanden ist ---
-    const thunderProb = calculateProbability(hour); // 0–100%
-    if (thunderProb < 5) return 0; // Schwelle: 5% – sonst kein Hagel
+    const thunderProb = calculateProbability(hour);
+    if (thunderProb < 5) return 0;
 
-    // --- HPP-Basis wie vorher ---
-    const cape   = Math.max(0, hour.cape ?? 0);
-    const shear  = calcShear(hour);
-    const srh    = calcSRH(hour, '0-3km');
-    const temp2m = hour.temperature ?? 0;
-    const dew    = hour.dew ?? 0;
-    const lcl    = calcLCLHeight(temp2m, dew);
-    const FL     = hour.freezingLevel ?? 4000;
+    const ship = calcSHIP(hour);
 
-    let HPP_base = (cape/1000) * (shear/20) * (srh/150);
+    // SHIP → bedingte Wahrscheinlichkeit für Hagel ≥ 2cm
+    // Schwellen nach Johnson & Sugier 2014 / ESSL-Kalibrierung Europa
+    let hailProb;
+    if      (ship >= 4.0) hailProb = 95;
+    else if (ship >= 3.0) hailProb = 80;
+    else if (ship >= 2.0) hailProb = 60;
+    else if (ship >= 1.5) hailProb = 45;
+    else if (ship >= 1.0) hailProb = 30;
+    else if (ship >= 0.5) hailProb = 15;
+    else if (ship >= 0.2) hailProb = 6;
+    else                  hailProb = 0;
 
-    // --- Abschwächungsfaktoren ---
-    let f_LCL = lcl > 1500 ? 0.9 : 1.0;
-    let magCIN = -Math.min(0, hour.cin ?? 0);
-    let f_CIN  = magCIN > 50 ? 0.9 : 1.0;
-
-    let f_FL = 1.0;
-    if      (FL < 2500) f_FL = 1.0;
-    else if (FL < 3500) f_FL = 0.8;
-    else if (FL < 4500) f_FL = 0.6;
-    else                f_FL = 0.4;
-
-    // --- Hagel ≥2cm Wahrscheinlichkeit bedingt auf Gewitter ---
-    let hail2cmProb = HPP_base * f_LCL * f_CIN * f_FL * 100;
-
-    // Bedingte Wahrscheinlichkeit: multipliziere mit Gewitterwahrscheinlichkeit
-    let hailConditional = Math.min(100, Math.round(hail2cmProb * (thunderProb / 100)));
-
-    return hailConditional;
+    // Bedingt auf Gewitterwahrscheinlichkeit
+    return Math.min(100, Math.round(hailProb * (thunderProb / 100)));
 }
 
 function calculateWindProbability(hour, wmaxshear, dcape) {
