@@ -1026,10 +1026,11 @@ function calculateProbability(hour) {
     const rh850    = hour.rh850 ?? calcRelHum(hour.temp850 ?? 0, hour.dew850 ?? 0);
     const rh700    = hour.rh700 ?? calcRelHum(hour.temp700 ?? 0, hour.dew700 ?? 0);
     const meanRH   = (rh850 + rh700 + (hour.rh500 ?? 50)) / 3;
+    if (meanRH < 35) return 0;
 
     // Spezifische Feuchte 925 hPa (Bodennähe als Proxy, Battaglioli 2023)
-    const e925     = 6.112 * Math.exp((17.67 * dew) / (dew + 243.5));
-    const q925_gkg = 1000 * 0.622 * e925 / (1013.25 - e925);
+    const e850_logit = 6.112 * Math.exp((17.67 * (hour.dew850 ?? dew)) / ((hour.dew850 ?? dew) + 243.5));
+    const mixR850_logit = 1000 * 0.622 * e850_logit / (850 - e850_logit);
 
     // ════════════════════════════════════════════════════════════════════
     // SCHRITT 1: AR-CHaMo Logit-Gate (Rädler 2018 / Battaglioli 2023)
@@ -1047,11 +1048,14 @@ function calculateProbability(hour) {
     logit += -li * 0.60;                            // LI: Hauptprädiktor
     logit += (meanRH - 55) / 25 * 1.80;            // meanRH: gleichrangig
     logit += (cape > 0 ? Math.log1p(cape / 150) * 1.2 : 0); // CAPE: log-sättigend
-    logit += (q925_gkg - 5) / 4 * 0.90;            // q925: Niedrigpegel-Feuchte
+    logit += (mixR850_logit - 5) / 5 * 1.30;            // q925: Niedrigpegel-Feuchte
     if (magCin > 50)  logit -= (magCin - 50) / 100 * 1.2;
     if (magCin > 150) logit -= 1.0;
     if (temp2m < 8)   logit -= 1.0;
     else if (temp2m < 12) logit -= 0.4;
+
+    const wmaxshear_logit = calcWMAXSHEAR(cape, shear);
+    logit += Math.log1p(wmaxshear_logit / 300) * 0.9;
 
     // HSLC-Pfad: hoher Shear kompensiert fehlende CAPE (Rädler 2018)
     const isHSLC = cape < 300 && shear >= 18;
