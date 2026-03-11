@@ -31,7 +31,7 @@ export default async function handler(req, res) {
                     `relative_humidity_925hPa,relative_humidity_850hPa,relative_humidity_700hPa,relative_humidity_500hPa,` +
                     `cape,lifted_index,convective_inhibition,boundary_layer_height,` +
                     `precipitation,freezing_level_height,` +
-                    `direct_radiation,total_column_integrated_water_vapour&forecast_days=16&models=icon_seamless,ecmwf_ifs025,gfs_global&timezone=auto`;
+                    `direct_radiation,total_column_integrated_water_vapour&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -59,7 +59,7 @@ export default async function handler(req, res) {
         //   Púčik et al. 2015 – Severe storm environments Europa (MWR 143, 4166-4188)
         // ═══════════════════════════════════════════════════════════════════
 
-        const MODELS = ['icon_seamless', 'ecmwf_ifs025', 'gfs_global'];
+        const MODELS = ['icon_eu', 'ecmwf_ifs025', 'gfs_global'];
 
         const now = new Date();
         const currentTimeStr = now.toLocaleString('en-US', {
@@ -215,23 +215,23 @@ export default async function handler(req, res) {
         function getModelWeight(model, leadtimeHours) {
             const lt = Math.max(0, leadtimeHours ?? 0);
             if (lt <= 12) {
-                if (model === 'icon_seamless') return 0.45;
+                if (model === 'icon_eu') return 0.45;
                 if (model === 'ecmwf_ifs025')  return 0.35;
                 if (model === 'gfs_global')    return 0.20;
             } else if (lt <= 36) {
-                if (model === 'icon_seamless') return 0.40;
+                if (model === 'icon_eu') return 0.40;
                 if (model === 'ecmwf_ifs025')  return 0.40;
                 if (model === 'gfs_global')    return 0.20;
             } else if (lt <= 72) {
-                if (model === 'icon_seamless') return 0.30;
+                if (model === 'icon_eu') return 0.30;
                 if (model === 'ecmwf_ifs025')  return 0.50;
                 if (model === 'gfs_global')    return 0.20;
             } else if (lt <= 120) {
-                if (model === 'icon_seamless') return 0.20;
+                if (model === 'icon_eu') return 0.20;
                 if (model === 'ecmwf_ifs025')  return 0.60;
                 if (model === 'gfs_global')    return 0.20;
             } else {
-                if (model === 'icon_seamless') return 0.20;
+                if (model === 'icon_eu') return 0.20;
                 if (model === 'ecmwf_ifs025')  return 0.50;
                 if (model === 'gfs_global')    return 0.30;
             }
