@@ -40,10 +40,6 @@ export default async function handler(req, res) {
         if (!data?.hourly?.time?.length) return res.status(500).json({ error: 'Keine Daten verfügbar' });
 
         const timezone = data.timezone || 'UTC';
-        const region = getRegion(latitude, longitude);
-        if (region !== 'europe') {
-            return res.status(400).json({ error: 'Vorhersage nur für Europa verfügbar', region, onlyEurope: true });
-        }
 
         // ═══════════════════════════════════════════════════════════════════
         // KERN-METHODIK (ESSL AR-CHaMo):
