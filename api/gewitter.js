@@ -794,6 +794,9 @@ function calcEBWD(hour) {
 // 0-3km: 1000/925/850/700 hPa
 // 925 hPa jetzt explizit in beiden Schichten
 function calcSRH(hour, layer = '0-3km') {
+    // Monte Carlo Override
+    if (layer === '0-1km' && hour._srh1Override !== undefined) return hour._srh1Override;
+    if (layer === '0-3km' && hour._srh3Override !== undefined) return hour._srh3Override;
     const levels = layer === '0-1km'
         ? [
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
@@ -834,6 +837,8 @@ function calcSRH(hour, layer = '0-3km') {
 // Korrekturfaktor 1.08: 500 hPa liegt bei ~5.5 km statt 6 km
 // Quelle: Battaglioli 2023, Table 1 + 2; Rädler 2018 Section 2c
 function calcShear(hour) {
+    // Monte Carlo Override: perturbierter Wert direkt verwenden
+    if (hour._shearOverride !== undefined) return hour._shearOverride;
     const ws500  = (hour.wind_speed_500hPa  ?? 0) / 3.6;
     const ws925  = (hour.wind_speed_925hPa  ?? 0) / 3.6;
     const w500   = windToUV(ws500, hour.windDir500  ?? 0);
@@ -1000,6 +1005,7 @@ function calcThetaE(tempC, dewC, pressHPa) {
         * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
 }
 
+
 function categorizeRisk(prob) {
     const p = Math.max(0, Math.min(100, Math.round(prob ?? 0)));
     if (p >= 70) return { level: 3, label: 'high' };
@@ -1008,616 +1014,315 @@ function categorizeRisk(prob) {
     return { level: 0, label: 'none' };
 }
 
-// ── SHIP: Significant Hail Parameter ─────────────────────────────────────
-function calcSHIP(hour) {
-    const cape    = Math.max(0, hour.cape ?? 0);
-    const temp500 = hour.temp500 ?? 0;
-    const shear   = calcShear(hour);
+// ═══════════════════════════════════════════════════════════════════════════
+// PHYSIKALISCHE GATES — das Fundament des gesamten Systems
+//
+// Prinzip: Jedes Gate muss GLEICHZEITIG erfüllt sein.
+// Kein einzelner Parameter kann alleine ein Gewitter erzeugen.
+// Das verhindert ECMWF-Artefakte (hohe RH bei LI>0 → trotzdem 37%).
+//
+// Quellen:
+//   Rädler 2018: LI + CAPE als primäre Prädiktoren, beide notwendig
+//   Battaglioli 2023: DLS 925-500hPa + CAPE + Feuchte als Triplette
+//   Taszarek 2020: Europäische Schwellenwerte aus 10-Jahres-Klimatologie
+// ═══════════════════════════════════════════════════════════════════════════
+function physicalGates(hour) {
+    const cape  = Math.max(0, hour.cape ?? 0);
+    const li    = hour.liftedIndex ?? calcLiftedIndex(hour);
+    const shear = calcShear(hour);
+    const meanRH = hour.meanRH ?? 50;
+    const cin   = hour.cin ?? 0;
+    const magCin = -Math.min(0, cin);
+    const temp  = hour.temperature ?? 0;
 
-    // ML Mixing Ratio: AR-CHaMo Standard → 925+850 hPa Mittel
-    const mlMR = hour.mlMixRatio ?? ((() => {
-        const e = 6.112 * Math.exp((17.67 * (hour.dew850 ?? 0)) / ((hour.dew850 ?? 0) + 243.5));
-        return 1000 * 0.622 * e / (850 - e);
-    })());
+    // ── Gate 1: Instabilität — BEIDE müssen erfüllt sein ─────────────────
+    // LI > 0 UND cape < 100 → definitiv stabil, egal was andere Parameter sagen
+    // Ausnahme: sehr starke Scherung (HSLC) erlaubt LI bis +0.5
+    const liOk   = li <= 0.5 || (li <= 1.5 && shear >= 15 && cape >= 80);
+    const capeOk = cape >= 80 || (cape >= 50 && shear >= 15);
 
-    const lapse = calcMidLevelLapseRate(hour.temp700 ?? 0, hour.temp500 ?? 0);
+    // ── Gate 2: Mindest-Scherung für organisierten Aufwind ────────────────
+    // Unter 5 m/s → reine Wärmewitter nur bei sehr hohem CAPE möglich
+    const shearOk = shear >= 5 || cape >= 800;
 
-    if (cape < 100)    return 0;
-    if (temp500 >= -5) return 0;
-    if (mlMR < 5)      return 0;
-    if (shear < 7)     return 0;
-    if (lapse < 5.5)   return 0;
+    // ── Gate 3: Feuchte — trockenes Profil verhindert Gewitter ───────────
+    // meanRH < 45% → auch mit CAPE kein Blitz (Entrainment trocknet aus)
+    const rhOk = meanRH >= 45;
 
-    const ship = (cape * mlMR * lapse * Math.abs(temp500) * shear) / 28000000;
-    return Math.max(0, Math.round(ship * 100) / 100);
+    // ── Gate 4: CIN — zu starke Sperrschicht verhindert Auslösung ─────────
+    // CIN < -250 J/kg → kein Gewitter außer bei extremem CAPE
+    const cinOk = magCin < 250 || cape >= 2000;
+
+    // ── Gate 5: Temperatur — Winterlage ohne Scherung kein Gewitter ───────
+    const tempOk = temp >= 3 || (temp >= 0 && shear >= 15 && cape >= 200);
+
+    const allGatesPass = liOk && capeOk && shearOk && rhOk && cinOk && tempOk;
+
+    return { allGatesPass, li, cape, shear, meanRH, magCin, temp };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// AR-CHaMo BLITZ-WAHRSCHEINLICHKEIT
-// Prädiktoren nach Battaglioli 2023 (NHESS 23, 3651-3669):
-//   1. MUCAPE
-//   2. DLS 925–500 hPa (Bulk Shear)
-//   3. ML Mixing Ratio (925+850 hPa Mittel)
-//   4. MU Lifted Index (LI)
-//   5. Mean RH 850–500 hPa
-//   6. Spezifische Feuchte 925 hPa (q925)
-//   7. 1h akkumulierter konvektiver Niederschlag (als Proxy precipAcc)
+// BLITZ-WAHRSCHEINLICHKEIT (AR-CHaMo, Battaglioli 2023)
 //
-// Methodik: Additives logistisches Regressionsmodell (GAM-Ansatz)
-// Score-basiertes System kalibriert auf europäische EUCLID-Blitzdaten
-// Gate: AR-CHaMo Logit-Basiswahrscheinlichkeit verhindert False Alarms
+// Architektur: 3 Schichten
+//   1. Physikalische Gates → hartes Null wenn nicht erfüllt
+//   2. Logit (additive log. Regression) → Basiswahrscheinlichkeit
+//   3. Skalierung → finale Prozentzahl
+//
+// Kein additiver Score mehr — nur noch multiplikative Faktoren
+// die jeweils zwischen 0 und 1 liegen. Das verhindert Aufsummierung
+// von Einzeltermen die zusammen falsch positiv werden.
 // ═══════════════════════════════════════════════════════════════════════════
 function calculateLightningProbability(hour) {
-    const temp2m     = hour.temperature ?? 0;
-    const dew        = hour.dew ?? 0;
-    const cape       = Math.max(0, hour.cape ?? 0);
-    const cin        = hour.cin ?? 0;
-    const magCin     = -Math.min(0, cin);
-    const precipAcc  = hour.precipAcc ?? 0;
-    const precipProb = hour.precip ?? 0;
-    const pblHeight  = hour.pblHeight ?? 1000;
+    const g = physicalGates(hour);
+    if (!g.allGatesPass) return 0;
 
-    // ── AR-CHaMo Prädiktoren ──────────────────────────────────────────────
-    const shear    = calcShear(hour);           // DLS 925-500 hPa (m/s)
-    const li       = hour.liftedIndex ?? calcLiftedIndex(hour); // MU LI
-    const meanRH   = hour.meanRH;               // RH 850-500 hPa (Mittel)
-    const q925     = hour.q925 ?? 0;            // spez. Feuchte 925 hPa (g/kg)
-    const mlMR     = hour.mlMixRatio ?? 0;      // ML Mixing Ratio 925+850 hPa
-    const rh925    = hour.rh925 ?? calcRelHum(hour.temp925 ?? temp2m, hour.dew925 ?? dew);
+    const { li, cape, shear, meanRH, magCin, temp } = g;
+    const mlMR   = hour.mlMixRatio ?? 0;
+    const q925   = hour.q925 ?? 0;
+    const dcape  = calcDCAPE(hour);
+    const srh    = calcSRH(hour, '0-3km');
+    const pbl    = hour.pblHeight ?? 1000;
+    const month  = new Date(hour.time).getMonth() + 1;
 
-    // ── Hartes Ausschlusskriterium: sehr trockenes Profil ────────────────
-    // Rädler 2018: meanRH < 40% → Blitzhäufigkeit < 5%, auch bei ausreichend CAPE
-    // Battaglioli 2023: meanRH ist zweitstärkster Prädiktor nach LI
-    if (meanRH < 40) return 0;
+    // ── Faktor 1: Instabilität (CAPE + LI kombiniert) ─────────────────────
+    // Beide müssen gut sein — gutes CAPE bei positivem LI gibt wenig
+    // LI log-transformiert: Unterschied -8 vs -10 weniger wichtig als -2 vs 0
+    const capeFactor = Math.min(1.0, Math.log1p(cape / 200) / Math.log1p(10));
+    const liFactor   = li <= -6 ? 1.0
+                     : li <= -4 ? 0.85
+                     : li <= -2 ? 0.70
+                     : li <= -1 ? 0.55
+                     : li <=  0 ? 0.40
+                     : li <= 0.5 ? 0.20   // HSLC-Ausnahme
+                     : 0.0;               // li > 0.5 → Gates hätten schon geblockt
+    const instability = capeFactor * liFactor;
 
-    // ── Temperaturgrenzen ─────────────────────────────────────────────────
-    if (temp2m < 3 && cape < 300)              return 0;
-    if (temp2m < 8 && cape < 180 && shear < 15) return 0;
+    // ── Faktor 2: Feuchte (AR-CHaMo Prädiktoren) ──────────────────────────
+    // meanRH: Haupt-Feuchteterm (Rädler 2018)
+    // mlMR + q925: Niedrigpegelfeuchte (Battaglioli 2023)
+    const rhFactor = meanRH >= 75 ? 1.0
+                   : meanRH >= 65 ? 0.85
+                   : meanRH >= 55 ? 0.70
+                   : meanRH >= 45 ? 0.50
+                   : 0.0;
+    const mrFactor = mlMR >= 12 ? 1.0
+                   : mlMR >=  9 ? 0.90
+                   : mlMR >=  7 ? 0.80
+                   : mlMR >=  5 ? 0.70
+                   : mlMR >=  3 ? 0.55
+                   : 0.45;
+    const moisture = rhFactor * (0.6 + 0.4 * mrFactor);
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // SCHRITT 1: AR-CHaMo Logit-Gate (Rädler 2018 / Battaglioli 2023)
-    // Additive logistische Regression der Kern-Prädiktoren
-    // Verhindert False Alarms bei stabilen Profilen
-    //
-    // Logit-Koeffizienten kalibriert auf EUCLID-Blitzdaten Europa:
-    //   - LI ist stärkster Einzelprädiktor (negativ → instabil)
-    //   - meanRH gleichrangig mit LI
-    //   - CAPE log-transformiert (Sättigung ab ~200 J/kg, Westermayer 2017)
-    //   - q925 / ML_MR: Niedrigpegel-Feuchte als AR-CHaMo Schlüsselprädiktor
-    //   - DLS: Scherungsterm (Beitrag moderater, da Schertrigger sekundär)
-    // ═══════════════════════════════════════════════════════════════════════
-    let logit = -4.2;                                       // Basis-Offset
-    logit += -li * 0.60;                                    // LI: Primärprädiktor
-    logit += (meanRH - 55) / 25 * 1.80;                    // meanRH: gleichrangig
-    logit += (cape > 0 ? Math.log1p(cape / 150) * 1.2 : 0); // CAPE log-sättigend
-    logit += (mlMR - 5) / 5 * 1.30;                        // ML Mixing Ratio (AR-CHaMo)
-    logit += (q925 - 4) / 4 * 0.80;                        // q925: spez. Feuchte 925 hPa
-    logit += (rh925 - 60) / 30 * 0.50;                     // RH 925 hPa: Niedrigpegel
-    if (magCin > 50)  logit -= (magCin - 50) / 100 * 1.2;
-    if (magCin > 150) logit -= 1.0;
-    if (temp2m < 8)   logit -= 1.0;
-    else if (temp2m < 12) logit -= 0.4;
+    // ── Faktor 3: Dynamik (Scherung + Hebung) ─────────────────────────────
+    // DLS 925-500 hPa (AR-CHaMo Hauptprädiktor)
+    const shearFactor = shear >= 25 ? 1.0
+                      : shear >= 20 ? 0.90
+                      : shear >= 15 ? 0.80
+                      : shear >= 12 ? 0.70
+                      : shear >=  8 ? 0.60
+                      : shear >=  5 ? 0.45
+                      : 0.30;
 
-    const wmaxshear_logit = calcWMAXSHEAR(cape, shear);
-    logit += Math.log1p(wmaxshear_logit / 300) * 0.9;
+    // SRH: zusätzliche Rotation/Hebung
+    const srhFactor = srh >= 200 ? 1.1
+                    : srh >= 100 ? 1.0
+                    : srh >=  50 ? 0.95
+                    : 0.90;
 
-    // HSLC-Pfad: hoher Shear kompensiert fehlende CAPE (Rädler 2018)
-    const isHSLC = cape >= 50 && cape < 300 && shear >= 15;
-    if (isHSLC && meanRH >= 55) {
-        logit += (shear - 18) / 12 * 1.0;
-    }
+    // DCAPE: Downdraft-Potential (Konvektions-Trigger)
+    const dcapeFactor = dcape >= 800 ? 1.1
+                      : dcape >= 500 ? 1.05
+                      : dcape >= 300 ? 1.0
+                      : 0.95;
 
-    // Basiswahrscheinlichkeit aus Logit-Gate
-    const pBase = 1 / (1 + Math.exp(-logit));
+    const dynamics = shearFactor * Math.min(1.2, srhFactor * dcapeFactor);
 
-    // Konservatives Gate: zu kleine pBase → kein Score
-    if (pBase < 0.08) return 0;
+    // ── Faktor 4: CIN (hemmt Auslösung) ───────────────────────────────────
+    const cinFactor = magCin <  25 ? 1.0
+                    : magCin <  50 ? 0.85
+                    : magCin < 100 ? 0.65
+                    : magCin < 150 ? 0.40
+                    : magCin < 200 ? 0.20
+                    : 0.05;
 
-    // Hard-Cap für sehr stabile Atmosphäre
-    const hardCap = (li > 3 && meanRH < 50) ? 8
-                  : (li > 2 && meanRH < 55) ? 18
-                  : (li > 1 && cape === 0)  ? 20
-                  : 100;
+    // ── Faktor 5: PBL-Entwicklung + Tageszeit ────────────────────────────
+    const radiation = hour.directRadiation ?? 0;
+    const dayFactor = radiation >= 600 ? 1.10
+                    : radiation >= 300 ? 1.05
+                    : radiation >=  50 ? 1.00
+                    : 0.90;  // Nacht: leicht gedämpft außer LLJ
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // SCHRITT 2: Score-System für Gefahrendifferenzierung
-    // Alle Terme nur bei cape >= 50 aktiv (außer HSLC-Pfad)
-    // Verhindert False Alarms bei CAPE=0 durch Scherung/Feuchte alleine
-    // ═══════════════════════════════════════════════════════════════════════
+    // ── Faktor 6: Temperatur/Saison ───────────────────────────────────────
+    const tempFactor = temp >= 22 ? 1.0
+                     : temp >= 18 ? 0.95
+                     : temp >= 14 ? 0.88
+                     : temp >= 10 ? 0.78
+                     : temp >=  6 ? 0.65
+                     : 0.50;
 
-    const srh1km    = calcSRH(hour, '0-1km');
-    const srh       = calcSRH(hour, '0-3km');
-    const { kIndex, liftedIndex } = calcIndices(hour);
-    const relHum2m  = calcRelHum(temp2m, dew);
-    const lclHeight = calcLCLHeight(temp2m, dew);
-    const midLapse  = calcMidLevelLapseRate(hour.temp700 ?? 0, hour.temp500 ?? 0);
-    const moistureDepth = calcMoistureDepth(hour.dew850 ?? 0, hour.dew700 ?? 0, hour.temp850 ?? 0, hour.temp700 ?? 0);
-    const eli       = calcELI(cape, cin, pblHeight);
-    const ehi       = (cape * srh1km) / 160000;
-    const scp       = calcSCP(cape, shear, srh, cin);
-    const stp       = calcSTP(cape, srh1km, shear, liftedIndex, cin, temp2m, dew, hour);
-    const wmaxshear = calcWMAXSHEAR(cape, shear);
-    const dcape     = calcDCAPE(hour);
-    const month     = new Date(hour.time).getMonth() + 1; // Vorhersage-Zeitpunkt, nicht Server-Zeit
-    const thetaE850 = calcThetaE(hour.temp850 ?? 0, hour.dew850 ?? 0, 850);
+    // ── Kombination → Rohwahrscheinlichkeit ──────────────────────────────
+    // Alle Faktoren multiplikativ: jeder schwache Term dämpft das Ergebnis
+    // Maximum bei perfekten Bedingungen: ~95%
+    const raw = instability * moisture * dynamics * cinFactor * dayFactor * tempFactor;
 
-    // Früher Abbruch: kein CAPE + positive LI → keine Konvektion
-    if (cape === 0 && liftedIndex > 2.0) return 0;
+    // ── Skalierung auf 0-100% ─────────────────────────────────────────────
+    // raw liegt typisch zwischen 0 und ~0.6 bei europäischen Lagen
+    // Skalierungsfaktor so gewählt dass extreme Lagen ~85-90% erreichen
+    const prob = Math.min(95, raw * 160);
 
-    // ── HSLC-Pfad (direkter Return) ──────────────────────────────────────
-    if (isHSLC) {
-        if (cape === 0) return 0;
-        let hslcScore = 0;
-        if      (shear >= 25) hslcScore += 30;
-        else if (shear >= 20) hslcScore += 20;
-        else                  hslcScore += 10;
-        if      (meanRH >= 65) hslcScore += 15;
-        else if (meanRH <  50) hslcScore -= 15;
-        if (temp2m < 8) hslcScore = Math.round(hslcScore * 0.6);
-        if      (li > 5) hslcScore = Math.round(hslcScore * 0.25);
-        else if (li > 4) hslcScore = Math.round(hslcScore * 0.45);
-        else if (li > 3) hslcScore = Math.round(hslcScore * 0.65);
-        else if (li > 2) hslcScore = Math.round(hslcScore * 0.80);
-        // ML Mixing Ratio Bonus im HSLC-Pfad (AR-CHaMo Prädiktor)
-        if (mlMR >= 8 && meanRH >= 60) hslcScore += 5;
-        return Math.min(35, Math.max(0, hslcScore));
-    }
+    // ── Finale Plausibilitätsprüfung ──────────────────────────────────────
+    // Verhindert Restfehler: LI knapp positiv + schwache Scherung → hart null
+    if (li > 0 && shear < 10 && cape < 200) return 0;
+    if (li > 1 && cape < 400)               return 0;
 
-    let score = 0;
-
-    // ── CAPE (nur wenn cape >= 50) ────────────────────────────────────────
-    if (cape >= 2000) score += 16;
-    else if (cape >= 1500) score += 14;
-    else if (cape >= 1200) score += 12;
-    else if (cape >= 800)  score += 10;
-    else if (cape >= 500)  score += 8;
-    else if (cape >= 300)  score += 6;
-    else if (cape >= 150)  score += 3;
-
-    // ── EL-Temperatur (500 hPa) ───────────────────────────────────────────
-    const elTemp = hour.temp500 ?? 0;
-    if      (cape >= 100 && elTemp <= -20) score += 8;
-    else if (cape >= 100 && elTemp <= -15) score += 5;
-    else if (cape >= 100 && elTemp <= -10) score += 3;
-    else if (elTemp > -5 && cape < 500)    score -= 5;
-
-    if (cape >= 50 && eli >= 2000) score += 10;
-    else if (cape >= 50 && eli >= 1200) score += 7;
-    else if (cape >= 50 && eli >= 800)  score += 5;
-    else if (cape >= 50 && eli >= 400)  score += 3;
-
-    if      (magCin < 25 && cape >= 300) score += 6;
-    else if (magCin < 50 && cape >= 200) score += 3;
-    else if (magCin > 200) score -= 18;
-    else if (magCin > 100) score -= 10;
-    else if (magCin > 50)  score -= 5;
-
-    // ── SCP / STP / EHI (nur bei cape >= 100) ────────────────────────────
-    if (cape >= 100) {
-        if      (scp >= 2.0) score += 24;
-        else if (scp >= 1.5) score += 20;
-        else if (scp >= 1.0) score += 16;
-        else if (scp >= 0.5) score += 10;
-
-        if      (stp >= 2.0) score += 18;
-        else if (stp >= 1.5) score += 15;
-        else if (stp >= 1.0) score += 12;
-        else if (stp >= 0.5) score += 8;
-        else if (stp >= 0.3) score += 4;
-
-        if      (ehi >= 2.5) score += 14;
-        else if (ehi >= 2.0) score += 12;
-        else if (ehi >= 1.0) score += 9;
-        else if (ehi >= 0.5) score += 5;
-    }
-
-    // ── WMAXSHEAR ────────────────────────────────────────────────────────
-    if (cape >= 50 && wmaxshear >= 1500) score += 22;
-    else if (cape >= 50 && wmaxshear >= 1200) score += 18;
-    else if (cape >= 50 && wmaxshear >= 900)  score += 14;
-    else if (cape >= 50 && wmaxshear >= 700)  score += 10;
-    else if (cape >= 50 && wmaxshear >= 500)  score += 6;
-    else if (cape >= 50 && wmaxshear >= 400)  score += 3;
-    else if (cape >= 50 && wmaxshear >= 300)  score += 1;
-
-    // ── DLS 925-500 hPa (AR-CHaMo Prädiktor) ─────────────────────────────
-    // Nur bei cape >= 50 − reine Scherung ohne CAPE kein Gewitter-Trigger
-    if (cape >= 50) {
-        if      (shear >= 25) score += 14;
-        else if (shear >= 20) score += 11;
-        else if (shear >= 15) score += 8;
-        else if (shear >= 12) score += 5;
-        else if (shear >= 10) score += 3;
-        else if (shear >= 8)  score += 1;
-    }
-
-    // ── SRH (nur bei cape >= 100) ─────────────────────────────────────────
-    if (cape >= 100) {
-        if      (srh >= 250) score += 10;
-        else if (srh >= 200) score += 8;
-        else if (srh >= 150) score += 6;
-        else if (srh >= 120) score += 4;
-        else if (srh >= 80)  score += 2;
-    }
-
-    // ── LCL-Höhe ─────────────────────────────────────────────────────────
-    if      (lclHeight < 500)   score += 8;
-    else if (lclHeight < 800)   score += 6;
-    else if (lclHeight < 1200)  score += 4;
-    else if (lclHeight < 1500)  score += 2;
-    else if (lclHeight >= 2500) score -= 6;
-
-    // ── Mid-Level Lapse Rate ──────────────────────────────────────────────
-    if      (cape >= 100 && midLapse >= 8.0) score += 8;
-    else if (cape >= 100 && midLapse >= 7.5) score += 6;
-    else if (cape >= 100 && midLapse >= 7.0) score += 4;
-    else if (cape >= 100 && midLapse >= 6.5) score += 2;
-    else if (midLapse < 5.5 && cape < 800)   score -= 5;
-
-    // ── Feuchte (meanRH + moistureDepth) ─────────────────────────────────
-    if      (moistureDepth >= 75) score += 6;
-    else if (moistureDepth >= 65) score += 4;
-    else if (moistureDepth >= 55) score += 2;
-    else if (moistureDepth < 40 && cape < 600) score -= 4;
-
-    if      (meanRH >= 75) score += 8;
-    else if (meanRH >= 65) score += 5;
-    else if (meanRH >= 55) score += 2;
-    else if (meanRH < 50)  score -= 12;
-    else if (meanRH < 40)  score -= 20;
-
-    // ── ML Mixing Ratio Bonus (AR-CHaMo Prädiktor, Battaglioli 2023) ──────
-    // ML_MR ist offizieller 3. Prädiktor im Blitzmodell
-    if (cape >= 100) {
-        if      (mlMR >= 14) score += 10;
-        else if (mlMR >= 11) score += 7;
-        else if (mlMR >= 8)  score += 5;
-        else if (mlMR >= 6)  score += 3;
-        else if (mlMR <  4)  score -= 5;
-    }
-
-    // ── q925 Bonus (AR-CHaMo Prädiktor, Battaglioli 2023) ─────────────────
-    // Spezifische Feuchte 925 hPa = 5. Prädiktor im Blitzmodell
-    if (cape >= 100) {
-        if      (q925 >= 12) score += 8;
-        else if (q925 >= 9)  score += 5;
-        else if (q925 >= 6)  score += 3;
-        else if (q925 <  3)  score -= 5;
-    }
-
-    // ── Theta-E 850 hPa (saisonal angepasst) ─────────────────────────────
-    // Saisonaler Offset: Frühling (Mär/Apr) → instabiler bei niedrigerem Theta-E
-    // Herbst (Okt/Nov) → analog. Quelle: Taszarek 2020
-    const thetaOffset = month <= 4 ? -15 : month >= 10 ? -10 : 0;
-    if      (cape >= 100 && thetaE850 >= 345 + thetaOffset) score += 8;
-    else if (cape >= 100 && thetaE850 >= 335 + thetaOffset) score += 5;
-    else if (cape >= 100 && thetaE850 >= 325 + thetaOffset) score += 2;
-    else if (thetaE850 < 315 + thetaOffset) score -= 4;
-
-    // ── Lifted Index ──────────────────────────────────────────────────────
-    if      (liftedIndex <= -7) score += 12;
-    else if (liftedIndex <= -6) score += 10;
-    else if (liftedIndex <= -4) score += 7;
-    else if (liftedIndex <= -2) score += 4;
-    else if (liftedIndex <= 0)  score += 1;
-
-    // ── K-Index ───────────────────────────────────────────────────────────
-    if      (kIndex >= 38) score += 8;
-    else if (kIndex >= 35) score += 6;
-    else if (kIndex >= 30) score += 4;
-    else if (kIndex >= 25) score += 2;
-
-    // ── 850 hPa Mixing Ratio (zur Differenzierung) ────────────────────────
-    const e850_dew = 6.112 * Math.exp((17.67 * (hour.dew850 ?? 0)) / ((hour.dew850 ?? 0) + 243.5));
-    const mixR850  = 1000 * 0.622 * e850_dew / (850 - e850_dew);
-    if      (cape >= 100 && mixR850 >= 13) score += 8;
-    else if (cape >= 100 && mixR850 >= 10) score += 5;
-    else if (cape >= 100 && mixR850 >= 6)  score += 2;
-    else if (mixR850 < 4)                  score -= 6;
-
-    // ── 2m Taupunkt / Feuchte ─────────────────────────────────────────────
-    if      (dew >= 18 && temp2m >= 18 && cape >= 100) score += 6;
-    else if (dew >= 16 && temp2m >= 16 && cape >= 100) score += 4;
-    else if (dew >= 13 && temp2m >= 13 && cape >= 100) score += 2;
-
-    if      (relHum2m >= 75 && temp2m >= 18 && cape >= 100) score += 5;
-    else if (relHum2m >= 70 && temp2m >= 16 && cape >= 100) score += 3;
-    else if (relHum2m >= 65 && temp2m >= 14 && cape >= 100) score += 1;
-
-    // ── precipAcc und precipProb (nur mit CAPE) ───────────────────────────
-    if      (precipAcc >= 3.0 && cape >= 600) score += 8;
-    else if (precipAcc >= 2.0 && cape >= 400) score += 6;
-    else if (precipAcc >= 1.0 && cape >= 300) score += 4;
-    else if (precipAcc >= 0.5 && cape >= 200) score += 2;
-
-    if      (precipProb >= 70 && cape >= 500) score += 6;
-    else if (precipProb >= 55 && cape >= 400) score += 4;
-    else if (precipProb >= 40 && cape >= 300) score += 2;
-
-    // Anti-Stregen-Rauschen (schwacher frontaler Regen ohne Konvektion)
-    if (precipAcc > 3 && cape < 300 && shear < 10) score -= 10;
-    else if (precipAcc > 2 && cape < 200)           score -= 6;
-
-    // ── 500 hPa RH (Trockenluft-Entrainment) ─────────────────────────────
-    if      (hour.rh500 < 30 && cape >= 600) score += 7;
-    else if (hour.rh500 < 40 && cape >= 500) score += 5;
-    else if (hour.rh500 < 50 && cape >= 400) score += 3;
-    else if (hour.rh500 > 90 && cape < 800)  score -= 6;
-
-    // ── Tageszeit / Strahlung ─────────────────────────────────────────────
-    const isNight     = hour.directRadiation < 20;
-    const isDaytime   = hour.directRadiation >= 200;
-    const isStrongDay = hour.directRadiation >= 600;
-
-    if      (isStrongDay && temp2m >= 14 && cape >= 300) score += 7;
-    else if (isDaytime   && temp2m >= 12 && cape >= 200) score += 4;
-    else if (isNight) {
-        const llj = srh >= 120 && shear >= 12 && hour.wind >= 8;
-        if      (llj && cape >= 500)               score += 5;
-        else if (!llj && shear < 10 && cape < 400) score -= 4;
-        else if (cape >= 600 && srh >= 100)        score += 2;
-    }
-
-    // ── Wind 10m ──────────────────────────────────────────────────────────
-    if      (hour.wind >= 6  && hour.wind <= 18 && temp2m >= 12) score += 3;
-    else if (hour.wind > 18  && hour.wind <= 25 && temp2m >= 12) score += 5;
-    if      (hour.wind > 30  && cape < 1200)                     score -= 6;
-
-    const gustDiff = hour.gust - hour.wind;
-    if      (gustDiff > 15 && cape >= 600 && temp2m >= 12) score += 6;
-    else if (gustDiff > 12 && cape >= 500)                 score += 4;
-    else if (gustDiff > 8  && cape >= 300)                 score += 2;
-
-    // ── DCAPE ─────────────────────────────────────────────────────────────
-    if      (dcape >= 1000 && cape >= 400) score += 7;
-    else if (dcape >= 800  && cape >= 300) score += 5;
-    else if (dcape >= 600  && cape >= 200) score += 3;
-    else if (dcape >= 400  && cape >= 150) score += 1;
-
-    // ── PBL-Höhe ──────────────────────────────────────────────────────────
-    if      (pblHeight >= 2000 && cape >= 300) score += 4;
-    else if (pblHeight >= 1500 && cape >= 200) score += 2;
-    else if (pblHeight < 300   && cape < 500)  score -= 3;
-
-    // ── Temperatur-Skalierung ─────────────────────────────────────────────
-    if      (temp2m < 8)  score = Math.round(score * (shear < 15 && cape < 500 ? 0.4 : 0.6));
-    else if (temp2m < 12) score = Math.round(score * 0.7);
-    else if (temp2m < 15) score = Math.round(score * 0.85);
-
-    if (score > 0 && cape < 100 && shear < 8)    score = Math.max(0, score - 10);
-    if (score > 0 && magCin > 150 && cape < 1000) score = Math.max(0, score - 12);
-    if (shear >= 20 && cape >= 150 && score < 30) score = Math.min(score + 5, 35);
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // SCHRITT 3: Score × AR-CHaMo Gate kombinieren
-    // pBase skaliert den Score – stabile Atmosphäre begrenzt Maximum
-    // ═══════════════════════════════════════════════════════════════════════
-    const gateMultiplier = Math.min(0.9, 0.25 + pBase * 2.5);
-    score = Math.round(score * gateMultiplier);
-
-    if (score < 12) return 0;
-    if (score < 35) score = Math.round(score * 0.85);
-
-    return Math.min(hardCap, Math.min(100, Math.max(0, score)));
+    return Math.max(0, Math.round(prob));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// AR-CHaMo HAGEL-WAHRSCHEINLICHKEIT ≥ 2cm
-// Prädiktoren nach Battaglioli 2023 (NHESS 23, 3651):
-//   1. ML-CAPE (Mixed Layer CAPE)
-//   2. DLS 925–500 hPa (Bulk Shear)
-//   3. ML Mixing Ratio (925+850 hPa Mittel)
-//   4. WBZ: Wet Bulb Zero Height [KERN-PRÄDIKTOR]
+// HAGEL-WAHRSCHEINLICHKEIT ≥ 2cm (AR-CHaMo, Battaglioli 2023)
 //
-// P(hail) = P(storm) × P(hail|storm)
-// WBZ < 2100m: günstig (Hagel erreicht Boden)
-// WBZ > 3200m: Hagel schmilzt zu stark
+// P(hagel) = P(storm) × P(hagel|storm)
+// P(hagel|storm) basiert auf SHIP × WBZ-Faktor × DLS-Faktor
 // ═══════════════════════════════════════════════════════════════════════════
 function calculateHailProbability(hour, wmaxshear, dcape) {
-    const thunderProb = calculateLightningProbability(hour);
-    if (thunderProb < 15) return 0;
+    const pStorm = calculateLightningProbability(hour);
+    if (pStorm < 20) return 0;
 
     const cape  = Math.max(0, hour.cape ?? 0);
     const shear = calcShear(hour);
-    const mlMR  = hour.mlMixRatio ?? 0;
-    const wbz   = hour.wbzHeight ?? calcWBZHeight(hour);
     const ship  = calcSHIP(hour);
+    const wbz   = hour.wbzHeight ?? calcWBZHeight(hour);
+    const mlMR  = hour.mlMixRatio ?? 0;
 
-    // ── SHIP → bedingte P(hail ≥ 2cm | storm) ────────────────────────────
-    // Schwellen nach Johnson & Sugier 2014 / ESSL-Kalibrierung Europa
-    let hailProb;
-    if      (ship >= 4.0) hailProb = 95;
-    else if (ship >= 3.0) hailProb = 80;
-    else if (ship >= 2.0) hailProb = 60;
-    else if (ship >= 1.5) hailProb = 45;
-    else if (ship >= 1.0) hailProb = 30;
-    else if (ship >= 0.5) hailProb = 15;
-    else if (ship >= 0.2) hailProb = 6;
-    else                  hailProb = 0;
+    // Mindestbedingungen für signifikanten Hagel
+    if (cape < 300) return 0;
+    if (shear < 8)  return 0;
+    if (ship < 0.2) return 0;
 
-    // ── WBZ-Faktor (AR-CHaMo Kern-Prädiktor Battaglioli 2023) ────────────
-    // WBZ < 2100m (7000ft): optimal für bodennahen Hagel
-    // WBZ 2100-3200m: Hagel schmilzt teilweise → Dämpfung
-    // WBZ > 3200m (10500ft): Hagel schmilzt meist komplett
-    // WBZ < 800m: sehr tiefes Niveau → oft zu kalt für großen Hagel
-    let wbzFactor;
-    if      (wbz < 800)  wbzFactor = 0.5;   // Winterlage, Hagelkörner klein
-    else if (wbz <= 1500) wbzFactor = 1.0;  // Optimal
-    else if (wbz <= 2100) wbzFactor = 1.0;  // Noch gut
-    else if (wbz <= 2500) wbzFactor = 0.80;
-    else if (wbz <= 3000) wbzFactor = 0.55;
-    else if (wbz <= 3500) wbzFactor = 0.30;
-    else                  wbzFactor = 0.10; // > 3500m → kaum Hagel
+    // SHIP → bedingte P(hagel ≥ 2cm | Gewitter)
+    const pHailGivenStorm = ship >= 4.0 ? 90
+                          : ship >= 3.0 ? 75
+                          : ship >= 2.0 ? 55
+                          : ship >= 1.5 ? 40
+                          : ship >= 1.0 ? 25
+                          : ship >= 0.5 ? 12
+                          : 5;
 
-    // ── ML Mixing Ratio Modifikation (AR-CHaMo Prädiktor) ────────────────
-    // Hohe ML_MR → feuchterer Aufwind → größere Hagelkörner möglich
-    let mrFactor = 1.0;
-    if      (mlMR >= 12) mrFactor = 1.15;
-    else if (mlMR >= 8)  mrFactor = 1.05;
-    else if (mlMR <  5)  mrFactor = 0.80;
-    else if (mlMR <  4)  mrFactor = 0.65;
+    // WBZ-Faktor (AR-CHaMo Kern-Prädiktor für Hagelschmelze)
+    const wbzFactor = wbz < 800  ? 0.45
+                    : wbz <= 2100 ? 1.0
+                    : wbz <= 2500 ? 0.75
+                    : wbz <= 3000 ? 0.50
+                    : wbz <= 3500 ? 0.25
+                    : 0.08;
 
-    // ── DLS-Modifikation (AR-CHaMo Prädiktor) ────────────────────────────
-    // Starke Scherung → organisierte Konvektion → bessere Hagelumgebung
-    let dlsFactor = 1.0;
-    if      (shear >= 20) dlsFactor = 1.15;
-    else if (shear >= 15) dlsFactor = 1.08;
-    else if (shear < 8)   dlsFactor = 0.75;
+    // DLS-Faktor (AR-CHaMo Prädiktor)
+    const dlsFactor = shear >= 20 ? 1.15
+                    : shear >= 15 ? 1.08
+                    : shear >= 10 ? 1.0
+                    : 0.75;
 
-    // ── Kombinierte Wahrscheinlichkeit ────────────────────────────────────
-    // P(hail) = P(hail|storm) × WBZ-Faktor × MR-Faktor × DLS-Faktor × P(storm)
-    const combined = hailProb * wbzFactor * mrFactor * dlsFactor * (thunderProb / 100);
-    return Math.min(100, Math.round(combined * 0.8)); // konservative Dämpfung
+    // ML Mixing Ratio (AR-CHaMo Prädiktor)
+    const mrFactor = mlMR >= 12 ? 1.15
+                   : mlMR >=  8 ? 1.05
+                   : mlMR >=  5 ? 1.0
+                   : 0.80;
+
+    const combined = pHailGivenStorm * wbzFactor * dlsFactor * mrFactor * (pStorm / 100);
+    return Math.min(95, Math.max(0, Math.round(combined * 0.85)));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WIND-WAHRSCHEINLICHKEIT (Severe Gusts ≥ 25 m/s)
-// Prädiktoren: DCAPE, WMAXSHEAR, DLS, Niedrig-Niveau-Scherung, CAPE
-// Quelle: ESTOFEX Z_wind; Púčik 2015; Taszarek 2020
 // ═══════════════════════════════════════════════════════════════════════════
 function calculateWindProbability(hour, wmaxshear, dcape) {
-    const thunderProb = calculateLightningProbability(hour);
-    if (thunderProb < 15) return 0;
+    const pStorm = calculateLightningProbability(hour);
+    if (pStorm < 20) return 0;
 
-    const cape     = Math.max(0, hour.cape ?? 0);
-    const shear    = calcShear(hour);
-    const temp700  = hour.temp700 ?? 0;
-    const dew700   = hour.dew700  ?? 0;
-    const temp500  = hour.temp500 ?? 0;
-    const pwat     = hour.pwat ?? 0;
+    const cape    = Math.max(0, hour.cape ?? 0);
+    const shear   = calcShear(hour);
+    const temp700 = hour.temp700 ?? 0;
+    const dew700  = hour.dew700  ?? 0;
+    const temp500 = hour.temp500 ?? 0;
     const lapseRate = calcMidLevelLapseRate(temp700, temp500);
-    const meanRH   = hour.meanRH;
-
-    if (dcape < 250 && wmaxshear < 450) return 0;
-    if (shear < 9 && cape < 450)        return 0;
-
-    let score = 0;
-
-    if      (dcape >= 1400) score += 34;
-    else if (dcape >= 1200) score += 29;
-    else if (dcape >= 1000) score += 25;
-    else if (dcape >= 800)  score += 19;
-    else if (dcape >= 600)  score += 13;
-    else if (dcape >= 400)  score += 7;
-    else if (dcape >= 300)  score += 4;
-
-    if      (wmaxshear >= 1200) score += 31;
-    else if (wmaxshear >= 1000) score += 27;
-    else if (wmaxshear >= 850)  score += 21;
-    else if (wmaxshear >= 700)  score += 15;
-    else if (wmaxshear >= 550)  score += 10;
-    else if (wmaxshear >= 450)  score += 6;
-    else if (wmaxshear >= 350)  score += 3;
-
-    if      (shear >= 24) score += 12;
-    else if (shear >= 20) score += 9;
-    else if (shear >= 17) score += 7;
-    else if (shear >= 14) score += 4;
-    else if (shear >= 11) score += 2;
-    else if (shear >= 9)  score += 1;
-
-    // Niedrig-Niveau-Scherung: 925→850 hPa (statt 1000→850 hPa)
-    // 925 hPa ist repräsentativer für LLJ-Strukturen (Battaglioli 2023)
-    const w925_uv = windToUV((hour.wind_speed_925hPa ?? 0) / 3.6, hour.windDir925 ?? 0);
-    const w850_uv = windToUV((hour.wind_speed_850hPa ?? 0) / 3.6, hour.windDir850 ?? 0);
-    const shear_low_925_850 = Math.hypot(w850_uv.u - w925_uv.u, w850_uv.v - w925_uv.v);
-    // Auch 1000→850 als Vergleich
-    const w1000_uv = windToUV((hour.wind_speed_1000hPa ?? 0) / 3.6, hour.windDir1000 ?? 0);
-    const shear_low_1000_850 = Math.hypot(w850_uv.u - w1000_uv.u, w850_uv.v - w1000_uv.v);
-    const shear_low = Math.max(shear_low_925_850, shear_low_1000_850);
-
-    if      (shear_low >= 15) score += 10;
-    else if (shear_low >= 12) score += 7;
-    else if (shear_low >= 9)  score += 4;
-    else if (shear_low >= 6)  score += 2;
-
-    if      (lapseRate >= 8.0 && dcape >= 500) score += 10;
-    else if (lapseRate >= 7.0 && dcape >= 400) score += 6;
-    else if (lapseRate >= 6.5 && dcape >= 300) score += 3;
-    else if (lapseRate < 5.5)                  score -= 3;
-
-    if      (cape >= 1500) score += 11;
-    else if (cape >= 1200) score += 9;
-    else if (cape >= 800)  score += 7;
-    else if (cape >= 450)  score += 4;
-    else if (cape >= 250)  score += 2;
-
     const dewDep700 = temp700 - dew700;
-    if      (dewDep700 >= 20 && dcape >= 600) score += 8;
-    else if (dewDep700 >= 15 && dcape >= 500) score += 5;
-    else if (dewDep700 >= 8  && dcape >= 350) score += 3;
-    else if (dewDep700 < 5   && dcape < 800)  score -= 4;
+    const meanRH  = hour.meanRH ?? 50;
 
-    if      (temp500 <= -20 && dcape >= 600) score += 6;
-    else if (temp500 <= -16 && dcape >= 500) score += 4;
-    else if (temp500 <= -12 && dcape >= 400) score += 2;
+    // Mindestbedingungen für Downburst-Wind
+    if (dcape < 300)    return 0;
+    if (wmaxshear < 400) return 0;
 
-    if      (hour.rh500 < 35 && dcape >= 600) score += 5;
-    else if (hour.rh500 < 45 && dcape >= 500) score += 3;
-    else if (hour.rh500 < 55 && dcape >= 400) score += 1;
+    // DCAPE-Faktor (primärer Wind-Prädiktor)
+    const dcapeFactor = dcape >= 1400 ? 1.0
+                      : dcape >= 1000 ? 0.85
+                      : dcape >=  700 ? 0.70
+                      : dcape >=  500 ? 0.55
+                      : dcape >=  300 ? 0.35
+                      : 0.0;
 
-    if      (meanRH < 35 && dcape >= 600) score += 6;
-    else if (meanRH < 45 && dcape >= 500) score += 3;
-    else if (meanRH > 75 && dcape < 800)  score -= 4;
+    // WMAXSHEAR-Faktor
+    const wmsFactor = wmaxshear >= 1200 ? 1.0
+                    : wmaxshear >= 900  ? 0.85
+                    : wmaxshear >= 700  ? 0.70
+                    : wmaxshear >= 500  ? 0.55
+                    : wmaxshear >= 400  ? 0.35
+                    : 0.0;
 
-    if      (pwat < 15 && dcape >= 600) score += 5;
-    else if (pwat < 20 && dcape >= 500) score += 3;
-    else if (pwat > 35 && dcape < 800)  score -= 4;
+    // Trockenheit 700 hPa (Downburst-Verstärker)
+    const dryFactor = dewDep700 >= 20 ? 1.2
+                    : dewDep700 >= 12 ? 1.1
+                    : dewDep700 >=  6 ? 1.0
+                    : 0.85;
 
-    let factor = 1.0;
-    if      (dcape >= 1000 && wmaxshear >= 1100) factor = 1.2;
-    else if (dcape >= 800  && wmaxshear >= 900)  factor = 1.15;
-    else if (dcape >= 550  && wmaxshear >= 650)  factor = 1.1;
-    else if (dcape < 350   || wmaxshear < 550)   factor = 0.75;
-    if      (shear >= 17 && cape >= 550)         factor *= 1.1;
-    else if (shear < 11  && cape < 350)          factor *= 0.8;
+    // Lapse Rate (Instabilitätsverstärker)
+    const lapseFactor = lapseRate >= 8.0 ? 1.15
+                      : lapseRate >= 7.0 ? 1.05
+                      : lapseRate >= 6.0 ? 1.0
+                      : 0.85;
 
-    score = Math.round(score * factor);
-    if      (dcape < 250 || wmaxshear < 400) score = Math.min(score, 10);
-    else if (dcape < 350 || wmaxshear < 550) score = Math.min(score, 25);
-    if (dcape >= 1200 && wmaxshear >= 1300 && shear >= 20) score = Math.min(100, score + 10);
-    if (cape < 500 && shear >= 18 && wmaxshear >= 800 && dcape >= 600) score = Math.min(100, score + 6);
-
-    score = Math.round(score * 0.85);
-    return Math.min(100, Math.max(0, score));
+    const raw = dcapeFactor * wmsFactor * dryFactor * lapseFactor * (pStorm / 100);
+    return Math.min(95, Math.max(0, Math.round(raw * 120)));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TORNADO-WAHRSCHEINLICHKEIT via STP (Europa-kalibriert)
-// Quelle: Púčik 2015; Taszarek 2020; ESSL-Tornado-Klimatologie
+// TORNADO-WAHRSCHEINLICHKEIT
 // ═══════════════════════════════════════════════════════════════════════════
-function stpToPercentEurope(stp) {
-    if (stp < 0.1) return 0;
-    if (stp < 0.5) return 5;
-    if (stp < 1.0) return 10;
-    if (stp < 1.5) return 20;
-    if (stp < 2.0) return 30;
-    if (stp < 2.5) return 40;
-    if (stp < 3.0) return 50;
-    if (stp < 4.0) return 65;
-    if (stp < 5.0) return 80;
-    return 95;
-}
-
 function calculateTornadoProbability(hour, shear, srh) {
-    const thunderProb = calculateLightningProbability(hour);
-    if (thunderProb < 50) return 0;
+    const pStorm = calculateLightningProbability(hour);
+    if (pStorm < 40) return 0;
 
     const cape  = Math.max(0, hour.cape ?? 0);
     const srh1  = calcSRH(hour, '0-1km');
     const temp  = hour.temperature ?? 20;
     const dew   = hour.dew ?? 10;
     const cin   = hour.cin ?? 0;
+    const ebwd  = calcEBWD(hour);
+    const lcl   = calcLCLHeight(temp, dew);
 
-    const lcl      = calcLCLHeight(temp, dew);
-    const ebwd     = calcEBWD(hour);
+    // Mindestbedingungen für Tornado
+    if (cape < 200)  return 0;
+    if (srh1 < 80)   return 0;
+    if (ebwd < 12)   return 0;
+
     const cinFactor = Math.max(0, (200 + cin) / 150);
-    const lclFactor = Math.max(0, (2000 - lcl) / 1000);
+    const lclFactor = lcl < 1000  ? 1.0
+                    : lcl < 1500  ? 0.7
+                    : lcl < 2000  ? 0.4
+                    : 0.1;
 
     let stp = (cape / 1500) * lclFactor * (srh1 / 150) * (ebwd / 20) * cinFactor;
     stp = Math.max(0, stp);
 
-    let percent = stpToPercentEurope(stp);
-    if (percent < 10) return 0;
-    return Math.round(percent * 0.85);
+    const stpPercent = stp < 0.3 ? 0
+                     : stp < 0.5 ? 5
+                     : stp < 1.0 ? 10
+                     : stp < 1.5 ? 18
+                     : stp < 2.0 ? 28
+                     : stp < 3.0 ? 40
+                     : stp < 4.0 ? 55
+                     : 70;
+
+    if (stpPercent < 5) return 0;
+    return Math.round(stpPercent * 0.85 * (pStorm / 100));
 }
