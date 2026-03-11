@@ -300,6 +300,31 @@ export default async function handler(req, res) {
             const hailProbability    = ensembleProb(hagel_by_model, leadtimeHours);
             const windProbability    = ensembleProb(wind_by_model,  leadtimeHours);
 
+            // ── Monte Carlo Unsicherheitsanalyse (kein API-Call) ───────────
+            // Auf Ensemble-Mittelwert der Modell-Hours anwenden
+            // → repräsentativer als nur ein Modell
+            const validMH = Object.values(modelHours).filter(Boolean);
+            let mc = null;
+            if (validMH.length > 0) {
+                // Ensemble-Mittel-Hour für MC bauen
+                const mcHour = { ...validMH[0] };
+                const fields = ['cape','cin','liftedIndex','mlMixRatio','q925','meanRH',
+                                'rh925','wbzHeight','freezingLevel','pblHeight','precipAcc',
+                                'temperature','dew','temp850','temp700','temp500',
+                                'dew850','dew700','rh850','rh700','rh500','pwat',
+                                'wind','gust','directRadiation','precip',
+                                'wind_speed_925hPa','wind_speed_500hPa','wind_speed_850hPa',
+                                'wind_speed_1000hPa','windDir925','windDir500','windDir850',
+                                'windDir1000','windDir700','wind_speed_700hPa','windDir300',
+                                'wind_speed_300hPa','wind_speed_975hPa','windDir975',
+                                'wind_speed_950hPa','windDir950','wind_speed_900hPa','windDir900'];
+                for (const f of fields) {
+                    const vals = validMH.map(h => h[f]).filter(v => v !== null && v !== undefined && !isNaN(v));
+                    if (vals.length > 0) mcHour[f] = vals.reduce((a,b) => a+b, 0) / vals.length;
+                }
+                mc = monteCarloUncertainty(mcHour, 200);
+            }
+
             const validModelHours  = Object.values(modelHours).filter(Boolean);
             const displayTemperature = ensembleMean(validModelHours.map(mh => mh.temperature));
             const displayCape        = ensembleMean(validModelHours.map(mh => mh.cape));
@@ -314,6 +339,7 @@ export default async function handler(req, res) {
                 tornadoProbability,
                 hailProbability,
                 windProbability,
+                mc,
                 temperature: Math.round(displayTemperature * 10) / 10,
                 cape:        Math.round(displayCape),
                 shear:       Math.round(displayShear * 10) / 10,
@@ -356,14 +382,21 @@ export default async function handler(req, res) {
 
         const stunden = nextHours.map(h => ({
             timestamp:     h.time,
-            gewitter:      h.probability,
-            tornado:       h.tornadoProbability,
-            hagel:         h.hailProbability,
-            wind:          h.windProbability,
-            gewitter_risk: categorizeRisk(h.probability),
-            tornado_risk:  categorizeRisk(h.tornadoProbability),
-            hagel_risk:    categorizeRisk(h.hailProbability),
-            wind_risk:     categorizeRisk(h.windProbability),
+            gewitter:      h.mc ? h.mc.gewitter.median : h.probability,
+            tornado:       h.mc ? h.mc.tornado.median  : h.tornadoProbability,
+            hagel:         h.mc ? h.mc.hagel.median    : h.hailProbability,
+            wind:          h.mc ? h.mc.wind.median     : h.windProbability,
+            gewitter_risk: categorizeRisk(h.mc ? h.mc.gewitter.median : h.probability),
+            tornado_risk:  categorizeRisk(h.mc ? h.mc.tornado.median  : h.tornadoProbability),
+            hagel_risk:    categorizeRisk(h.mc ? h.mc.hagel.median    : h.hailProbability),
+            wind_risk:     categorizeRisk(h.mc ? h.mc.wind.median     : h.windProbability),
+            // Unsicherheitsbänder: P10 = untere Grenze, P90 = obere Grenze
+            unsicherheit: h.mc ? {
+                gewitter: { p10: h.mc.gewitter.p10, p25: h.mc.gewitter.p25, p75: h.mc.gewitter.p75, p90: h.mc.gewitter.p90, spread: h.mc.gewitter.spread, konfidenz: h.mc.gewitter.konfidenz },
+                hagel:    { p10: h.mc.hagel.p10,    p25: h.mc.hagel.p25,    p75: h.mc.hagel.p75,    p90: h.mc.hagel.p90,    spread: h.mc.hagel.spread,    konfidenz: h.mc.hagel.konfidenz },
+                wind:     { p10: h.mc.wind.p10,     p25: h.mc.wind.p25,     p75: h.mc.wind.p75,     p90: h.mc.wind.p90,     spread: h.mc.wind.spread,     konfidenz: h.mc.wind.konfidenz },
+                tornado:  { p10: h.mc.tornado.p10,  p25: h.mc.tornado.p25,  p75: h.mc.tornado.p75,  p90: h.mc.tornado.p90,  spread: h.mc.tornado.spread,  konfidenz: h.mc.tornado.konfidenz },
+            } : null,
         }));
 
         const tage = Array.from(daysMap.values())
@@ -794,6 +827,9 @@ function calcEBWD(hour) {
 // 0-3km: 1000/925/850/700 hPa
 // 925 hPa jetzt explizit in beiden Schichten
 function calcSRH(hour, layer = '0-3km') {
+    // Monte Carlo Override
+    if (layer === '0-1km' && hour._srh1Override !== undefined) return hour._srh1Override;
+    if (layer === '0-3km' && hour._srh3Override !== undefined) return hour._srh3Override;
     const levels = layer === '0-1km'
         ? [
             { ws: (hour.wind_speed_1000hPa ?? 0) / 3.6, wd: hour.windDir1000 ?? 0 },
@@ -834,6 +870,8 @@ function calcSRH(hour, layer = '0-3km') {
 // Korrekturfaktor 1.08: 500 hPa liegt bei ~5.5 km statt 6 km
 // Quelle: Battaglioli 2023, Table 1 + 2; Rädler 2018 Section 2c
 function calcShear(hour) {
+    // Monte Carlo Override: perturbierter Wert direkt verwenden
+    if (hour._shearOverride !== undefined) return hour._shearOverride;
     const ws500  = (hour.wind_speed_500hPa  ?? 0) / 3.6;
     const ws925  = (hour.wind_speed_925hPa  ?? 0) / 3.6;
     const w500   = windToUV(ws500, hour.windDir500  ?? 0);
@@ -998,6 +1036,106 @@ function calcThetaE(tempC, dewC, pressHPa) {
     return T_K
         * Math.pow(1000 / pressHPa, 0.2854 * (1 - 0.00028 * w_gkg))
         * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MONTE CARLO UNSICHERHEITSANALYSE
+// Kein zusätzlicher API-Call – läuft lokal auf den bereits abgerufenen Daten.
+// Jeder Parameter wird N-mal mit realistischem Rauschen perturbiert,
+// der Score wird für jede Realisierung berechnet → Verteilung ergibt
+// Median (robuster als Einzelwert) + P10/P90-Konfidenzband.
+//
+// σ-Werte basieren auf NWP-Verifikationsstudien:
+//   CAPE:      ±20% (rel.) – Haiden et al. 2012, ECMWF Tech Memo
+//   LI:        ±0.8 K      – Radiosonden vs. NWP (Zaitseva 2019)
+//   CIN:       ±30% (rel.) – sehr modellabhängig
+//   DLS:       ±2.5 m/s    – Modellvergleich ICON/ECMWF (Púčik 2015)
+//   SRH:       ±20% (rel.) – Thompson et al. 2003
+//   WBZ:       ±150 m      – ESSL Hagelklimatologie
+//   ML_MR:     ±1.5 g/kg   – Battaglioli 2023
+//   q925:      ±1.2 g/kg   – analog ML_MR
+//   meanRH:    ±5%         – NWP-Feuchtefehler
+// ═══════════════════════════════════════════════════════════════════════════
+function monteCarloUncertainty(hour, n = 200) {
+    // Box-Muller: Gauß-verteilte Zufallszahl (μ=0, σ=1)
+    function randn() {
+        const u = Math.max(1e-10, 1 - Math.random());
+        const v = Math.random();
+        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    }
+
+    const gScores = [];
+    const hScores = [];
+    const wScores = [];
+    const tScores = [];
+
+    const shearBase = calcShear(hour);
+    const srh3Base  = calcSRH(hour, '0-3km');
+    const srh1Base  = calcSRH(hour, '0-1km');
+
+    for (let i = 0; i < n; i++) {
+        // Perturbierten hour-Klon erzeugen
+        const h = {
+            ...hour,
+            // Thermodynamik
+            cape:        Math.max(0,   hour.cape        * (1 + 0.20 * randn())),
+            cin:         Math.min(0,   hour.cin         * (1 + 0.30 * Math.abs(randn())) * (hour.cin < 0 ? 1 : 0)),
+            liftedIndex: hour.liftedIndex + 0.8 * randn(),
+            // Feuchte
+            mlMixRatio:  Math.max(0,   hour.mlMixRatio  + 1.5 * randn()),
+            q925:        Math.max(0,   hour.q925        + 1.2 * randn()),
+            meanRH:      Math.min(100, Math.max(0, hour.meanRH + 5 * randn())),
+            rh925:       Math.min(100, Math.max(0, (hour.rh925 ?? 70) + 5 * randn())),
+            // Höhen
+            wbzHeight:   Math.max(0,   hour.wbzHeight   + 150 * randn()),
+            freezingLevel: Math.max(0, hour.freezingLevel + 150 * randn()),
+            pblHeight:   Math.max(100, hour.pblHeight   + 100 * randn()),
+            // Niederschlag (diskret → kleines Rauschen)
+            precipAcc:   Math.max(0,   hour.precipAcc   + 0.2 * randn()),
+        };
+
+        // Scherung perturbieren (als skalarer Offset auf den Basiswert)
+        const shearP  = Math.max(0, shearBase  + 2.5 * randn());
+        const srh3P   = Math.max(0, srh3Base   * (1 + 0.20 * randn()));
+        const srh1P   = Math.max(0, srh1Base   * (1 + 0.20 * randn()));
+        const dcapeP  = Math.max(0, calcDCAPE(h));
+        const wmsP    = calcWMAXSHEAR(h.cape, shearP);
+
+        // Scherung in h überschreiben damit calcShear(h) konsistent bleibt
+        // (calcShear liest wind_speed_925hPa / windDir → wir patchen wind_speed_500hPa)
+        // Einfachster Weg: calcShear durch den perturbierten Wert ersetzen
+        // → wir übergeben shearP direkt wo nötig
+        h._shearOverride = shearP;
+        h._srh1Override  = srh1P;
+        h._srh3Override  = srh3P;
+
+        gScores.push(calculateLightningProbability(h));
+        hScores.push(calculateHailProbability(h, wmsP, dcapeP));
+        wScores.push(calculateWindProbability(h, wmsP, dcapeP));
+        tScores.push(calculateTornadoProbability(h, shearP, srh3P));
+    }
+
+    function stats(arr) {
+        const s = [...arr].sort((a, b) => a - b);
+        const median = s[Math.floor(n * 0.50)];
+        const p10    = s[Math.floor(n * 0.10)];
+        const p25    = s[Math.floor(n * 0.25)];
+        const p75    = s[Math.floor(n * 0.75)];
+        const p90    = s[Math.floor(n * 0.90)];
+        const spread = p90 - p10;
+        // Konfidenz: schmales Band = klare Lage
+        const konfidenz = spread <= 12 ? 'hoch'
+                        : spread <= 28 ? 'mittel'
+                        : 'niedrig';
+        return { median, p10, p25, p75, p90, spread, konfidenz };
+    }
+
+    return {
+        gewitter: stats(gScores),
+        hagel:    stats(hScores),
+        wind:     stats(wScores),
+        tornado:  stats(tScores),
+    };
 }
 
 function categorizeRisk(prob) {
