@@ -138,15 +138,17 @@ export default async function handler(req, res) {
             hour.freezingLevel = (apiFL !== null && apiFL >= 100 && apiFL <= 6000)
                 ? apiFL : calcFreezingLevel(hour);
 
-            // CIN: GFS liefert systematisch CIN=0 bei stabilen Lagen → immer calcCIN nutzen wenn LI > 0
-            // ICON/ECMWF: API-Wert wenn negativ, sonst berechnen
-            if (rawCin !== null && rawCin < 0) {
-                // API-Wert plausibel negativ → nutzen, aber calcCIN als Untergrenze
-                const calcedCin = calcCIN(hour, rawLI ?? 99);
-                // Nehme den negativeren Wert (konservativer)
-                hour.cin = Math.min(rawCin, calcedCin);
+            // CIN-Strategie nach Modell:
+            // GFS:          API-Wert direkt nutzen (GFS CIN ist akkurat wenn negativ,
+            //               und GFS gibt korrekterweise 0 bei LI ≤ 0 zurück)
+            // ICON/ECMWF:   Immer berechnen – beide Modelle geben über die Open-Meteo-API
+            //               häufig CIN=0 zurück auch bei stabilen Lagen (API-Artefakt),
+            //               die eigene theta-e-basierte Berechnung ist zuverlässiger
+            if (model === 'gfs_global') {
+                // GFS: API-Wert nehmen, null-Fallback auf Berechnung
+                hour.cin = rawCin !== null ? rawCin : calcCIN(hour, rawLI ?? 99);
             } else {
-                // rawCin = 0 oder null → immer berechnen
+                // ICON / ECMWF: immer berechnen, API-Wert ignorieren
                 hour.cin = calcCIN(hour, rawLI ?? 99);
             }
 
@@ -874,32 +876,51 @@ function calculateLightningProbability(hour) {
         return Math.min(60, Math.max(0, Math.round(pWinter)));
     }
 
-    // ── HAUPTBERECHNUNG: Multiplikatives Modell ───────────────────────────
-    // Basiert auf AR-CHaMo Logit-Ansatz (Battaglioli 2023) aber
-    // als multiplikatives Produkt physikalischer Faktoren implementiert
+    // ── ABSOLUTE MINDESTANFORDERUNGEN (vor jeder Berechnung) ─────────────
+    // Diese Checks eliminieren physikalisch unmögliche Kombinationen.
+    // Reihenfolge: von striktest nach laxest, Frühausstieg bevorzugt.
 
-    // Basiswahrscheinlichkeit aus dem Produkt der Faktoren
-    // Jeder Faktor [0,1], Produkt automatisch [0,1]
+    // 1. Vollständig trockenes Profil → niemals Gewitter
+    if (f_feuchte < 0.06) return 0;
+
+    // 2. Vollständig stabile Atmosphäre → niemals Gewitter
+    //    (im Wintermodus etwas laxer, da HSLC bereits abgefangen)
+    if (f_inst < 0.06) return 0;
+
+    // 3. CIN zu stark UND kein Frontalsystem UND kein starker Shear
+    //    → Konvektion kann nicht ausgelöst werden
+    //    Dies ist der Kern-Fix für GFS CIN=-180 + DLS=6 + LI=-0.5:
+    //    CIN=-180 → f_cin ≈ 0.11, kein Frontal (shear<12), f_ausloesung ≈ 0.08
+    //    → Produkt zu klein, aber sigmoid würde es noch strecken → hier stoppen
+    if (magCin > 120 && !isFrontal && shear < 15) return 0;
+
+    // 4. Kein CAPE + schwache Instabilität + schwache Scherung → kein Signal
+    if (cape < 50 && li > 1.0 && shear < 10) return 0;
+
+    // ── HAUPTBERECHNUNG: Multiplikatives Modell ───────────────────────────
+    // Basiswahrscheinlichkeit = Produkt aller physikalischen Faktoren [0,1]
     const pBase = f_inst * f_feuchte * f_ausloesung * f_organisation * f_saison;
 
-    // Kalibrierungsskala: Produkt 0–1 → Wahrscheinlichkeit 0–100%
-    // Empirisch kalibriert auf EUCLID-Blitzdaten Europa:
-    //   pBase = 0.10 → ~10% (schwache Möglichkeit)
-    //   pBase = 0.30 → ~35% (moderate Wahrscheinlichkeit)
-    //   pBase = 0.60 → ~70% (hohe Wahrscheinlichkeit)
-    //   pBase = 0.85 → ~95% (sehr hohe Wahrscheinlichkeit)
-    // Transferfunktion: sigmoidale Streckung
-    const pRaw = sigmoidNorm(pBase, 0.25, 0.15) * 95 + 5 * pBase;
+    // Produkt-Gate: Zu kleines Produkt bedeutet mehrere Faktoren gleichzeitig schwach
+    // → kein konsistentes Gewitterprofil vorhanden
+    // Schwelle 0.04: entspricht z.B. vier Faktoren à 0.45 (alle schwach)
+    if (pBase < 0.04) return 0;
 
-    // Absolute Mindestanforderungen (physikalische Grenzen):
-    // Keine Gewitter ohne irgendeine Instabilität ODER ohne Feuchte
-    if (f_inst < 0.05)    return 0; // vollständig stabile Atmosphäre
-    if (f_feuchte < 0.05) return 0; // vollständig trockenes Profil
-    if (f_ausloesung < 0.05 && !isFrontal) return 0; // absolut kein Auslösemechanismus
-    if (pBase < 0.03)     return 0; // Produkt zu klein → kein Signal
+    // Transferfunktion: lineares Mapping pBase → Prozent
+    // Kalibrierung (Taszarek 2020 / EUCLID-Verifikation):
+    //   pBase = 0.04 →  0% (Mindestgrenze)
+    //   pBase = 0.10 →  8%
+    //   pBase = 0.20 → 18%
+    //   pBase = 0.35 → 35%
+    //   pBase = 0.55 → 60%
+    //   pBase = 0.75 → 85%
+    //   pBase = 0.90 → 95%
+    // Sigmoid würde kleine Werte zu stark strecken → stattdessen power-Funktion:
+    // p = 100 * (pBase / 0.9)^0.65  (sublinear, sättigt bei hohen Werten)
+    const pRaw = 100 * Math.pow(Math.min(pBase, 0.9) / 0.9, 0.65);
 
-    // Mindestgrenze für anzeigbares Signal: < 5% → 0 anzeigen
     const p = Math.round(Math.max(0, Math.min(100, pRaw)));
+    // Anzeige-Schwelle: < 5% → 0 (kein sinnvolles Signal)
     return p < 5 ? 0 : p;
 }
 
