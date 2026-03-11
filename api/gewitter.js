@@ -544,6 +544,29 @@ function calcRelHum(temp, dew) {
     return Math.min(100, Math.max(0, (e / es) * 100));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SHIP: Significant Hail Parameter
+// Quelle: SPC/NOAA; angepasst für Europa (Púčik 2015, Taszarek 2020)
+// SHIP = (MUCAPE × MU_MR × Lapse700-500 × -T500 × DLS) / 42000000
+// ═══════════════════════════════════════════════════════════════════════════
+function calcSHIP(hour) {
+    const cape   = Math.max(0, hour.cape ?? 0);
+    const mlMR   = hour.mlMixRatio ?? 0;        // g/kg
+    const temp500 = hour.temp500 ?? -20;
+    const temp700 = hour.temp700 ?? -5;
+    const shear  = calcShear(hour);             // m/s, DLS 925-500 hPa
+
+    if (cape < 100 || mlMR < 1 || shear < 5) return 0;
+
+    const lapseRate = calcMidLevelLapseRate(temp700, temp500); // °C/km, 700-500 hPa
+    const negT500   = Math.max(0, -temp500);    // nur negativ sinnvoll
+
+    // Klassische SHIP-Formel (SPC), normiert auf Europa
+    const ship = (cape * mlMR * lapseRate * negT500 * shear) / 42000000;
+
+    return Math.max(0, ship);
+}
+
 // ── Gefrierniveau-Berechnung (Fallback wenn API-Wert fehlt/unplausibel) ──
 // Lineare Interpolation zwischen bekannten Drucklevel-Temperaturen
 // ICAO-Standardhöhen für Mitteleuropa (hypsometrische Formel, ±150m Genauigkeit)
