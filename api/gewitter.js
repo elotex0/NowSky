@@ -40,7 +40,7 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: 'Vorhersage nur für Europa verfügbar', region, onlyEurope: true });
         }
 
-        const MODELS = ['icon_d2', 'dmi_harmonie_arome_europe', ',knmi_harmonie_arome_europe', 'meteofrance_arome_france'];
+        const MODELS = ['icon_d2', 'dmi_harmonie_arome_europe', 'knmi_harmonie_arome_europe', 'meteofrance_arome_france'];
 
         const now = new Date();
         const currentTimeStr = now.toLocaleString('en-US', {
