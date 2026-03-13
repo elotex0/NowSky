@@ -689,23 +689,25 @@ function calcSTP(hour) {
 
     const cin = hour.cin ?? calcCIN(hour);
 
-    const ws925 = hour.wind_speed_925hPa ?? 0;
-    const wd925 = hour.windDir925 ?? 0;       // FIX: war wind_direction_925hPa
-    const ws850 = hour.wind_speed_850hPa ?? 0;
-    const wd850 = hour.windDir850 ?? 0;       // FIX: war wind_direction_850hPa
-    const ws500 = hour.wind_speed_500hPa ?? 0;
+    // Windgeschwindigkeiten km/h → m/s
+    const ws10  = (hour.wind          ?? 0) / 3.6;
+    const ws925 = (hour.wind_speed_925hPa ?? 0) / 3.6;
+    const ws850 = (hour.wind_speed_850hPa ?? 0) / 3.6;
+    const ws500 = (hour.wind_speed_500hPa ?? 0) / 3.6;
 
-    const du = ws500 * Math.cos(wd850 * Math.PI / 180) - ws925 * Math.cos(wd925 * Math.PI / 180);
-    const dv = ws500 * Math.sin(wd850 * Math.PI / 180) - ws925 * Math.sin(wd925 * Math.PI / 180);
+    const wd925 = hour.windDir925 ?? 0;
+    const wd850 = hour.windDir850 ?? 0;
+
+    // EBWD: vektorielle Scherung 925–500 hPa in m/s
+    const du   = ws500 * Math.cos(wd850 * Math.PI / 180) - ws925 * Math.cos(wd925 * Math.PI / 180);
+    const dv   = ws500 * Math.sin(wd850 * Math.PI / 180) - ws925 * Math.sin(wd925 * Math.PI / 180);
     const ebwd = Math.sqrt(du * du + dv * dv);
 
-    const ws10  = hour.wind ?? 0;             // FIX: war wind_speed_10m
-    const ws1km = ws925;
-    const ws3km = ws850;
-    const srh   = Math.max(0, ((ws1km - ws10) * 50 + (ws3km - ws10) * 30));
+    // SRH-Näherung in m²/s² (ws bereits in m/s)
+    const srh = Math.max(0, ((ws925 - ws10) * 50 + (ws850 - ws10) * 30));
 
-    const t2m  = hour.temperature ?? 15;
-    const td2m = hour.dew ?? 5;
+    const t2m        = hour.temperature ?? 15;
+    const td2m       = hour.dew ?? 5;
     const lcl_height = Math.max(0, (t2m - td2m) * 122);
 
     const cape_term = Math.min(cape / 1500, 1.5);
