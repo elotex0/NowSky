@@ -848,7 +848,7 @@ function calculateLightningProbability(hour) {
 
     const isHSLC = cape >= 30 && cape < 400 && shear >= 12 && meanRH >= 55;
     if (isHSLC && winterMode) {
-        const midlap = calcMidLapseRate(hour.temp700, hour.temp500);
+        const midLap = calcMidLapseRate(hour.temp700, hour.temp500);
         if (li > 2.0 || midLap < 5.5) return 0;
         const wbzBonus = wbz < 1200 ? 1.2 : wbz < 1800 ? 1.0 : 0.7;
         const shearScore = linNorm(shear, 12, 25);
