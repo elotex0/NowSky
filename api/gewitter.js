@@ -462,61 +462,122 @@ function calcWBZHeight(hour) {
 
 function calcCIN(hour, rawLI = 99) {
     const t2m  = hour.temperature ?? 0;
-    const d2m  = hour.dew ?? t2m - 10;
-    const t850 = hour.temp850 ?? 0;
-    const t700 = hour.temp700 ?? 0;
+    const d2m  = hour.dew        ?? t2m - 10;
+    const t850 = hour.temp850    ?? 0;
+    const t700 = hour.temp700    ?? 0;
+    const t925 = hour.temp925    ?? (t2m * 0.4 + t850 * 0.6);
+    const d925 = hour.dew925     ?? d2m;
+    const d850 = hour.dew850     ?? d2m;
+    const d700 = hour.dew700     ?? d2m;
 
-    if (rawLI < -2) return 0;
-
-    const dd2m   = t2m - d2m;
-    const T_LCL  = t2m - 0.212 * dd2m - 0.001 * dd2m * dd2m;
-    const z_LCL  = 125 * dd2m;
-    const T2m_K  = t2m + 273.15;
-    const TLCL_K = T_LCL + 273.15;
-    const w2m    = mixingRatio(svp(d2m), 1013.25);
-    const theta_e_sfc = T2m_K
-        * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m))
-        * Math.exp((3.376 / TLCL_K - 0.00254) * w2m * (1 + 0.00081 * w2m));
-
-    const z850 = 1500, DALR = 9.8;
-    let T_p850;
-    if (z_LCL >= z850) {
-        T_p850 = t2m - DALR * 1.5;
-    } else {
-        T_p850 = T_LCL - 4;
-        for (let n = 0; n < 8; n++) {
-            const Tp_K = T_p850 + 273.15;
-            const ws   = mixingRatio(svp(T_p850), 850);
-            const te_t = Tp_K * Math.pow(1000/850, 0.2854*(1-0.00028*ws))
-                * Math.exp((3.376/Tp_K - 0.00254)*ws*(1+0.00081*ws));
-            T_p850 += (theta_e_sfc - te_t) * 0.3;
-        }
+    // ── Virtuelle Temperatur ─────────────────────────────────────────────
+    // T_v = T_K * (1 + 0.608 * w)   [w = Mischungsverhältnis in kg/kg]
+    function T_v(T_c, dew_c, p_hPa) {
+        const e  = svp(dew_c);
+        const w  = 0.622 * e / (p_hPa - e);   // kg/kg
+        return (T_c + 273.15) * (1 + 0.608 * w);
     }
 
-    const dT850 = T_p850 - t850;
-    const g = 9.81;
-    const cin_low = dT850 < 0 ? (dT850/2 / ((t2m+t850)/2+273.15)) * g * z850 : 0;
+    // ── Virtuelle Temperatur des Luftpakets (konserviert theta_e) ────────
+    // Parcel lifted moist-adiabatically: theta_e erhalten, dann T_v berechnen.
+    // w_parcel ≈ Sättigungsmischungsverhältnis am Zielniveau.
+    function T_v_parcel(T_p_c, p_hPa) {
+        const ws = 0.622 * svp(T_p_c) / (p_hPa - svp(T_p_c));
+        return (T_p_c + 273.15) * (1 + 0.608 * ws);
+    }
 
-    let cin_mid = 0;
-    if (dT850 < 0) {
-        let T_p700 = T_p850;
-        for (let n = 0; n < 8; n++) {
-            const Tp_K = T_p700 + 273.15;
-            const ws   = mixingRatio(svp(T_p700), 700);
-            const te_t = Tp_K * Math.pow(1000/700, 0.2854*(1-0.00028*ws))
-                * Math.exp((3.376/Tp_K - 0.00254)*ws*(1+0.00081*ws));
-            T_p700 += (theta_e_sfc - te_t) * 0.3;
+    // ── Theta_e der Bodenluft ────────────────────────────────────────────
+    const dd2m    = t2m - d2m;
+    const T_LCL   = t2m - 0.212 * dd2m - 0.001 * dd2m * dd2m;
+    const z_LCL   = Math.max(0, 125 * dd2m);
+    const TLCL_K  = T_LCL + 273.15;
+    const w2m     = mixingRatio(svp(d2m), 1013.25) / 1000;  // kg/kg
+    const theta_e = (t2m + 273.15)
+        * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m * 1000))
+        * Math.exp((3.376 / TLCL_K - 0.00254) * w2m * 1000 * (1 + 0.00081 * w2m * 1000));
+
+    // ── Parceltemperatur an einem Druckniveau (theta_e Iteration) ────────
+    function parcelTemp(p_hPa, T_first_guess) {
+        let Tp = T_first_guess;
+        for (let n = 0; n < 30; n++) {
+            const Tp_K = Tp + 273.15;
+            const ws   = mixingRatio(svp(Tp), p_hPa) / 1000;   // kg/kg
+            const te   = Tp_K
+                * Math.pow(1000 / p_hPa, 0.2854 * (1 - 0.00028 * ws * 1000))
+                * Math.exp((3.376 / Tp_K - 0.00254) * ws * 1000 * (1 + 0.00081 * ws * 1000));
+            const d = (theta_e - te) * 0.25;
+            Tp += d;
+            if (Math.abs(d) < 0.001) break;
         }
-        const dT700 = T_p700 - t700;
-        if (dT700 < 0) {
-            cin_mid = ((dT850+dT700)/2 / ((t850+t700)/2+273.15)) * g * 1500;
+        return Tp;
+    }
+
+    // ── Parceltemperatur trocken-adiabatisch (unterhalb LCL) ─────────────
+    // T_p(z) = t2m - DALR * z/1000
+    const DALR = 9.8;
+    function parcelTempDry(z_m) {
+        return t2m - DALR * (z_m / 1000);
+    }
+
+    // ── Stützpunkte: Höhe, Druck, Umgebungstemperatur, Taupunkt ──────────
+    // z in Meter (Standardatmosphäre-Näherung für 850/925/700 hPa)
+    const levels = [
+        { z:    0, p: 1013.25, T_env: t2m,  dew_env: d2m  },
+        { z:  762, p:  925,    T_env: t925, dew_env: d925 },
+        { z: 1457, p:  850,    T_env: t850, dew_env: d850 },
+        { z: 3012, p:  700,    T_env: t700, dew_env: d700 },  // d700 selten verfügbar
+    ];
+
+    // ── Parceltemperatur an jedem Stützpunkt ─────────────────────────────
+    // Unterhalb LCL: trocken-adiabatisch; darüber: feucht-adiabatisch (theta_e)
+    const parcels = levels.map(lv => {
+        let Tp_c;
+        if (lv.z <= z_LCL) {
+            Tp_c = parcelTempDry(lv.z);
         } else {
-            const frac = dT850 / (dT850 - dT700);
-            cin_mid = (dT850/2 / (t850+273.15)) * g * (frac * 1500);
+            // Ersatzwert: LCL-Temp als Startpunkt minus grobe MALR-Abkühlung
+            const dz_from_LCL = lv.z - z_LCL;
+            const guess = T_LCL - 6.0 * (dz_from_LCL / 1000);
+            Tp_c = parcelTemp(lv.p, guess);
         }
+        return Tp_c;
+    });
+
+    // ── Auftrieb (buoyancy) an jedem Stützpunkt ──────────────────────────
+    // b = g * (T_v_parcel - T_v_env) / T_v_env
+    const g = 9.81;
+    const buoyancy = levels.map((lv, i) => {
+        const tv_p = T_v_parcel(parcels[i], lv.p);
+        const tv_e = T_v(lv.T_env, lv.dew_env, lv.p);
+        return g * (tv_p - tv_e) / tv_e;
+    });
+
+    // ── Trapez-Integration: CIN nur dort, wo b < 0 ───────────────────────
+    // CIN = ∫ b dz, summiert über alle Abschnitte mit negativem Auftrieb
+    let cin = 0;
+    for (let i = 0; i < levels.length - 1; i++) {
+        const b1 = buoyancy[i];
+        const b2 = buoyancy[i + 1];
+        const dz = levels[i + 1].z - levels[i].z;
+
+        if (b1 <= 0 && b2 <= 0) {
+            // Ganzer Abschnitt negativ → volle Trapezfläche
+            cin += 0.5 * (b1 + b2) * dz;
+
+        } else if (b1 < 0 && b2 > 0) {
+            // Nulldurchgang innerhalb: nur den negativen Teil integrieren
+            const frac = b1 / (b1 - b2);   // Anteil bis Nulldurchgang
+            cin += 0.5 * b1 * (frac * dz);
+
+        } else if (b1 > 0 && b2 < 0) {
+            // Nulldurchgang: nur den negativen Teil ab Nulldurchgang
+            const frac = b1 / (b1 - b2);
+            cin += 0.5 * b2 * ((1 - frac) * dz);
+        }
+        // b1 >= 0 && b2 >= 0 → kein Beitrag zu CIN
     }
 
-    return Math.round(Math.max(-500, Math.min(0, cin_low + cin_mid)));
+    return Math.round(Math.max(-500, Math.min(0, cin)));
 }
 
 function calcLiftedIndex(hour) {
