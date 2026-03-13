@@ -665,7 +665,7 @@ function calcMidLapseRate(t700, t500) {
 }
 
 function calcKIndex(hour) {
-    return (hour.temp850??0) - (hour.temp500??0) + (hour.dew850??0) - (hour.dew700??0);
+    return ((hour.temp850??0) - (hour.temp500??0)) + (hour.dew850??0) - ((hour.temp700??0) - (hour.dew700??0));
 }
 
 function calcShowalter(hour) {
