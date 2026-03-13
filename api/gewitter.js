@@ -26,7 +26,7 @@ export default async function handler(req, res) {
             `relative_humidity_925hPa,relative_humidity_850hPa,relative_humidity_700hPa,relative_humidity_500hPa,` +
             `cape,lifted_index,convective_inhibition,boundary_layer_height,` +
             `precipitation,freezing_level_height,` +
-            `direct_radiation,total_column_integrated_water_vapour&models=icon_d2,dmi_harmonie_arome_europe,knmi_harmonie_arome_europe,meteofrance_arome_france&timezone=auto`;
+            `direct_radiation,total_column_integrated_water_vapour&forecast_days=16&models=icon_eu,ecmwf_ifs025,gfs_global&timezone=auto`;
 
         const response = await fetch(url);
         const data     = await response.json();
@@ -40,7 +40,7 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: 'Vorhersage nur für Europa verfügbar', region, onlyEurope: true });
         }
 
-        const MODELS = ['icon_d2', 'dmi_harmonie_arome_europe', 'knmi_harmonie_arome_europe', 'meteofrance_arome_france'];
+        const MODELS = ['icon_seamless', 'ecmwf_ifs025', 'gfs_global'];
 
         const now = new Date();
         const currentTimeStr = now.toLocaleString('en-US', {
@@ -171,10 +171,9 @@ export default async function handler(req, res) {
         function getModelWeight(model, lt) {
             lt = Math.max(0, lt ?? 0);
             const W = {
-                icon_d2:      [0.45, 0.40, 0.30, 0.20, 0.20],
-                dmi_harmonie_arome_europe: [0.35, 0.40, 0.50, 0.60, 0.50],
-                knmi_harmonie_arome_europe: [0.20, 0.20, 0.20, 0.20, 0.30],
-                meteofrance_arome_france: [0.30, 0.40, 0.50, 0.60, 0.70],
+                icon_seamless:      [0.45, 0.40, 0.30, 0.20, 0.20],
+                ecmwf_ifs025: [0.35, 0.40, 0.50, 0.60, 0.50],
+                gfs_global:   [0.20, 0.20, 0.20, 0.20, 0.30],
             };
             const idx = lt <= 12 ? 0 : lt <= 36 ? 1 : lt <= 72 ? 2 : lt <= 120 ? 3 : 4;
             return W[model]?.[idx] ?? (1/3);
