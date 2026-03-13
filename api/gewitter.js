@@ -179,19 +179,6 @@ export default async function handler(req, res) {
             return W[model]?.[idx] ?? (1/3);
         }
 
-        // ── Ensemble mit Konsens-Bonus + Ausreißer-Dämpfung ──────────────────
-        // Prinzip: Ein einzelnes Ausreißer-Modell soll die Vorhersage nicht
-        // dominieren. Gleichzeitig steigt das Vertrauen, wenn alle Modelle
-        // übereinstimmen (Konsens-Bonus).
-        //
-        // Ablauf:
-        // 1. Ausreißer-Erkennung: Modell > 2× Median → Gewicht halbiert
-        // 2. Gewichteter Mittelwert mit reduzierten Ausreißer-Gewichten
-        // 3. Konsens-Faktor aus normierter Standardabweichung:
-        //    σ → 0   → Faktor 1.15 (alle einig, Bonus +15%)
-        //    σ = 15  → Faktor 1.00 (neutrale Zone)
-        //    σ → 30+ → Faktor 0.75 (starke Uneinigkeit, Dämpfung)
-        // 4. Konsens-Label: "hoch" / "mittel" / "niedrig"
         function ensembleProb(probsByModel, lt) {
             const entries = Object.entries(probsByModel).filter(([, p]) => p !== null);
             if (entries.length === 0) return { prob: 0, konsens: 'niedrig', stddev: 0 };
@@ -202,33 +189,26 @@ export default async function handler(req, res) {
                 ? sorted[Math.floor(sorted.length / 2)]
                 : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
 
-            // Schritt 1: Ausreißer-Gewichte – Modell das mehr als 2× Median abweicht
-            // bekommt halbes Gewicht (floor: mind. 2% Median nötig, sonst kein Bezug)
             let ws = 0, tw = 0;
             for (const [model, prob] of entries) {
                 let w = getModelWeight(model, lt);
                 const abweichung = Math.abs(prob - median);
-                const schwelle   = Math.max(2, median * 2);  // mind. 2%-Punkte Toleranz
-                if (abweichung > schwelle) w *= 0.5; // Ausreißer-Dämpfung
+                const schwelle   = Math.max(2, median * 2);
+                if (abweichung > schwelle) w *= 0.5;
                 ws += prob * w;
                 tw += w;
             }
             const mean = tw === 0 ? 0 : ws / tw;
 
-            // Schritt 2: Standardabweichung der rohen Modellwerte
             const variance = probs.reduce((s, p) => s + (p - mean) ** 2, 0) / probs.length;
             const stddev   = Math.sqrt(variance);
 
-            // Schritt 3: Konsens-Faktor
-            // σ=0 → 1.15, σ=15 → 1.00, σ=30 → 0.75, σ≥40 → 0.65
             const konsensFaktor = stddev <= 15
-                ? 1.15 - (stddev / 15) * 0.15          // 1.15 → 1.00
-                : 1.00 - ((stddev - 15) / 25) * 0.35;  // 1.00 → 0.65
+                ? 1.15 - (stddev / 15) * 0.15
+                : 1.00 - ((stddev - 15) / 25) * 0.35;
             const kf = Math.max(0.65, Math.min(1.15, konsensFaktor));
 
             const prob = Math.round(Math.max(0, Math.min(100, mean * kf)));
-
-            // Schritt 4: Konsens-Label
             const konsens = stddev <= 10 ? 'hoch' : stddev <= 22 ? 'mittel' : 'niedrig';
 
             return { prob, konsens, stddev: Math.round(stddev * 10) / 10 };
@@ -261,12 +241,40 @@ export default async function handler(req, res) {
             const ens = ensembleProb(gw, lt);
 
             const vMH = Object.values(modelHours).filter(Boolean);
+
+            // ── FIX 1: Ensemble-hour-Objekt für categorizeRisk ──────────────
+            const ensHour = vMH.length > 0 ? {
+                time:               t,
+                cape:               ensembleMean(vMH.map(m => m.cape)),
+                cin:                ensembleMean(vMH.map(m => m.cin ?? 0)),
+                liftedIndex:        ensembleMean(vMH.map(m => m.liftedIndex ?? 0)),
+                temperature:        ensembleMean(vMH.map(m => m.temperature)),
+                dew:                ensembleMean(vMH.map(m => m.dew)),
+                wind_speed_1000hPa: ensembleMean(vMH.map(m => m.wind_speed_1000hPa ?? 0)),
+                wind_speed_975hPa:  ensembleMean(vMH.map(m => m.wind_speed_975hPa  ?? 0)),
+                wind_speed_950hPa:  ensembleMean(vMH.map(m => m.wind_speed_950hPa  ?? 0)),
+                wind_speed_925hPa:  ensembleMean(vMH.map(m => m.wind_speed_925hPa  ?? 0)),
+                wind_speed_900hPa:  ensembleMean(vMH.map(m => m.wind_speed_900hPa  ?? 0)),
+                wind_speed_850hPa:  ensembleMean(vMH.map(m => m.wind_speed_850hPa  ?? 0)),
+                wind_speed_700hPa:  ensembleMean(vMH.map(m => m.wind_speed_700hPa  ?? 0)),
+                wind_speed_500hPa:  ensembleMean(vMH.map(m => m.wind_speed_500hPa  ?? 0)),
+                windDir1000:        ensembleMean(vMH.map(m => m.windDir1000 ?? 0)),
+                windDir975:         ensembleMean(vMH.map(m => m.windDir975  ?? 0)),
+                windDir950:         ensembleMean(vMH.map(m => m.windDir950  ?? 0)),
+                windDir925:         ensembleMean(vMH.map(m => m.windDir925  ?? 0)),
+                windDir900:         ensembleMean(vMH.map(m => m.windDir900  ?? 0)),
+                windDir850:         ensembleMean(vMH.map(m => m.windDir850  ?? 0)),
+                windDir700:         ensembleMean(vMH.map(m => m.windDir700  ?? 0)),
+                windDir500:         ensembleMean(vMH.map(m => m.windDir500  ?? 0)),
+            } : null;
+
             return {
-                time: t,
+                time:           t,
                 probability:    ens.prob,
                 modell_konsens: ens.konsens,
                 modell_stddev:  ens.stddev,
                 modell_probs:   gw,
+                ensHour,
                 temperature: Math.round(ensembleMean(vMH.map(m => m.temperature)) * 10) / 10,
                 cape:        Math.round(ensembleMean(vMH.map(m => m.cape))),
                 shear:       Math.round(ensembleMean(vMH.map(m => calcShear(m))) * 10) / 10,
@@ -286,21 +294,23 @@ export default async function handler(req, res) {
             const hr = parseInt(tp);
             if (dp < currentDateStr || (dp === currentDateStr && hr < currentHour)) return;
             if (!daysMap.has(dp)) {
-                daysMap.set(dp, { date: dp, maxProbability: h.probability, peakKonsens: h.modell_konsens, peakStddev: h.modell_stddev });
+                daysMap.set(dp, { date: dp, maxProbability: h.probability, peakKonsens: h.modell_konsens, peakStddev: h.modell_stddev, ensHour: h.ensHour });
             } else {
                 const d = daysMap.get(dp);
                 if (h.probability > d.maxProbability) {
                     d.maxProbability = h.probability;
                     d.peakKonsens    = h.modell_konsens;
                     d.peakStddev     = h.modell_stddev;
+                    d.ensHour        = h.ensHour;
                 }
             }
         });
 
+        // ── FIX 2: categorizeRisk mit ensHour aufrufen ──────────────────────
         const stunden = nextHours.map(h => ({
             timestamp:      h.time,
             gewitter:       h.probability,
-            gewitter_risk:  categorizeRisk(h.probability),
+            gewitter_risk:  categorizeRisk(h.probability, h.ensHour),
             modell_konsens: h.modell_konsens,
             modell_stddev:  h.modell_stddev,
             modell_probs:   h.modell_probs,
@@ -309,7 +319,7 @@ export default async function handler(req, res) {
         const tage = Array.from(daysMap.values()).sort((a, b) => a.date.localeCompare(b.date)).map(day => ({
             date:           day.date,
             gewitter:       day.maxProbability,
-            gewitter_risk:  categorizeRisk(day.maxProbability),
+            gewitter_risk:  categorizeRisk(day.maxProbability, day.ensHour),
             modell_konsens: day.peakKonsens,
             modell_stddev:  day.peakStddev,
         }));
@@ -328,6 +338,11 @@ export default async function handler(req, res) {
                 const ki     = calcKIndex(mh);
                 const si     = calcShowalter(mh);
                 const midLap = calcMidLapseRate(mh.temp700, mh.temp500);
+                // ── FIX 3: calcSCP korrekt aufrufen (4 Parameter, shear in m/s) ──
+                const shearMS = shear / 3.6;
+                const scpVal  = calcSCP(mh.cape, shearMS, srh3, mh.cin ?? 0);
+                const ehiVal  = calcEHI(mh);
+                const stpVal  = calcSTP(mh);
                 perModel[model] = {
                     archamo_li:       Math.round(mh.liftedIndex * 10) / 10,
                     archamo_dls:      Math.round(shear * 10) / 10,
@@ -337,6 +352,9 @@ export default async function handler(req, res) {
                     archamo_wbz:      Math.round(mh.wbzHeight),
                     archamo_cape:     Math.round(mh.cape),
                     archamo_flHeight: Math.round(mh.freezingLevel),
+                    scp: Math.round(scpVal * 100) / 100,
+                    ehi: Math.round(ehiVal * 100) / 100,
+                    stp: Math.round(stpVal * 100) / 100,
                     gewitter: calculateLightningProbability(mh),
                     cape: Math.round(mh.cape), cin: Math.round(mh.cin ?? 0),
                     lcl: Math.round(lcl),
@@ -470,38 +488,31 @@ function calcCIN(hour, rawLI = 99) {
     const d850 = hour.dew850     ?? d2m;
     const d700 = hour.dew700     ?? d2m;
 
-    // ── Virtuelle Temperatur ─────────────────────────────────────────────
-    // T_v = T_K * (1 + 0.608 * w)   [w = Mischungsverhältnis in kg/kg]
     function T_v(T_c, dew_c, p_hPa) {
         const e  = svp(dew_c);
-        const w  = 0.622 * e / (p_hPa - e);   // kg/kg
+        const w  = 0.622 * e / (p_hPa - e);
         return (T_c + 273.15) * (1 + 0.608 * w);
     }
 
-    // ── Virtuelle Temperatur des Luftpakets (konserviert theta_e) ────────
-    // Parcel lifted moist-adiabatically: theta_e erhalten, dann T_v berechnen.
-    // w_parcel ≈ Sättigungsmischungsverhältnis am Zielniveau.
     function T_v_parcel(T_p_c, p_hPa) {
         const ws = 0.622 * svp(T_p_c) / (p_hPa - svp(T_p_c));
         return (T_p_c + 273.15) * (1 + 0.608 * ws);
     }
 
-    // ── Theta_e der Bodenluft ────────────────────────────────────────────
     const dd2m    = t2m - d2m;
     const T_LCL   = t2m - 0.212 * dd2m - 0.001 * dd2m * dd2m;
     const z_LCL   = Math.max(0, 125 * dd2m);
     const TLCL_K  = T_LCL + 273.15;
-    const w2m     = mixingRatio(svp(d2m), 1013.25) / 1000;  // kg/kg
+    const w2m     = mixingRatio(svp(d2m), 1013.25) / 1000;
     const theta_e = (t2m + 273.15)
         * Math.pow(1000 / 1013.25, 0.2854 * (1 - 0.00028 * w2m * 1000))
         * Math.exp((3.376 / TLCL_K - 0.00254) * w2m * 1000 * (1 + 0.00081 * w2m * 1000));
 
-    // ── Parceltemperatur an einem Druckniveau (theta_e Iteration) ────────
     function parcelTemp(p_hPa, T_first_guess) {
         let Tp = T_first_guess;
         for (let n = 0; n < 30; n++) {
             const Tp_K = Tp + 273.15;
-            const ws   = mixingRatio(svp(Tp), p_hPa) / 1000;   // kg/kg
+            const ws   = mixingRatio(svp(Tp), p_hPa) / 1000;
             const te   = Tp_K
                 * Math.pow(1000 / p_hPa, 0.2854 * (1 - 0.00028 * ws * 1000))
                 * Math.exp((3.376 / Tp_K - 0.00254) * ws * 1000 * (1 + 0.00081 * ws * 1000));
@@ -512,30 +523,23 @@ function calcCIN(hour, rawLI = 99) {
         return Tp;
     }
 
-    // ── Parceltemperatur trocken-adiabatisch (unterhalb LCL) ─────────────
-    // T_p(z) = t2m - DALR * z/1000
     const DALR = 9.8;
     function parcelTempDry(z_m) {
         return t2m - DALR * (z_m / 1000);
     }
 
-    // ── Stützpunkte: Höhe, Druck, Umgebungstemperatur, Taupunkt ──────────
-    // z in Meter (Standardatmosphäre-Näherung für 850/925/700 hPa)
     const levels = [
         { z:    0, p: 1013.25, T_env: t2m,  dew_env: d2m  },
         { z:  762, p:  925,    T_env: t925, dew_env: d925 },
         { z: 1457, p:  850,    T_env: t850, dew_env: d850 },
-        { z: 3012, p:  700,    T_env: t700, dew_env: d700 },  // d700 selten verfügbar
+        { z: 3012, p:  700,    T_env: t700, dew_env: d700 },
     ];
 
-    // ── Parceltemperatur an jedem Stützpunkt ─────────────────────────────
-    // Unterhalb LCL: trocken-adiabatisch; darüber: feucht-adiabatisch (theta_e)
     const parcels = levels.map(lv => {
         let Tp_c;
         if (lv.z <= z_LCL) {
             Tp_c = parcelTempDry(lv.z);
         } else {
-            // Ersatzwert: LCL-Temp als Startpunkt minus grobe MALR-Abkühlung
             const dz_from_LCL = lv.z - z_LCL;
             const guess = T_LCL - 6.0 * (dz_from_LCL / 1000);
             Tp_c = parcelTemp(lv.p, guess);
@@ -543,8 +547,6 @@ function calcCIN(hour, rawLI = 99) {
         return Tp_c;
     });
 
-    // ── Auftrieb (buoyancy) an jedem Stützpunkt ──────────────────────────
-    // b = g * (T_v_parcel - T_v_env) / T_v_env
     const g = 9.81;
     const buoyancy = levels.map((lv, i) => {
         const tv_p = T_v_parcel(parcels[i], lv.p);
@@ -552,8 +554,6 @@ function calcCIN(hour, rawLI = 99) {
         return g * (tv_p - tv_e) / tv_e;
     });
 
-    // ── Trapez-Integration: CIN nur dort, wo b < 0 ───────────────────────
-    // CIN = ∫ b dz, summiert über alle Abschnitte mit negativem Auftrieb
     let cin = 0;
     for (let i = 0; i < levels.length - 1; i++) {
         const b1 = buoyancy[i];
@@ -561,20 +561,14 @@ function calcCIN(hour, rawLI = 99) {
         const dz = levels[i + 1].z - levels[i].z;
 
         if (b1 <= 0 && b2 <= 0) {
-            // Ganzer Abschnitt negativ → volle Trapezfläche
             cin += 0.5 * (b1 + b2) * dz;
-
         } else if (b1 < 0 && b2 > 0) {
-            // Nulldurchgang innerhalb: nur den negativen Teil integrieren
-            const frac = b1 / (b1 - b2);   // Anteil bis Nulldurchgang
+            const frac = b1 / (b1 - b2);
             cin += 0.5 * b1 * (frac * dz);
-
         } else if (b1 > 0 && b2 < 0) {
-            // Nulldurchgang: nur den negativen Teil ab Nulldurchgang
             const frac = b1 / (b1 - b2);
             cin += 0.5 * b2 * ((1 - frac) * dz);
         }
-        // b1 >= 0 && b2 >= 0 → kein Beitrag zu CIN
     }
 
     return Math.round(Math.max(-500, Math.min(0, cin)));
@@ -689,12 +683,86 @@ function calcShowalter(hour) {
     return Math.round((t500 - Tp500) * 10) / 10;
 }
 
-function categorizeRisk(prob) {
+function calcSTP(hour) {
+    const cape = hour.cape ?? 0;
+    if (cape < 100) return 0;
+
+    const cin = hour.cin ?? calcCIN(hour);
+
+    const ws925 = hour.wind_speed_925hPa ?? 0;
+    const wd925 = hour.windDir925 ?? 0;       // FIX: war wind_direction_925hPa
+    const ws850 = hour.wind_speed_850hPa ?? 0;
+    const wd850 = hour.windDir850 ?? 0;       // FIX: war wind_direction_850hPa
+    const ws500 = hour.wind_speed_500hPa ?? 0;
+
+    const du = ws500 * Math.cos(wd850 * Math.PI / 180) - ws925 * Math.cos(wd925 * Math.PI / 180);
+    const dv = ws500 * Math.sin(wd850 * Math.PI / 180) - ws925 * Math.sin(wd925 * Math.PI / 180);
+    const ebwd = Math.sqrt(du * du + dv * dv);
+
+    const ws10  = hour.wind ?? 0;             // FIX: war wind_speed_10m
+    const ws1km = ws925;
+    const ws3km = ws850;
+    const srh   = Math.max(0, ((ws1km - ws10) * 50 + (ws3km - ws10) * 30));
+
+    const t2m  = hour.temperature ?? 15;
+    const td2m = hour.dew ?? 5;
+    const lcl_height = Math.max(0, (t2m - td2m) * 122);
+
+    const cape_term = Math.min(cape / 1500, 1.5);
+    const srh_term  = Math.min(srh / 150, 3.0);
+    const ebwd_term = ebwd >= 12 ? Math.min(ebwd / 12, 1.5) : ebwd / 12;
+    const lcl_term  = lcl_height <= 1000 ? 1.0 : Math.max(0, (2000 - lcl_height) / 1000);
+    const cin_term  = cin >= -50 ? 1.0 : cin <= -200 ? 0 : (cin + 200) / 150;
+
+    const stp = cape_term * srh_term * ebwd_term * lcl_term * cin_term;
+    return Math.round(stp * 100) / 100;
+}
+
+// FIX: shear erwartet m/s — Aufrufer muss calcShear(hour) / 3.6 übergeben
+function calcSCP(cape, shearMS, srh, cin) {
+    if (cape < 100 || shearMS < 12.5 || srh < 40) return 0;
+    const magCin = -Math.min(0, cin);
+    const cinT   = magCin < 40 ? 1.0 : Math.max(0.1, 1 - (magCin-40)/200);
+    return Math.max(0, (cape/1000) * Math.min(srh/50,4) * Math.min(shearMS/12,1.5) * cinT);
+}
+
+function calcEHI(hour) {
+    const cape = hour.cape ?? 0;
+    const srh1 = calcSRH(hour, '0-1km');
+    return Math.max(0, (cape * srh1) / 160000);
+}
+
+function categorizeRisk(prob, hour = null) {
     const p = Math.max(0, Math.min(100, Math.round(prob ?? 0)));
-    if (p >= 70) return { level: 3, label: 'high' };
-    if (p >= 45) return { level: 2, label: 'moderate' };
-    if (p >= 15) return { level: 1, label: 'tstorm' };
-    return { level: 0, label: 'none' };
+
+    if (!hour) {
+        if (p >= 70) return { level: 5, label: 'high' };
+        if (p >= 55) return { level: 4, label: 'moderate' };
+        if (p >= 35) return { level: 3, label: 'enhanced' };
+        if (p >= 20) return { level: 2, label: 'slight' };
+        if (p >=  5) return { level: 1, label: 'marginal' };
+        return       { level: 0, label: 'none' };
+    }
+
+    // FIX: calcSCP korrekt mit 4 Parametern + shear in m/s aufrufen
+    const shearMS = calcShear(hour) / 3.6;
+    const srh3    = calcSRH(hour, '0-3km');
+    const scp     = calcSCP(hour.cape ?? 0, shearMS, srh3, hour.cin ?? 0);
+    const ehi     = calcEHI(hour);
+    const stp     = calcSTP(hour);
+    const cape    = hour.cape ?? 0;
+
+    if (p >= 60 && (scp >= 4 || ehi >= 2.5))                                 return { level: 5, label: 'high',     scp, ehi, stp };
+    if (p >= 70)                                                               return { level: 5, label: 'high',     scp, ehi, stp };
+    if (p >= 45 && (scp >= 2 || ehi >= 1.5 || (cape >= 1500 && shearMS >= 15))) return { level: 4, label: 'moderate', scp, ehi, stp };
+    if (p >= 60)                                                               return { level: 4, label: 'moderate', scp, ehi, stp };
+    if (p >= 30 && (scp >= 1 || ehi >= 0.8 || cape >= 800))                   return { level: 3, label: 'enhanced', scp, ehi, stp };
+    if (p >= 45)                                                               return { level: 3, label: 'enhanced', scp, ehi, stp };
+    if (p >= 15 && (scp >= 0.3 || cape >= 300 || shearMS >= 10))              return { level: 2, label: 'slight',   scp, ehi, stp };
+    if (p >= 30)                                                               return { level: 2, label: 'slight',   scp, ehi, stp };
+    if (p >=  5)                                                               return { level: 1, label: 'marginal', scp, ehi, stp };
+
+    return { level: 0, label: 'none', scp, ehi, stp };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -759,13 +827,12 @@ function calculateLightningProbability(hour) {
     const f_organisation = Math.max(f_shear, f_wms * 0.9);
 
     let f_saison;
-    if      (month >= 6 && month <= 8)  f_saison = 1.00;
-    else if (month === 5 || month === 9) f_saison = 0.90;
+    if      (month >= 6 && month <= 8)   f_saison = 1.00;
+    else if (month === 5 || month === 9)  f_saison = 0.90;
     else if (month === 4 || month === 10) f_saison = 0.80;
     else if (month === 3 || month === 11) f_saison = 0.70;
     else                                  f_saison = 0.60;
 
-    // Wintergewitter-Pfad (HSLC)
     const isHSLC = cape >= 30 && cape < 400 && shear >= 12 && meanRH >= 55;
     if (isHSLC && winterMode) {
         const wbzBonus = wbz < 1200 ? 1.2 : wbz < 1800 ? 1.0 : 0.7;
