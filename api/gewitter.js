@@ -179,15 +179,59 @@ export default async function handler(req, res) {
             return W[model]?.[idx] ?? (1/3);
         }
 
+        // ── Ensemble mit Konsens-Bonus + Ausreißer-Dämpfung ──────────────────
+        // Prinzip: Ein einzelnes Ausreißer-Modell soll die Vorhersage nicht
+        // dominieren. Gleichzeitig steigt das Vertrauen, wenn alle Modelle
+        // übereinstimmen (Konsens-Bonus).
+        //
+        // Ablauf:
+        // 1. Ausreißer-Erkennung: Modell > 2× Median → Gewicht halbiert
+        // 2. Gewichteter Mittelwert mit reduzierten Ausreißer-Gewichten
+        // 3. Konsens-Faktor aus normierter Standardabweichung:
+        //    σ → 0   → Faktor 1.15 (alle einig, Bonus +15%)
+        //    σ = 15  → Faktor 1.00 (neutrale Zone)
+        //    σ → 30+ → Faktor 0.75 (starke Uneinigkeit, Dämpfung)
+        // 4. Konsens-Label: "hoch" / "mittel" / "niedrig"
         function ensembleProb(probsByModel, lt) {
+            const entries = Object.entries(probsByModel).filter(([, p]) => p !== null);
+            if (entries.length === 0) return { prob: 0, konsens: 'niedrig', stddev: 0 };
+
+            const probs  = entries.map(([, p]) => p);
+            const sorted = [...probs].sort((a, b) => a - b);
+            const median = sorted.length % 2 === 1
+                ? sorted[Math.floor(sorted.length / 2)]
+                : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+
+            // Schritt 1: Ausreißer-Gewichte – Modell das mehr als 2× Median abweicht
+            // bekommt halbes Gewicht (floor: mind. 2% Median nötig, sonst kein Bezug)
             let ws = 0, tw = 0;
-            for (const [model, prob] of Object.entries(probsByModel)) {
-                if (prob === null) continue;
-                const w = getModelWeight(model, lt);
+            for (const [model, prob] of entries) {
+                let w = getModelWeight(model, lt);
+                const abweichung = Math.abs(prob - median);
+                const schwelle   = Math.max(2, median * 2);  // mind. 2%-Punkte Toleranz
+                if (abweichung > schwelle) w *= 0.5; // Ausreißer-Dämpfung
                 ws += prob * w;
                 tw += w;
             }
-            return tw === 0 ? 0 : Math.round(ws / tw);
+            const mean = tw === 0 ? 0 : ws / tw;
+
+            // Schritt 2: Standardabweichung der rohen Modellwerte
+            const variance = probs.reduce((s, p) => s + (p - mean) ** 2, 0) / probs.length;
+            const stddev   = Math.sqrt(variance);
+
+            // Schritt 3: Konsens-Faktor
+            // σ=0 → 1.15, σ=15 → 1.00, σ=30 → 0.75, σ≥40 → 0.65
+            const konsensFaktor = stddev <= 15
+                ? 1.15 - (stddev / 15) * 0.15          // 1.15 → 1.00
+                : 1.00 - ((stddev - 15) / 25) * 0.35;  // 1.00 → 0.65
+            const kf = Math.max(0.65, Math.min(1.15, konsensFaktor));
+
+            const prob = Math.round(Math.max(0, Math.min(100, mean * kf)));
+
+            // Schritt 4: Konsens-Label
+            const konsens = stddev <= 10 ? 'hoch' : stddev <= 22 ? 'mittel' : 'niedrig';
+
+            return { prob, konsens, stddev: Math.round(stddev * 10) / 10 };
         }
 
         function ensembleMean(values) {
@@ -214,12 +258,15 @@ export default async function handler(req, res) {
                 gw[model] = calculateLightningProbability(mh);
             }
 
-            const probability = ensembleProb(gw, lt);
+            const ens = ensembleProb(gw, lt);
 
             const vMH = Object.values(modelHours).filter(Boolean);
             return {
                 time: t,
-                probability,
+                probability:    ens.prob,
+                modell_konsens: ens.konsens,
+                modell_stddev:  ens.stddev,
+                modell_probs:   gw,
                 temperature: Math.round(ensembleMean(vMH.map(m => m.temperature)) * 10) / 10,
                 cape:        Math.round(ensembleMean(vMH.map(m => m.cape))),
                 shear:       Math.round(ensembleMean(vMH.map(m => calcShear(m))) * 10) / 10,
@@ -239,23 +286,32 @@ export default async function handler(req, res) {
             const hr = parseInt(tp);
             if (dp < currentDateStr || (dp === currentDateStr && hr < currentHour)) return;
             if (!daysMap.has(dp)) {
-                daysMap.set(dp, { date: dp, maxProbability: h.probability });
+                daysMap.set(dp, { date: dp, maxProbability: h.probability, peakKonsens: h.modell_konsens, peakStddev: h.modell_stddev });
             } else {
                 const d = daysMap.get(dp);
-                d.maxProbability = Math.max(d.maxProbability, h.probability);
+                if (h.probability > d.maxProbability) {
+                    d.maxProbability = h.probability;
+                    d.peakKonsens    = h.modell_konsens;
+                    d.peakStddev     = h.modell_stddev;
+                }
             }
         });
 
         const stunden = nextHours.map(h => ({
-            timestamp:     h.time,
-            gewitter:      h.probability,
-            gewitter_risk: categorizeRisk(h.probability),
+            timestamp:      h.time,
+            gewitter:       h.probability,
+            gewitter_risk:  categorizeRisk(h.probability),
+            modell_konsens: h.modell_konsens,
+            modell_stddev:  h.modell_stddev,
+            modell_probs:   h.modell_probs,
         }));
 
         const tage = Array.from(daysMap.values()).sort((a, b) => a.date.localeCompare(b.date)).map(day => ({
-            date:          day.date,
-            gewitter:      day.maxProbability,
-            gewitter_risk: categorizeRisk(day.maxProbability),
+            date:           day.date,
+            gewitter:       day.maxProbability,
+            gewitter_risk:  categorizeRisk(day.maxProbability),
+            modell_konsens: day.peakKonsens,
+            modell_stddev:  day.peakStddev,
         }));
 
         // Debug
@@ -314,13 +370,20 @@ export default async function handler(req, res) {
                     radiation: Math.round(mh.directRadiation),
                 };
             }
-            return { timestamp: h.time, ensemble_gewitter: h.probability, per_modell: perModel };
+            return {
+                timestamp:         h.time,
+                ensemble_gewitter: h.probability,
+                modell_konsens:    h.modell_konsens,
+                modell_stddev:     h.modell_stddev,
+                modell_probs:      h.modell_probs,
+                per_modell:        perModel,
+            };
         });
 
         return res.status(200).json({
             timezone, region, stunden, tage,
             debug: {
-                hinweis: 'AR-CHaMo v2 Methodik: Rädler 2018 + Battaglioli 2023 + ESSL/ESTOFEX/AStrop-Ansatz. Multiplikatives Gating statt additiver Scores. Alle Jahreszeiten kalibriert.',
+                hinweis: 'AR-CHaMo v2 Methodik: Rädler 2018 + Battaglioli 2023 + ESSL/ESTOFEX/AStrop-Ansatz. Multiplikatives Gating statt additiver Scores. Alle Jahreszeiten kalibriert. Ensemble: Ausreißer-Dämpfung (>2× Median → halbes Gewicht) + Konsens-Faktor (σ=0: +15%, σ=15: neutral, σ≥30: -25%).',
                 stunden: debugStunden,
             },
         });
