@@ -836,8 +836,11 @@ function calculateLightningProbability(hour) {
     const shearLow  = winterMode ? 5.0  : 6.0;
     const shearHigh = winterMode ? 12.0 : 18.0;
     const f_shear = linNorm(shear, shearLow, shearHigh);
-    const f_wms = linNorm(wmaxshear, 150, 550);
-    const f_organisation = Math.max(f_shear, f_wms * 0.9);
+    const f_wms   = linNorm(wmaxshear, 150, 550);
+
+    // FIX 3: CAPE-basierter Mindestfaktor für thermische Konvektion
+    const f_cape_org = cape > 1000 ? linNorm(cape, 1000, 3000) * 0.5 : 0;
+    const f_organisation = Math.max(f_shear, f_wms * 0.9, f_cape_org);
 
     let f_saison;
     if      (month >= 6 && month <= 8)   f_saison = 1.00;
@@ -846,27 +849,41 @@ function calculateLightningProbability(hour) {
     else if (month === 3 || month === 11) f_saison = 0.70;
     else                                  f_saison = 0.60;
 
+    // ── HSLC-Winterpfad ─────────────────────────────────────────────────
     const isHSLC = cape >= 30 && cape < 400 && shear >= 12 && meanRH >= 55;
     if (isHSLC && winterMode) {
+        // FIX 1: ESTOFEX-like Gate — stabile Atmosphäre blocken
         const midLap = calcMidLapseRate(hour.temp700, hour.temp500);
         if (li > 2.0 || midLap < 5.5) return 0;
-        const wbzBonus = wbz < 1200 ? 1.2 : wbz < 1800 ? 1.0 : 0.7;
+
+        const wbzBonus   = wbz < 1200 ? 1.2 : wbz < 1800 ? 1.0 : 0.7;
         const shearScore = linNorm(shear, 12, 25);
         const moistScore = linNorm(meanRH, 55, 80);
-        const instScore  = linNorm(li, 2.0, -1.0);
+        const instScore  = linNorm(li, 2.0, -1.0); // FIX 1: kein Math.max(0.3) mehr
         const cinScore   = linNorm(cin, -150, -10);
-        let pWinter = shearScore * moistScore * Math.max(instScore, 0.3) * cinScore * wbzBonus * 55;
+        let pWinter = shearScore * moistScore * instScore * cinScore * wbzBonus * 55;
         pWinter *= f_saison;
         return Math.min(60, Math.max(0, Math.round(pWinter)));
     }
 
+    // ── Haupt-Gates ─────────────────────────────────────────────────────
     if (f_feuchte < 0.06) return 0;
-    if (f_inst < 0.06) return 0;
-    if (magCin > 120 && !isFrontal && shear < 15) return 0;
+    if (f_inst < 0.06)    return 0;
+
+    // FIX 2: CIN-Gate dynamisch — Scherung und CAPE gegenrechnen
+    const cinThreshold = 120
+        + Math.max(0, (shear - 15) * 8)
+        + Math.max(0, (cape - 500) * 0.1);
+    if (magCin > cinThreshold && !isFrontal) return 0;
+
     if (cape < 50 && li > 1.0 && shear < 10) return 0;
 
+    // ── Basiswahrscheinlichkeit ──────────────────────────────────────────
     const pBase = f_inst * f_feuchte * f_ausloesung * f_organisation * f_saison;
-    if (pBase < 0.04) return 0;
+
+    // FIX 4: pBase-Schwelle CAPE-abhängig
+    const pBaseThreshold = cape > 500 ? 0.02 : cape > 200 ? 0.03 : 0.04;
+    if (pBase < pBaseThreshold) return 0;
 
     const pRaw = 100 * Math.pow(Math.min(pBase, 0.9) / 0.9, 0.65);
     const p = Math.round(Math.max(0, Math.min(100, pRaw)));
