@@ -746,7 +746,6 @@ function categorizeRisk(prob, hour = null) {
         return       { level: 0, label: 'none' };
     }
 
-    // FIX: calcSCP korrekt mit 4 Parametern + shear in m/s aufrufen
     const shearMS = calcShear(hour) / 3.6;
     const srh3    = calcSRH(hour, '0-3km');
     const scp     = calcSCP(hour.cape ?? 0, shearMS, srh3, hour.cin ?? 0);
@@ -754,15 +753,27 @@ function categorizeRisk(prob, hour = null) {
     const stp     = calcSTP(hour);
     const cape    = hour.cape ?? 0;
 
-    if (p >= 60 && (scp >= 4 || ehi >= 2.5))                                 return { level: 5, label: 'high',     scp, ehi, stp };
-    if (p >= 70)                                                               return { level: 5, label: 'high',     scp, ehi, stp };
-    if (p >= 45 && (scp >= 2 || ehi >= 1.5 || (cape >= 1500 && shearMS >= 15))) return { level: 4, label: 'moderate', scp, ehi, stp };
-    if (p >= 60)                                                               return { level: 4, label: 'moderate', scp, ehi, stp };
-    if (p >= 30 && (scp >= 1 || ehi >= 0.8 || cape >= 800))                   return { level: 3, label: 'enhanced', scp, ehi, stp };
-    if (p >= 45)                                                               return { level: 3, label: 'enhanced', scp, ehi, stp };
-    if (p >= 15 && (scp >= 0.3 || cape >= 300 || shearMS >= 10))              return { level: 2, label: 'slight',   scp, ehi, stp };
-    if (p >= 30)                                                               return { level: 2, label: 'slight',   scp, ehi, stp };
-    if (p >=  5)                                                               return { level: 1, label: 'marginal', scp, ehi, stp };
+    // HIGH: sehr hohe Wahrscheinlichkeit + extreme Parameter
+    if (p >= 65 && (scp >= 5 || ehi >= 3.0 || stp >= 3.0))  return { level: 5, label: 'high',     scp, ehi, stp };
+    if (p >= 75)                                              return { level: 5, label: 'high',     scp, ehi, stp };
+
+    // MODERATE: hohe Wahrscheinlichkeit + starke organisierte Umgebung
+    if (p >= 50 && (scp >= 3 || ehi >= 2.0 || stp >= 1.5 || (cape >= 2000 && shearMS >= 18)))
+                                                              return { level: 4, label: 'moderate', scp, ehi, stp };
+    if (p >= 65)                                              return { level: 4, label: 'moderate', scp, ehi, stp };
+
+    // ENHANCED: merkliche Wahrscheinlichkeit + gute konvektive Parameter
+    if (p >= 35 && (scp >= 1.5 || ehi >= 1.0 || stp >= 0.5 || (cape >= 1000 && shearMS >= 14)))
+                                                              return { level: 3, label: 'enhanced', scp, ehi, stp };
+    if (p >= 55)                                              return { level: 3, label: 'enhanced', scp, ehi, stp };
+
+    // SLIGHT: echtes Signal + unterstützende Umgebung
+    if (p >= 20 && (scp >= 0.5 || ehi >= 0.5 || stp >= 0.2 || (cape >= 500 && shearMS >= 12)))
+                                                              return { level: 2, label: 'slight',   scp, ehi, stp };
+    if (p >= 40)                                              return { level: 2, label: 'slight',   scp, ehi, stp };
+
+    // MARGINAL: schwaches Signal, kaum organisierte Umgebung
+    if (p >=  5)                                              return { level: 1, label: 'marginal', scp, ehi, stp };
 
     return { level: 0, label: 'none', scp, ehi, stp };
 }
