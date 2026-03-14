@@ -788,13 +788,19 @@ function calculateLightningProbability(hour) {
     const li      = hour.liftedIndex ?? calcLiftedIndex(hour);
     const cin     = hour.cin ?? 0;
     const magCin  = -Math.min(0, cin);
-    const shear   = calcShear(hour); 
+    const shear   = calcShear(hour);   // bereits in m/s
     const meanRH  = hour.meanRH ?? 50;
     const mlMR    = hour.mlMixRatio ?? 0;
     const wbz     = hour.wbzHeight ?? calcWBZHeight(hour);
     const pwat    = hour.pwat ?? 20;
     const month   = new Date(hour.time).getMonth() + 1;
     const rad     = hour.directRadiation ?? 0;
+
+    // precipProb kann 0 sein obwohl es regnet (ICON-Bug) → precipAcc als Fallback
+    const precipProb = Math.max(
+        hour.precip    ?? 0,
+        (hour.precipAcc ?? 0) > 0.05 ? 40 : 0   // wenn Niederschlag akkumuliert → mind. 40%
+    );
 
     const winterMode = month <= 3 || month >= 11;
     const springMode = month === 4 || month === 5 || month === 9 || month === 10;
@@ -814,44 +820,48 @@ function calculateLightningProbability(hour) {
     const isDay    = rad >= 150;
     const isNight  = rad < 20;
 
-    // Frontale Erkennung — shear bereits in m/s
-    const isFrontal       = shear >= 8  && meanRH >= 65 && (hour.precip ?? 0) >= 25;
-    const isFrontalWinter = meanRH >= 60 && wbz < 1800  && (hour.precip ?? 0) >= 20;
+    const isFrontal       = shear >= 8  && meanRH >= 65 && precipProb >= 25;
+    const isFrontalWinter = meanRH >= 60 && wbz < 1800  && precipProb >= 20;
 
     // ════════════════════════════════════════════════════════════════════
-    // PFAD 1: HSLC / Kaltluft- / Höhengewitter
-    // Kein CAPE nötig wenn Lapserate steil + WBZ niedrig + feucht
+    // PFAD 1: HSLC / Kaltluft- / Höhengewitter (Winter/Frühjahr)
     // ════════════════════════════════════════════════════════════════════
     const isHSLC = cape < 600
-        && shear >= 3          // m/s — sehr niedrige Schwelle für Kaltluftgewitter
+        && shear >= 3
         && meanRH >= 55
         && midLapse >= 6.0
         && wbz < 2500;
 
     if (isHSLC && (winterMode || springMode)) {
-        const wbzScore     = linNorm(wbz, 2500, 400);    // niedriger = besser
+        const wbzScore     = linNorm(wbz, 2500, 400);
         const lapseScore   = linNorm(midLapse, 6.0, 9.5);
         const shearScore   = linNorm(shear, 3, 20);
         const moistScore   = linNorm(meanRH, 55, 95);
-        const instScore    = linNorm(li, 3.0, -2.0);     // auch bei positivem LI möglich
+        const instScore    = linNorm(li, 3.0, -2.0);
         const cinScore     = cin >= -15 ? 1.0 : linNorm(cin, -200, -15);
-        const capeBonus    = cape >= 10 ? linNorm(cape, 0, 500) * 0.5 + 0.5 : 0.5;
+        const capeBonus    = cape >= 10 ? linNorm(cape, 0, 400) * 0.4 + 0.6 : 0.6;
         const frontalBonus = isFrontalWinter ? 1.5 : isFrontal ? 1.2 : 1.0;
-        const precipBonus  = (hour.precip ?? 0) >= 50 ? 1.3
-                           : (hour.precip ?? 0) >= 20 ? 1.1 : 1.0;
+        const precipBonus  = precipProb >= 50 ? 1.4
+                           : precipProb >= 20 ? 1.2 : 1.0;
         const pwatScore    = linNorm(pwat, 5, 30);
 
-        let p = wbzScore
-              * lapseScore
-              * shearScore
-              * moistScore
-              * Math.max(instScore, 0.15)  // Mindestwert — frontal auch ohne Instabilität
+        // Additive Kombination statt rein multiplikativ —
+        // verhindert dass ein schwacher Einzelwert alles killt
+        const envScore = (
+            wbzScore   * 0.25 +
+            lapseScore * 0.25 +
+            moistScore * 0.20 +
+            shearScore * 0.15 +
+            pwatScore  * 0.15
+        );
+
+        let p = envScore
+              * Math.max(instScore, 0.20)
               * cinScore
               * capeBonus
-              * pwatScore
               * frontalBonus
               * precipBonus
-              * 100;
+              * 120;
 
         p *= f_saison;
         return Math.min(70, Math.max(0, Math.round(p)));
@@ -918,16 +928,16 @@ function calculateLightningProbability(hour) {
     }
 
     // ════════════════════════════════════════════════════════════════════
-    // PFAD 5: Allgemeiner Auffang-Pfad (Grenzfälle)
+    // PFAD 5: Allgemeiner Auffang-Pfad
     // ════════════════════════════════════════════════════════════════════
     const liThreshHigh = winterMode ? 1.5 : springMode ? 2.5 : 3.0;
     const liThreshLow  = winterMode ? -1.0 : springMode ? -2.0 : -3.0;
     const mrLow        = winterMode ? 2.0 : 4.0;
     const mrHigh       = winterMode ? 6.0 : 9.0;
 
-    const f_instabil = linNorm(li, liThreshHigh, liThreshLow);
-    const capeFactor = cape > 0 ? Math.min(1.0, Math.log1p(cape / 200) / Math.log1p(5)) : 0;
-    const f_inst     = cape < 50
+    const f_instabil   = linNorm(li, liThreshHigh, liThreshLow);
+    const capeFactor   = cape > 0 ? Math.min(1.0, Math.log1p(cape / 200) / Math.log1p(5)) : 0;
+    const f_inst       = cape < 50
         ? linNorm(li, liThreshHigh, liThreshLow - 1.0)
         : Math.max(f_instabil, capeFactor * 0.4) * (0.6 + 0.4 * capeFactor);
 
@@ -939,9 +949,9 @@ function calculateLightningProbability(hour) {
     if (isFrontal) f_cin = Math.max(f_cin, 0.5);
 
     let f_tagesgang = 0.7;
-    if (isDay)                           f_tagesgang = 0.7 + 0.3 * linNorm(rad, 150, 700);
-    else if (srh1 >= 80 && shear >= 8)   f_tagesgang = 0.75;
-    else if (isNight && !winterMode)     f_tagesgang = 0.55;
+    if (isDay)                         f_tagesgang = 0.7 + 0.3 * linNorm(rad, 150, 700);
+    else if (srh1 >= 80 && shear >= 8) f_tagesgang = 0.75;
+    else if (isNight && !winterMode)   f_tagesgang = 0.55;
     if (winterMode) f_tagesgang = isFrontal ? 0.85 : 0.70;
 
     const wmaxshear    = calcWMAXSHEAR(cape, shear);
