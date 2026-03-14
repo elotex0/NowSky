@@ -740,7 +740,7 @@ function categorizeRisk(prob, hour = null) {
     if (!hour) {
         if (p >= 70) return { level: 5, label: 'high' };
         if (p >= 55) return { level: 4, label: 'moderate' };
-        if (p >= 35) return { level: 3, label: 'enhanced' };
+        if (p >= 40) return { level: 3, label: 'enhanced' };
         if (p >= 20) return { level: 2, label: 'slight' };
         if (p >=  5) return { level: 1, label: 'marginal' };
         return       { level: 0, label: 'none' };
@@ -748,32 +748,37 @@ function categorizeRisk(prob, hour = null) {
 
     const shearMS = calcShear(hour) / 3.6;
     const srh3    = calcSRH(hour, '0-3km');
+    const srh1    = calcSRH(hour, '0-1km');
     const scp     = calcSCP(hour.cape ?? 0, shearMS, srh3, hour.cin ?? 0);
     const ehi     = calcEHI(hour);
     const stp     = calcSTP(hour);
     const cape    = hour.cape ?? 0;
 
-    // HIGH: sehr hohe Wahrscheinlichkeit + extreme Parameter
-    if (p >= 65 && (scp >= 5 || ehi >= 3.0 || stp >= 3.0))  return { level: 5, label: 'high',     scp, ehi, stp };
-    if (p >= 75)                                              return { level: 5, label: 'high',     scp, ehi, stp };
+    // ── HIGH: Ausbruch, extreme Parameter ───────────────────────────────
+    // SCP≥8 oder EHI≥3 oder STP≥4 = klassischer Ausbruch
+    if (p >= 60 && (scp >= 8 || ehi >= 3.0 || stp >= 4.0))
+        return { level: 5, label: 'high', scp, ehi, stp };
 
-    // MODERATE: hohe Wahrscheinlichkeit + starke organisierte Umgebung
-    if (p >= 50 && (scp >= 3 || ehi >= 2.0 || stp >= 1.5 || (cape >= 2000 && shearMS >= 18)))
-                                                              return { level: 4, label: 'moderate', scp, ehi, stp };
-    if (p >= 65)                                              return { level: 4, label: 'moderate', scp, ehi, stp };
+    // ── MODERATE: weiträumig schwere Gewitter ────────────────────────────
+    // SCP≥4 = klare Superzellen-Umgebung, EHI≥2 = stark tornadogen
+    if (p >= 45 && (scp >= 4 || ehi >= 2.0 || stp >= 2.0 || (cape >= 2000 && shearMS >= 18 && srh3 >= 150)))
+        return { level: 4, label: 'moderate', scp, ehi, stp };
 
-    // ENHANCED: merkliche Wahrscheinlichkeit + gute konvektive Parameter
-    if (p >= 35 && (scp >= 1.5 || ehi >= 1.0 || stp >= 0.5 || (cape >= 1000 && shearMS >= 14)))
-                                                              return { level: 3, label: 'enhanced', scp, ehi, stp };
-    if (p >= 55)                                              return { level: 3, label: 'enhanced', scp, ehi, stp };
+    // ── ENHANCED: organisiert, flächiger als Slight ──────────────────────
+    // SCP≥2 = günstige Superzellen-Umgebung, STP≥1 = erhöhtes Tornado-Risiko
+    if (p >= 35 && (scp >= 2 || ehi >= 1.0 || stp >= 1.0 || (cape >= 1000 && shearMS >= 15 && srh3 >= 100)))
+        return { level: 3, label: 'enhanced', scp, ehi, stp };
 
-    // SLIGHT: echtes Signal + unterstützende Umgebung
-    if (p >= 20 && (scp >= 0.5 || ehi >= 0.5 || stp >= 0.2 || (cape >= 500 && shearMS >= 12)))
-                                                              return { level: 2, label: 'slight',   scp, ehi, stp };
-    if (p >= 40)                                              return { level: 2, label: 'slight',   scp, ehi, stp };
+    // ── SLIGHT: organisierte Gewitter, nicht flächendeckend ─────────────
+    // SCP≥0.5 = ansatzweise Superzellen-Potential, STP≥0.2 = schwaches Tornado-Signal
+    // EHI≥0.3 = etwas Helizität + CAPE vorhanden
+    if (p >= 20 && (scp >= 0.5 || ehi >= 0.3 || stp >= 0.2 || (cape >= 500 && shearMS >= 12 && srh3 >= 60)))
+        return { level: 2, label: 'slight', scp, ehi, stp };
 
-    // MARGINAL: schwaches Signal, kaum organisierte Umgebung
-    if (p >=  5)                                              return { level: 1, label: 'marginal', scp, ehi, stp };
+    // ── MARGINAL: isoliert, begrenzte Organisation ───────────────────────
+    // Alles mit messbarem Signal aber ohne organisierte Umgebung
+    if (p >= 5)
+        return { level: 1, label: 'marginal', scp, ehi, stp };
 
     return { level: 0, label: 'none', scp, ehi, stp };
 }
