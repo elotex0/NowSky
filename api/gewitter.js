@@ -783,9 +783,6 @@ function categorizeRisk(prob, hour = null) {
     return { level: 0, label: 'none', scp, ehi, stp };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// KERN: MULTIPLIKATIVES GEWITTERMODELL (AR-CHaMo v2)
-// ═══════════════════════════════════════════════════════════════════════════
 function calculateLightningProbability(hour) {
     const cape   = Math.max(0, hour.cape ?? 0);
     const li     = hour.liftedIndex ?? calcLiftedIndex(hour);
@@ -800,6 +797,46 @@ function calculateLightningProbability(hour) {
     const winterMode = month <= 3 || month >= 11;
     const springMode = month === 4 || month === 5 || month === 9 || month === 10;
 
+    // ── Saisonale Faktoren ───────────────────────────────────────────────
+    let f_saison;
+    if      (month >= 6 && month <= 8)   f_saison = 1.00;
+    else if (month === 5 || month === 9)  f_saison = 0.90;
+    else if (month === 4 || month === 10) f_saison = 0.80;
+    else if (month === 3 || month === 11) f_saison = 0.70;
+    else                                  f_saison = 0.60;
+
+    // ── Frontale Erkennung (früh, wird in mehreren Pfaden gebraucht) ─────
+    const midLapse       = calcMidLapseRate(hour.temp700, hour.temp500);
+    const isFrontal      = shear >= 12 && meanRH >= 65 && (hour.precip ?? 0) >= 30;
+    const isFrontalWinter = meanRH >= 65 && wbz < 1500 && (hour.precip ?? 0) >= 30;
+
+    // ══════════════════════════════════════════════════════════════════════
+    // HSLC-PFAD: Wintergewitter / Kaltfront
+    // Typisch März: CAPE 20-500, hohe RH, niedrige WBZ, steile Lapserate
+    // ══════════════════════════════════════════════════════════════════════
+    const isHSLC = cape >= 20 && cape < 500
+        && shear >= 5
+        && (meanRH >= 55 || isFrontalWinter);
+
+    if (isHSLC && winterMode) {
+        const wbzBonus    = wbz < 1000 ? 1.4 : wbz < 1500 ? 1.2 : wbz < 2000 ? 1.0 : 0.6;
+        const lapseBonus  = midLapse >= 7.5 ? 1.3 : midLapse >= 6.5 ? 1.1 : 1.0;
+        const shearScore  = linNorm(shear, 5, 20);
+        const moistScore  = linNorm(meanRH, 55, 90);
+        const instScore   = linNorm(li, 2.0, -1.0);
+        // FIX: cinScore — bei cin=0 soll das KEIN Problem sein → max mit 1.0 wenn kein CIN
+        const cinScore    = cin >= -10 ? 1.0 : linNorm(cin, -150, -10);
+        const frontalBonus = isFrontalWinter ? 1.3 : 1.0;
+
+        let pWinter = shearScore * moistScore * Math.max(instScore, 0.25)
+                    * cinScore * wbzBonus * lapseBonus * frontalBonus * 60;
+        pWinter *= f_saison;
+        return Math.min(65, Math.max(0, Math.round(pWinter)));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // HAUPT-PFAD: Sommergewitter / CAPE-getrieben
+    // ══════════════════════════════════════════════════════════════════════
     const liThreshHigh = winterMode ? 1.5 : springMode ? 2.5 : 3.0;
     const liThreshLow  = winterMode ? -1.0 : springMode ? -2.0 : -3.0;
 
@@ -810,88 +847,55 @@ function calculateLightningProbability(hour) {
         ? linNorm(li, liThreshHigh, liThreshLow - 1.0)
         : Math.max(f_instabil, capeFactor * 0.4) * (0.6 + 0.4 * capeFactor);
 
-    const f_meanRH = linNorm(meanRH, 35, 70);
-    const mrLow  = winterMode ? 2.0 : 4.0;
-    const mrHigh = winterMode ? 6.0 : 9.0;
-    const f_mlMR = linNorm(mlMR, mrLow, mrHigh);
+    const f_meanRH  = linNorm(meanRH, 35, 70);
+    const mrLow     = winterMode ? 2.0 : 4.0;
+    const mrHigh    = winterMode ? 6.0 : 9.0;
+    const f_mlMR    = linNorm(mlMR, mrLow, mrHigh);
     const f_feuchte = Math.sqrt(f_meanRH * f_mlMR);
-
-    const isFrontal = shear >= 12 && meanRH >= 65 && (hour.precip ?? 0) >= 30;
 
     const cinLow  = winterMode ? -250 : -200;
     const cinHigh = winterMode ? -15  : -25;
     let f_cin = linNorm(cin, cinLow, cinHigh);
     if (isFrontal) f_cin = Math.max(f_cin, 0.5);
 
-    const rad       = hour.directRadiation ?? 0;
-    const isDay     = rad >= 150;
-    const isNight   = rad < 20;
-    const llj_night = (calcSRH(hour,'0-1km') >= 80) && shear >= 12;
+    const rad     = hour.directRadiation ?? 0;
+    const isDay   = rad >= 150;
+    const isNight = rad < 20;
+    const llj_night = (calcSRH(hour, '0-1km') >= 80) && shear >= 12;
 
     let f_tagesgang = 0.7;
-    if (isDay)            f_tagesgang = 0.7 + 0.3 * linNorm(rad, 150, 700);
-    else if (llj_night)   f_tagesgang = 0.75;
-    else if (isNight && !winterMode) f_tagesgang = 0.55;
-
+    if (isDay)                         f_tagesgang = 0.7 + 0.3 * linNorm(rad, 150, 700);
+    else if (llj_night)                f_tagesgang = 0.75;
+    else if (isNight && !winterMode)   f_tagesgang = 0.55;
     if (winterMode) f_tagesgang = isFrontal ? 0.85 : 0.70;
 
     const f_ausloesung = f_cin * f_tagesgang;
 
-    const wmaxshear = calcWMAXSHEAR(cape, shear);
-    const shearLow  = winterMode ? 5.0  : 6.0;
-    const shearHigh = winterMode ? 12.0 : 18.0;
-    const f_shear = linNorm(shear, shearLow, shearHigh);
-    const f_wms   = linNorm(wmaxshear, 150, 550);
-
-    // FIX 3: CAPE-basierter Mindestfaktor für thermische Konvektion
-    const f_cape_org = cape > 1000 ? linNorm(cape, 1000, 3000) * 0.5 : 0;
+    const wmaxshear   = calcWMAXSHEAR(cape, shear);
+    const shearLow    = winterMode ? 5.0  : 6.0;
+    const shearHigh   = winterMode ? 12.0 : 18.0;
+    const f_shear     = linNorm(shear, shearLow, shearHigh);
+    const f_wms       = linNorm(wmaxshear, 150, 550);
+    const f_cape_org  = cape > 1000 ? linNorm(cape, 1000, 3000) * 0.5 : 0;
     const f_organisation = Math.max(f_shear, f_wms * 0.9, f_cape_org);
 
-    let f_saison;
-    if      (month >= 6 && month <= 8)   f_saison = 1.00;
-    else if (month === 5 || month === 9)  f_saison = 0.90;
-    else if (month === 4 || month === 10) f_saison = 0.80;
-    else if (month === 3 || month === 11) f_saison = 0.70;
-    else                                  f_saison = 0.60;
-
-    // ── HSLC-Winterpfad ─────────────────────────────────────────────────
-    const isHSLC = cape >= 30 && cape < 400 && shear >= 12 && meanRH >= 55;
-    if (isHSLC && winterMode) {
-        // FIX 1: ESTOFEX-like Gate — stabile Atmosphäre blocken
-        const midLap = calcMidLapseRate(hour.temp700, hour.temp500);
-        if (li > 2.0 || midLap < 5.5) return 0;
-
-        const wbzBonus   = wbz < 1200 ? 1.2 : wbz < 1800 ? 1.0 : 0.7;
-        const shearScore = linNorm(shear, 12, 25);
-        const moistScore = linNorm(meanRH, 55, 80);
-        const instScore  = linNorm(li, 2.0, -1.0); // FIX 1: kein Math.max(0.3) mehr
-        const cinScore   = linNorm(cin, -150, -10);
-        let pWinter = shearScore * moistScore * instScore * cinScore * wbzBonus * 55;
-        pWinter *= f_saison;
-        return Math.min(60, Math.max(0, Math.round(pWinter)));
-    }
-
-    // ── Haupt-Gates ─────────────────────────────────────────────────────
+    // ── Gates ────────────────────────────────────────────────────────────
     if (f_feuchte < 0.06) return 0;
     if (f_inst < 0.06)    return 0;
 
-    // FIX 2: CIN-Gate dynamisch — Scherung und CAPE gegenrechnen
     const cinThreshold = 120
         + Math.max(0, (shear - 15) * 8)
         + Math.max(0, (cape - 500) * 0.1);
     if (magCin > cinThreshold && !isFrontal) return 0;
+    if (cape < 50 && li > 1.0 && shear < 10 && !isFrontal) return 0;
 
-    if (cape < 50 && li > 1.0 && shear < 10) return 0;
-
-    // ── Basiswahrscheinlichkeit ──────────────────────────────────────────
     const pBase = f_inst * f_feuchte * f_ausloesung * f_organisation * f_saison;
 
-    // FIX 4: pBase-Schwelle CAPE-abhängig
     const pBaseThreshold = cape > 500 ? 0.02 : cape > 200 ? 0.03 : 0.04;
     if (pBase < pBaseThreshold) return 0;
 
     const pRaw = 100 * Math.pow(Math.min(pBase, 0.9) / 0.9, 0.65);
-    const p = Math.round(Math.max(0, Math.min(100, pRaw)));
+    const p    = Math.round(Math.max(0, Math.min(100, pRaw)));
     return p < 5 ? 0 : p;
 }
 
