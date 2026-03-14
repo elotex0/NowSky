@@ -784,28 +784,23 @@ function categorizeRisk(prob, hour = null) {
 }
 
 function calculateLightningProbability(hour) {
-    const cape    = Math.max(0, hour.cape ?? 0);
-    const li      = hour.liftedIndex ?? calcLiftedIndex(hour);
-    const cin     = hour.cin ?? 0;
-    const magCin  = -Math.min(0, cin);
-    const shear   = calcShear(hour);   // bereits in m/s
-    const meanRH  = hour.meanRH ?? 50;
-    const mlMR    = hour.mlMixRatio ?? 0;
-    const wbz     = hour.wbzHeight ?? calcWBZHeight(hour);
-    const pwat    = hour.pwat ?? 20;
-    const month   = new Date(hour.time).getMonth() + 1;
-    const rad     = hour.directRadiation ?? 0;
-
-    // precipProb kann 0 sein obwohl es regnet (ICON-Bug) → precipAcc als Fallback
-    const precipProb = Math.max(
-        hour.precip    ?? 0,
-        (hour.precipAcc ?? 0) > 0.05 ? 40 : 0   // wenn Niederschlag akkumuliert → mind. 40%
-    );
+    const cape   = Math.max(0, hour.cape ?? 0);
+    const li     = hour.liftedIndex ?? calcLiftedIndex(hour);
+    const cin    = hour.cin ?? 0;
+    const magCin = -Math.min(0, cin);
+    const shear  = calcShear(hour);   // m/s
+    const meanRH = hour.meanRH ?? 50; // Mittel 850/700/500 hPa — AR-CHaMo Kernparameter
+    const mlMR   = hour.mlMixRatio ?? 0;
+    const wbz    = hour.wbzHeight ?? calcWBZHeight(hour);
+    const pwat   = hour.pwat ?? 20;
+    const month  = new Date(hour.time).getMonth() + 1;
+    const rad    = hour.directRadiation ?? 0;
 
     const winterMode = month <= 3 || month >= 11;
     const springMode = month === 4 || month === 5 || month === 9 || month === 10;
     const summerMode = month >= 6 && month <= 8;
 
+    // ── Saisonaler Basiswert (Europa-Klimatologie) ───────────────────────
     let f_saison;
     if      (summerMode)                  f_saison = 1.00;
     else if (month === 5 || month === 9)  f_saison = 0.90;
@@ -819,158 +814,127 @@ function calculateLightningProbability(hour) {
     const lcl      = calcLCLHeight(hour.temperature, hour.dew);
     const isDay    = rad >= 150;
     const isNight  = rad < 20;
+    const precipAcc = hour.precipAcc ?? 0;
 
-    const isFrontal       = shear >= 8  && meanRH >= 65 && precipProb >= 25;
-    const isFrontalWinter = meanRH >= 60 && wbz < 1800  && precipProb >= 20;
-
-    // ════════════════════════════════════════════════════════════════════
-    // PFAD 1: HSLC / Kaltluft- / Höhengewitter (Winter/Frühjahr)
-    // ════════════════════════════════════════════════════════════════════
-    const isHSLC = cape < 600
-        && shear >= 3
-        && meanRH >= 55
-        && midLapse >= 6.0
-        && wbz < 2500;
-
-    if (isHSLC && (winterMode || springMode)) {
-        const wbzScore     = linNorm(wbz, 2500, 400);
-        const lapseScore   = linNorm(midLapse, 6.0, 9.5);
-        const shearScore   = linNorm(shear, 3, 20);
-        const moistScore   = linNorm(meanRH, 55, 95);
-        const instScore    = linNorm(li, 3.0, -2.0);
-        const cinScore     = cin >= -15 ? 1.0 : linNorm(cin, -200, -15);
-        const capeBonus    = cape >= 10 ? linNorm(cape, 0, 400) * 0.4 + 0.6 : 0.6;
-        const frontalBonus = isFrontalWinter ? 1.5 : isFrontal ? 1.2 : 1.0;
-        const precipBonus  = precipProb >= 50 ? 1.4
-                           : precipProb >= 20 ? 1.2 : 1.0;
-        const pwatScore    = linNorm(pwat, 5, 30);
-
-        // Additive Kombination statt rein multiplikativ —
-        // verhindert dass ein schwacher Einzelwert alles killt
-        const envScore = (
-            wbzScore   * 0.25 +
-            lapseScore * 0.25 +
-            moistScore * 0.20 +
-            shearScore * 0.15 +
-            pwatScore  * 0.15
-        );
-
-        let p = envScore
-              * Math.max(instScore, 0.20)
-              * cinScore
-              * capeBonus
-              * frontalBonus
-              * precipBonus
-              * 120;
-
-        p *= f_saison;
-        return Math.min(70, Math.max(0, Math.round(p)));
-    }
+    // precipProb: ICON-Bug — precipAcc als Fallback
+    const precipProb = Math.max(
+        hour.precip ?? 0,
+        precipAcc > 0.1 ? 30 : 0
+    );
 
     // ════════════════════════════════════════════════════════════════════
-    // PFAD 2: Luftmassengewitter (thermisch, Sommer)
+    // KERN: AR-CHaMo P(storm) — LI × RH (Rädler 2018)
+    // "highest probability with LI < -5K and RH > 65%"
+    // RH-Abhängigkeit sehr stark — unter 50% RH stark supprimiert
     // ════════════════════════════════════════════════════════════════════
-    const isAirmass = cape >= 300
-        && isDay && rad >= 200
-        && li <= 0
-        && magCin <= 60
-        && shear < 15;
 
-    if (isAirmass) {
-        const capeScore = linNorm(cape, 300, 2500);
-        const radScore  = linNorm(rad, 200, 800);
-        const liScore   = linNorm(li, 0, -4);
-        const rhScore   = linNorm(meanRH, 40, 75);
-        const cinScore  = linNorm(cin, -60, 0);
+    // Harter RH-Suppressor: unter 45% meanRH fast keine Gewitter möglich
+    if (meanRH < 45) return 0;
 
-        let p = capeScore * radScore * Math.max(liScore, 0.1) * rhScore * cinScore * 90;
-        p *= f_saison;
-        return Math.min(85, Math.max(0, Math.round(p)));
-    }
+    // ── Instabilitäts-Score (LI-basiert, AR-CHaMo konform) ──────────────
+    // LI < -5: maximale Instabilität
+    // LI 0..+3: schwach stabil, trotzdem möglich bei hoher RH
+    // LI > +4: kein Gewitter
+    const liScore = li >= 4.0  ? 0
+                  : li >= 3.0  ? 0.03
+                  : li >= 2.0  ? 0.07
+                  : li >= 1.0  ? 0.13
+                  : li >= 0.0  ? 0.22
+                  : li >= -1.0 ? 0.38
+                  : li >= -2.0 ? 0.55
+                  : li >= -3.0 ? 0.70
+                  : li >= -4.0 ? 0.83
+                  : li >= -5.0 ? 0.92
+                  :              1.00;
 
-    // ════════════════════════════════════════════════════════════════════
-    // PFAD 3: Organisierte Konvektion (Multicell / Squall Line)
-    // ════════════════════════════════════════════════════════════════════
-    const isOrganized = cape >= 500
-        && shear >= 8
-        && (srh3 >= 50 || meanRH >= 60);
+    // ── Feuchte-Score (RH 850/700/500 Mittel, AR-CHaMo Kernparameter) ───
+    // Unter 50%: stark supprimiert; über 70%: volle Unterstützung
+    const rhScore = meanRH >= 80 ? 1.00
+                  : meanRH >= 70 ? 0.85
+                  : meanRH >= 60 ? 0.65
+                  : meanRH >= 55 ? 0.50
+                  : meanRH >= 50 ? 0.30
+                  :                0.10;
 
-    if (isOrganized) {
-        const capeScore  = linNorm(cape, 500, 3000);
-        const shearScore = linNorm(shear, 8, 25);
-        const srhScore   = linNorm(srh3, 50, 300);
-        const rhScore    = linNorm(meanRH, 50, 80);
-        const cinScore   = cin >= -30 ? 1.0 : linNorm(cin, -200, -30);
-        const lclFactor  = lcl < 1000 ? 1.1 : lcl < 2000 ? 1.0 : 0.8;
+    // AR-CHaMo Basis: multiplikativ LI × RH
+    const pBase_archamo = liScore * rhScore;
 
-        let p = capeScore
-              * Math.max(shearScore, srhScore * 0.8)
-              * rhScore * cinScore * lclFactor * 95;
-        p *= f_saison;
-        return Math.min(95, Math.max(0, Math.round(p)));
-    }
+    // ── Modifikatoren (additiv auf pBase) ────────────────────────────────
 
-    // ════════════════════════════════════════════════════════════════════
-    // PFAD 4: Superzelle
-    // ════════════════════════════════════════════════════════════════════
-    const scp = calcSCP(cape, shear, srh3, cin);
-    const ehi = calcEHI(hour);
+    // 1. Lapserate-Bonus: steile Lapserate kompensiert schwache Instabilität
+    //    Kritisch für Kaltluft-/Höhengewitter (dein Problem)
+    const lapseBonus = midLapse >= 8.5 ? 0.20
+                     : midLapse >= 8.0 ? 0.15
+                     : midLapse >= 7.5 ? 0.10
+                     : midLapse >= 7.0 ? 0.06
+                     : midLapse >= 6.5 ? 0.03
+                     : 0;
 
-    if ((scp >= 1 || ehi >= 1.0) && cape >= 800 && shear >= 12) {
-        const scpScore  = linNorm(scp, 1, 8);
-        const ehiScore  = linNorm(ehi, 1, 4);
-        const capeScore = linNorm(cape, 800, 4000);
-        const cinScore  = cin >= -30 ? 1.0 : linNorm(cin, -150, -30);
+    // 2. WBZ-Bonus: niedrige WBZ = günstig für Wintergewitter
+    const wbzBonus = !summerMode && wbz < 1000 ? 0.12
+                   : !summerMode && wbz < 1500 ? 0.08
+                   : !summerMode && wbz < 2000 ? 0.04
+                   : 0;
 
-        let p = Math.max(scpScore, ehiScore) * capeScore * cinScore * 100;
-        p *= f_saison;
-        return Math.min(100, Math.max(0, Math.round(p)));
-    }
+    // 3. CAPE-Bonus: ab 300 J/kg spürbar, sättigt bei ~1500 J/kg
+    const capeBonus = cape >= 1500 ? 0.15
+                    : cape >= 800  ? 0.10
+                    : cape >= 400  ? 0.07
+                    : cape >= 200  ? 0.04
+                    : cape >= 50   ? 0.02
+                    : 0;
 
-    // ════════════════════════════════════════════════════════════════════
-    // PFAD 5: Allgemeiner Auffang-Pfad
-    // ════════════════════════════════════════════════════════════════════
-    const liThreshHigh = winterMode ? 1.5 : springMode ? 2.5 : 3.0;
-    const liThreshLow  = winterMode ? -1.0 : springMode ? -2.0 : -3.0;
-    const mrLow        = winterMode ? 2.0 : 4.0;
-    const mrHigh       = winterMode ? 6.0 : 9.0;
+    // 4. Shear-Bonus: Organisation + Auslösung
+    const shearBonus = shear >= 18 ? 0.12
+                     : shear >= 12 ? 0.08
+                     : shear >= 8  ? 0.05
+                     : shear >= 5  ? 0.02
+                     : 0;
 
-    const f_instabil   = linNorm(li, liThreshHigh, liThreshLow);
-    const capeFactor   = cape > 0 ? Math.min(1.0, Math.log1p(cape / 200) / Math.log1p(5)) : 0;
-    const f_inst       = cape < 50
-        ? linNorm(li, liThreshHigh, liThreshLow - 1.0)
-        : Math.max(f_instabil, capeFactor * 0.4) * (0.6 + 0.4 * capeFactor);
+    // 5. Tagesgang: Sommer-Konvektion tagsüber begünstigt
+    const dayBonus = isDay && summerMode  ? 0.08
+                   : isDay && !winterMode ? 0.04
+                   : isNight && !winterMode && srh1 >= 80 ? 0.03  // LLJ
+                   : 0;
 
-    const f_meanRH  = linNorm(meanRH, 35, 70);
-    const f_mlMR    = linNorm(mlMR, mrLow, mrHigh);
-    const f_feuchte = Math.sqrt(f_meanRH * f_mlMR);
+    // 6. Frontal/Niederschlag-Bonus: synoptische Hebung
+    const frontalBonus = precipProb >= 70 ? 0.10
+                       : precipProb >= 40 ? 0.06
+                       : precipProb >= 20 ? 0.03
+                       : 0;
 
-    let f_cin = linNorm(cin, winterMode ? -250 : -200, winterMode ? -15 : -25);
-    if (isFrontal) f_cin = Math.max(f_cin, 0.5);
+    // 7. Mixing Ratio: Niederschlagswasser
+    const mlMRBonus = mlMR >= 10 ? 0.08
+                    : mlMR >= 7  ? 0.05
+                    : mlMR >= 5  ? 0.02
+                    : mlMR >= 3  ? 0.01
+                    : 0;
 
-    let f_tagesgang = 0.7;
-    if (isDay)                         f_tagesgang = 0.7 + 0.3 * linNorm(rad, 150, 700);
-    else if (srh1 >= 80 && shear >= 8) f_tagesgang = 0.75;
-    else if (isNight && !winterMode)   f_tagesgang = 0.55;
-    if (winterMode) f_tagesgang = isFrontal ? 0.85 : 0.70;
+    // ── Gesamt-Score ─────────────────────────────────────────────────────
+    const pTotal = pBase_archamo
+                 + lapseBonus
+                 + wbzBonus
+                 + capeBonus
+                 + shearBonus
+                 + dayBonus
+                 + frontalBonus
+                 + mlMRBonus;
 
-    const wmaxshear    = calcWMAXSHEAR(cape, shear);
-    const f_shear      = linNorm(shear, winterMode ? 5.0 : 6.0, winterMode ? 12.0 : 18.0);
-    const f_wms        = linNorm(wmaxshear, 150, 550);
-    const f_organisation = Math.max(f_shear, f_wms * 0.9);
+    // ── Harte Gates (nur extreme Suppression) ───────────────────────────
+    // CIN: nur bei sehr hohem CIN ohne synoptische Unterstützung killen
+    if (magCin > 150 && precipProb < 20 && shear < 8) return 0;
 
-    if (f_feuchte < 0.06) return 0;
-    if (f_inst < 0.06)    return 0;
-    const cinThresh = 120 + Math.max(0, (shear - 15) * 8) + Math.max(0, (cape - 500) * 0.1);
-    if (magCin > cinThresh && !isFrontal) return 0;
-    if (cape < 50 && li > 1.0 && shear < 5 && !isFrontal) return 0;
+    // Absolut stabile + trockene Luft ohne jegliche Unterstützung
+    if (li > 3.0 && meanRH < 55 && cape < 50) return 0;
 
-    const pBase = f_inst * f_feuchte * (f_cin * f_tagesgang) * f_organisation * f_saison;
-    if (pBase < 0.035) return 0;
+    // ── Skalierung auf 0-100% ────────────────────────────────────────────
+    // pTotal reicht typisch von 0 bis ~1.5
+    // Skalierungsfaktor so dass pTotal=1.0 → ~85%
+    const pRaw = Math.min(pTotal / 1.20, 1.0);
+    const pScaled = 100 * Math.pow(pRaw, 0.7);  // leichte Kompression hoher Werte
 
-    const pRaw = 100 * Math.pow(Math.min(pBase, 0.9) / 0.9, 0.65);
-    const p    = Math.round(Math.max(0, Math.min(100, pRaw)));
-    return p < 5 ? 0 : p;
+    const p = Math.round(pScaled * f_saison);
+    return p < 5 ? 0 : Math.min(100, p);
 }
 
 function calcWMAXSHEAR(cape, shear) {
