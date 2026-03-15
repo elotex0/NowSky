@@ -3,6 +3,7 @@ import { inflateSync } from "zlib";
 
 const BASE_SHORT = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos";
 const BASE_LONG  = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmoslong";
+const LONG_RUNS  = new Set(["04", "09", "16", "21"]);
 
 function interpolateHourly(data) {
   const entries = Object.entries(data)
@@ -142,7 +143,19 @@ export class OMFileR2 {
       this._fetchAllChunks(this.omUrlLong,  this.blocksLong,  lat, lon),
     ]);
 
-    const merged = { ...longResult, ...shortResult };
+    // Aktuellen Short-Run aus URL extrahieren z.B. /13/warnmos_2026031513.om → "13"
+    const runMatch   = this.omUrlShort.match(/\/(\d{2})\/warnmos_/);
+    const currentRun = runMatch ? runMatch[1] : null;
+
+    let merged;
+    if (LONG_RUNS.has(currentRun)) {
+      // Run 04/09/16/21 → Long hat Vorrang für alle Timestamps
+      merged = { ...shortResult, ...longResult };
+    } else {
+      // Normale Stunden → Short hat Vorrang für erste 24h
+      merged = { ...longResult, ...shortResult };
+    }
+
     const sorted = Object.fromEntries(
       Object.entries(merged).sort(([a], [b]) => new Date(a) - new Date(b))
     );
