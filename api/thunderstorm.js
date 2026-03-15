@@ -50,7 +50,6 @@ export default async function handler(req, res) {
 
     return res.json({
       W_GEW_01: { hourly, daily: dailyMax },
-      },
       meta: {
         lat,
         lon,
