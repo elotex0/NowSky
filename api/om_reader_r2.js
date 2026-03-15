@@ -24,6 +24,13 @@ function interpolateHourly(data) {
     const after  = entries.find(e => e.ts > t);
     if (!before) { result[tsStr] = after.val;  continue; }
     if (!after)  { result[tsStr] = before.val; continue; }
+
+    // Nicht interpolieren wenn einer der Werte 0 ist
+    if (before.val === 0 || after.val === 0) {
+      result[tsStr] = 0;
+      continue;
+    }
+
     const ratio = (t - before.ts) / (after.ts - before.ts);
     result[tsStr] = Math.round(before.val + ratio * (after.val - before.val));
   }
@@ -39,6 +46,8 @@ export class OMFileR2 {
     this.omUrlLong      = null;
     this.generatedShort = null;
     this.generatedLong  = null;
+    this.lastShortResult = null;
+    this.lastLongResult  = null;
   }
 
   async _loadSource(baseUrl) {
@@ -157,11 +166,19 @@ export class OMFileR2 {
 
     let merged;
     if (isLongRun && longIsNewer) {
-      // Long-Run 04/09/16/21 aktiv UND neuer als Short → Long hat Vorrang
-      merged = { ...shortResult, ...longResult };
+      // Long-Run 04/09/16/21 aktiv UND neuer → Long komplett, Short nur für Lücken
+      const lastLongTs = Object.keys(longResult).sort()[Object.keys(longResult).length - 1];
+      merged = { ...longResult };
+      for (const [ts, val] of Object.entries(shortResult)) {
+        if (ts > lastLongTs) merged[ts] = val;
+      }
     } else {
-      // Short neuer → Short hat Vorrang für erste 24h
-      merged = { ...longResult, ...shortResult };
+      // Short neuer → Short für Short-Zeitraum, Long nur danach
+      const lastShortTs = Object.keys(shortResult).sort()[Object.keys(shortResult).length - 1];
+      merged = { ...shortResult };
+      for (const [ts, val] of Object.entries(longResult)) {
+        if (ts > lastShortTs) merged[ts] = val;
+      }
     }
 
     const sorted = Object.fromEntries(
