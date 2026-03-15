@@ -5,6 +5,18 @@ const BASE_SHORT = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos"
 const BASE_LONG  = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmoslong";
 const LONG_RUNS  = new Set(["04", "09", "16", "21"]);
 
+function shiftMinus1h(data) {
+  const shifted = {};
+  for (const [ts, val] of Object.entries(data)) {
+    const d = new Date(ts.replace(" ", "T"));
+    d.setHours(d.getHours() - 1);
+    const pad = (n) => String(n).padStart(2, "0");
+    const newTs = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00:00`;
+    shifted[newTs] = val;
+  }
+  return shifted;
+}
+
 function interpolateHourly(data) {
   const entries = Object.entries(data)
     .map(([ts, val]) => ({ ts: new Date(ts), val }))
@@ -25,7 +37,6 @@ function interpolateHourly(data) {
     if (!before) { result[tsStr] = after.val;  continue; }
     if (!after)  { result[tsStr] = before.val; continue; }
 
-    // Nicht interpolieren wenn einer der Werte 0 ist
     if (before.val === 0 || after.val === 0) {
       result[tsStr] = 0;
       continue;
@@ -40,12 +51,12 @@ function interpolateHourly(data) {
 
 export class OMFileR2 {
   constructor() {
-    this.blocksShort    = null;
-    this.blocksLong     = null;
-    this.omUrlShort     = null;
-    this.omUrlLong      = null;
-    this.generatedShort = null;
-    this.generatedLong  = null;
+    this.blocksShort     = null;
+    this.blocksLong      = null;
+    this.omUrlShort      = null;
+    this.omUrlLong       = null;
+    this.generatedShort  = null;
+    this.generatedLong   = null;
     this.lastShortResult = null;
     this.lastLongResult  = null;
   }
@@ -152,8 +163,12 @@ export class OMFileR2 {
       this._fetchAllChunks(this.omUrlLong,  this.blocksLong,  lat, lon),
     ]);
 
-    this.lastShortResult = shortResult;
-    this.lastLongResult  = longResult;
+    // -1h Shift VOR dem Merge
+    const shortShifted = shiftMinus1h(shortResult);
+    const longShifted  = shiftMinus1h(longResult);
+
+    this.lastShortResult = shortShifted;
+    this.lastLongResult  = longShifted;
 
     // Runs aus URLs extrahieren
     const runMatchShort   = this.omUrlShort.match(/\/(\d{2})\/warnmos/);
@@ -166,17 +181,15 @@ export class OMFileR2 {
 
     let merged;
     if (isLongRun && longIsNewer) {
-      // Long-Run 04/09/16/21 aktiv UND neuer → Long komplett, Short nur für Lücken
-      const lastLongTs = Object.keys(longResult).sort()[Object.keys(longResult).length - 1];
-      merged = { ...longResult };
-      for (const [ts, val] of Object.entries(shortResult)) {
+      const lastLongTs = Object.keys(longShifted).sort()[Object.keys(longShifted).length - 1];
+      merged = { ...longShifted };
+      for (const [ts, val] of Object.entries(shortShifted)) {
         if (ts > lastLongTs) merged[ts] = val;
       }
     } else {
-      // Short neuer → Short für Short-Zeitraum, Long nur danach
-      const lastShortTs = Object.keys(shortResult).sort()[Object.keys(shortResult).length - 1];
-      merged = { ...shortResult };
-      for (const [ts, val] of Object.entries(longResult)) {
+      const lastShortTs = Object.keys(shortShifted).sort()[Object.keys(shortShifted).length - 1];
+      merged = { ...shortShifted };
+      for (const [ts, val] of Object.entries(longShifted)) {
         if (ts > lastShortTs) merged[ts] = val;
       }
     }
