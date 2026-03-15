@@ -27,9 +27,18 @@ export default async function handler(req, res) {
     const pad = (n) => String(n).padStart(2, "0");
     const currentHourStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:00:00`;
 
+    // Timestamps um 1 Stunde nach hinten verschieben (13:00 = 13-14 Uhr)
+    const shifted = {};
+    for (const [ts, val] of Object.entries(allResults)) {
+      const d = new Date(ts.replace(" ", "T"));
+      d.setHours(d.getHours() - 1);
+      const newTs = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00:00`;
+      shifted[newTs] = val;
+    }
+
     // Nur Timestamps ab aktueller Stunde
     const result = Object.fromEntries(
-      Object.entries(allResults).filter(([ts]) => ts >= currentHourStr)
+      Object.entries(shifted).filter(([ts]) => ts >= currentHourStr)
     );
 
     return res.json({
