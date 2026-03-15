@@ -20,7 +20,17 @@ export default async function handler(req, res) {
   try {
     const om = new OMFileR2();
     const interpolate = req.query.interpolate !== "false";
-    const result = await om.getAllForPoint(lat, lon, interpolate);
+    const allResults = await om.getAllForPoint(lat, lon, interpolate);
+
+    // UTC → Berlin Zeit
+    const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Berlin" }));
+    const pad = (n) => String(n).padStart(2, "0");
+    const currentHourStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:00:00`;
+
+    // Nur Timestamps ab aktueller Stunde
+    const result = Object.fromEntries(
+      Object.entries(allResults).filter(([ts]) => ts >= currentHourStr)
+    );
 
     return res.json({
       W_GEW_01: result,
@@ -29,6 +39,7 @@ export default async function handler(req, res) {
         lon,
         timesteps:    Object.keys(result).length,
         interpolated: interpolate,
+        from:         currentHourStr,
       },
     });
   } catch (err) {
