@@ -1,43 +1,56 @@
 // om_reader_r2.js
 import { inflateSync } from "zlib";
 
-const BASE_URL    = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos";
-const METADATA_URL = `${BASE_URL}/metadata.json`;
+const BASE_SHORT = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos";
+const BASE_LONG  = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmoslong";
 
 export class OMFileR2 {
   constructor() {
-    this.blocks = null;
-    this.omUrl  = null;
-    this.idxUrl = null;
+    this.blocksShort = null;
+    this.blocksLong  = null;
+    this.omUrlShort  = null;
+    this.omUrlLong   = null;
   }
 
-  async init() {
-    if (this.blocks) return;
-
-    // 1. Metadata laden → aktuelle Run + Dateiname
-    const metaRes = await fetch(METADATA_URL);
-    if (!metaRes.ok) throw new Error(`metadata.json fetch failed: ${metaRes.status}`);
+  async _loadSource(baseUrl) {
+    // Metadata laden
+    const metaRes = await fetch(`${baseUrl}/metadata.json`);
+    if (!metaRes.ok) throw new Error(`metadata.json fetch failed: ${metaRes.status} – ${baseUrl}/metadata.json`);
     const metadata = await metaRes.json();
 
     if (!metadata.runs || metadata.runs.length === 0) {
-      throw new Error("Keine Runs in metadata.json gefunden");
+      throw new Error(`Keine Runs in metadata.json: ${baseUrl}`);
     }
 
-    // Neuesten Run nehmen
     const latest = metadata.runs[metadata.runs.length - 1];
-    const run    = latest.run;
-    const file   = latest.file;
+    const omUrl  = `${baseUrl}/${latest.run}/${latest.file}.om`;
+    const idxUrl = `${baseUrl}/${latest.run}/${latest.file}.om.idx`;
 
-    this.omUrl  = `${BASE_URL}/${run}/${file}.om`;
-    this.idxUrl = `${BASE_URL}/${run}/${file}.om.idx`;
+    console.log(`Run geladen: ${omUrl}`);
 
-    console.log(`Aktueller Run: ${run} → ${this.omUrl}`);
+    // IDX laden
+    const idxRes = await fetch(idxUrl);
+    if (!idxRes.ok) throw new Error(`IDX fetch failed: ${idxRes.status} – ${idxUrl}`);
+    const blocks = await idxRes.json();
 
-    // 2. IDX laden
-    const idxRes = await fetch(this.idxUrl);
-    if (!idxRes.ok) throw new Error(`IDX fetch failed: ${idxRes.status} – URL: ${this.idxUrl}`);
-    this.blocks = await idxRes.json();
-    console.log(`Index geladen: ${this.blocks.length} Blocks`);
+    return { omUrl, blocks };
+  }
+
+  async init() {
+    if (this.blocksShort && this.blocksLong) return;
+
+    // Beide parallel laden
+    const [short, long] = await Promise.all([
+      this._loadSource(BASE_SHORT),
+      this._loadSource(BASE_LONG),
+    ]);
+
+    this.omUrlShort  = short.omUrl;
+    this.blocksShort = short.blocks;
+    this.omUrlLong   = long.omUrl;
+    this.blocksLong  = long.blocks;
+
+    console.log(`Short: ${this.blocksShort.length} Blocks, Long: ${this.blocksLong.length} Blocks`);
   }
 
   _getChunkIndex(header, lat, lon) {
@@ -58,14 +71,13 @@ export class OMFileR2 {
     return { chunkIndex, lx, ly, chunk };
   }
 
-  async getAllForPoint(lat, lon) {
-    await this.init();
-    if (this.blocks.length === 0) return {};
+  async _fetchAllChunks(omUrl, blocks, lat, lon) {
+    if (blocks.length === 0) return {};
 
     const { chunkIndex, lx, ly, chunk } =
-      this._getChunkIndex(this.blocks[0].header, lat, lon);
+      this._getChunkIndex(blocks[0].header, lat, lon);
 
-    const ranges = this.blocks.map((b) => ({
+    const ranges = blocks.map((b) => ({
       timestamp: b.header.timestamp,
       offset:    b.chunkOffsets[chunkIndex] + 4,
       len:       b.chunkLens[chunkIndex],
@@ -74,11 +86,11 @@ export class OMFileR2 {
     const minOffset = Math.min(...ranges.map((r) => r.offset));
     const maxOffset = Math.max(...ranges.map((r) => r.offset + r.len));
 
-    const res = await fetch(this.omUrl, {
+    const res = await fetch(omUrl, {
       headers: { Range: `bytes=${minOffset}-${maxOffset - 1}` },
     });
     if (!res.ok && res.status !== 206) {
-      throw new Error(`Bulk chunk fetch failed: ${res.status}`);
+      throw new Error(`Bulk chunk fetch failed: ${res.status} – ${omUrl}`);
     }
 
     const blob = Buffer.from(await res.arrayBuffer());
@@ -99,8 +111,30 @@ export class OMFileR2 {
     return result;
   }
 
+  async getAllForPoint(lat, lon) {
+    await this.init();
+
+    // Beide parallel fetchen
+    const [shortResult, longResult] = await Promise.all([
+      this._fetchAllChunks(this.omUrlShort, this.blocksShort, lat, lon),
+      this._fetchAllChunks(this.omUrlLong,  this.blocksLong,  lat, lon),
+    ]);
+
+    // Short hat Vorrang bei Duplikaten → Long zuerst, Short drüber
+    const merged = { ...longResult, ...shortResult };
+
+    // Sortiert nach Timestamp
+    return Object.fromEntries(
+      Object.entries(merged).sort(([a], [b]) => new Date(a) - new Date(b))
+    );
+  }
+
   getTimestamps() {
-    if (!this.blocks) throw new Error("init() noch nicht aufgerufen");
-    return this.blocks.map((b) => b.header.timestamp);
+    if (!this.blocksShort) throw new Error("init() noch nicht aufgerufen");
+    const shortTs = new Set(this.blocksShort.map((b) => b.header.timestamp));
+    const longTs  = this.blocksLong
+      .map((b) => b.header.timestamp)
+      .filter((ts) => !shortTs.has(ts));
+    return [...shortTs, ...longTs].sort((a, b) => new Date(a) - new Date(b));
   }
 }
