@@ -22,7 +22,7 @@ export default async function handler(req, res) {
   try {
     const om = new OMFileR2();
     const interpolate = req.query.interpolate !== "false";
-    const { data: allResults, generatedShort, generatedLong, currentRun, source } =
+    const { data: allResults, generatedShort, generatedLong, currentRunShort, currentRunLong, source } =
       await om.getAllForPoint(lat, lon, interpolate);
 
     // UTC → Berlin Zeit
@@ -34,24 +34,15 @@ export default async function handler(req, res) {
     const in24h    = new Date(now.getTime() + 24 * 3600000);
     const in24hStr = `${in24h.getFullYear()}-${pad(in24h.getMonth() + 1)}-${pad(in24h.getDate())} ${pad(in24h.getHours())}:00:00`;
 
-    // Timestamps -1h verschieben
-    const shifted = {};
-    for (const [ts, val] of Object.entries(allResults)) {
-      const d = new Date(ts.replace(" ", "T"));
-      d.setHours(d.getHours() - 1);
-      const newTs = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00:00`;
-      shifted[newTs] = val;
-    }
-
-    // Nächste 24h
+    // Nächste 24h — kein Shift mehr nötig
     const hourly = Object.fromEntries(
-      Object.entries(shifted).filter(([ts]) => ts >= currentHourStr && ts <= in24hStr)
+      Object.entries(allResults).filter(([ts]) => ts >= currentHourStr && ts <= in24hStr)
     );
 
     // Tages-Maxima ab heute
     const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
     const dailyMax = {};
-    for (const [ts, val] of Object.entries(shifted)) {
+    for (const [ts, val] of Object.entries(allResults)) {
       const day = ts.substring(0, 10);
       if (day < todayStr) continue;
       if (dailyMax[day] === undefined || val > dailyMax[day]) dailyMax[day] = val;
@@ -73,8 +64,9 @@ export default async function handler(req, res) {
         from:            currentHourStr,
         to:              in24hStr,
         updatedAt:       new Date(generatedShort) > new Date(generatedLong) ? generatedShort : generatedLong,
-        source,           
-        currentRun,                                            
+        source,
+        currentRunShort,
+        currentRunLong,
       },
     });
   } catch (err) {
