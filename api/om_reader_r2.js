@@ -164,6 +164,8 @@ export class OMFileR2 {
       data:           interpolate ? interpolateHourly(sorted) : sorted,
       generatedShort: this.generatedShort,
       generatedLong:  this.generatedLong,
+      currentRun:     currentRun,
+      source:         LONG_RUNS.has(currentRun) ? "long" : "short",
     };
   }
 
