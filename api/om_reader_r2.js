@@ -17,16 +17,12 @@ function interpolateHourly(data) {
 
   for (let t = new Date(first); t <= last; t = new Date(t.getTime() + 3600000)) {
     const tsStr = t.toISOString().replace("T", " ").substring(0, 19);
-
     const exact = entries.find(e => e.ts.getTime() === t.getTime());
     if (exact) { result[tsStr] = exact.val; continue; }
-
     const before = [...entries].reverse().find(e => e.ts < t);
     const after  = entries.find(e => e.ts > t);
-
-    if (!before) { result[tsStr] = after.val;   continue; }
-    if (!after)  { result[tsStr] = before.val;  continue; }
-
+    if (!before) { result[tsStr] = after.val;  continue; }
+    if (!after)  { result[tsStr] = before.val; continue; }
     const ratio = (t - before.ts) / (after.ts - before.ts);
     result[tsStr] = Math.round(before.val + ratio * (after.val - before.val));
   }
@@ -36,10 +32,12 @@ function interpolateHourly(data) {
 
 export class OMFileR2 {
   constructor() {
-    this.blocksShort = null;
-    this.blocksLong  = null;
-    this.omUrlShort  = null;
-    this.omUrlLong   = null;
+    this.blocksShort    = null;
+    this.blocksLong     = null;
+    this.omUrlShort     = null;
+    this.omUrlLong      = null;
+    this.generatedShort = null;
+    this.generatedLong  = null;
   }
 
   async _loadSource(baseUrl) {
@@ -59,7 +57,7 @@ export class OMFileR2 {
     if (!idxRes.ok) throw new Error(`IDX fetch failed: ${idxRes.status} – ${idxUrl}`);
     const blocks = await idxRes.json();
 
-    return { omUrl, blocks };
+    return { omUrl, blocks, generatedAt: metadata.generatedAt };
   }
 
   async init() {
@@ -70,10 +68,12 @@ export class OMFileR2 {
       this._loadSource(BASE_LONG),
     ]);
 
-    this.omUrlShort  = short.omUrl;
-    this.blocksShort = short.blocks;
-    this.omUrlLong   = long.omUrl;
-    this.blocksLong  = long.blocks;
+    this.omUrlShort     = short.omUrl;
+    this.blocksShort    = short.blocks;
+    this.generatedShort = short.generatedAt;
+    this.omUrlLong      = long.omUrl;
+    this.blocksLong     = long.blocks;
+    this.generatedLong  = long.generatedAt;
   }
 
   _getChunkIndex(header, lat, lon) {
@@ -142,15 +142,16 @@ export class OMFileR2 {
       this._fetchAllChunks(this.omUrlLong,  this.blocksLong,  lat, lon),
     ]);
 
-    // Short hat Vorrang bei Duplikaten
     const merged = { ...longResult, ...shortResult };
-
-    // Sortiert
     const sorted = Object.fromEntries(
       Object.entries(merged).sort(([a], [b]) => new Date(a) - new Date(b))
     );
 
-    return interpolate ? interpolateHourly(sorted) : sorted;
+    return {
+      data:           interpolate ? interpolateHourly(sorted) : sorted,
+      generatedShort: this.generatedShort,
+      generatedLong:  this.generatedLong,
+    };
   }
 
   getTimestamps() {
