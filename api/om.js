@@ -27,7 +27,11 @@ export default async function handler(req, res) {
     const pad = (n) => String(n).padStart(2, "0");
     const currentHourStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:00:00`;
 
-    // Timestamps um 1 Stunde nach hinten verschieben (13:00 = 13-14 Uhr)
+    // 24h Grenze
+    const in24h = new Date(now.getTime() + 24 * 3600000);
+    const in24hStr = `${in24h.getFullYear()}-${pad(in24h.getMonth() + 1)}-${pad(in24h.getDate())} ${pad(in24h.getHours())}:00:00`;
+
+    // Timestamps um 1 Stunde nach hinten verschieben
     const shifted = {};
     for (const [ts, val] of Object.entries(allResults)) {
       const d = new Date(ts.replace(" ", "T"));
@@ -36,19 +40,36 @@ export default async function handler(req, res) {
       shifted[newTs] = val;
     }
 
-    // Nur Timestamps ab aktueller Stunde
-    const result = Object.fromEntries(
-      Object.entries(shifted).filter(([ts]) => ts >= currentHourStr)
+    // Nächste 24 Stunden ab aktueller Stunde
+    const hourly = Object.fromEntries(
+      Object.entries(shifted).filter(([ts]) => ts >= currentHourStr && ts <= in24hStr)
     );
 
+    // Tages-Maxima ab heute (ganzer heutiger Tag + weitere Tage)
+    const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const dailyMax = {};
+
+    for (const [ts, val] of Object.entries(shifted)) {
+      const day = ts.substring(0, 10); // "YYYY-MM-DD"
+      if (day < todayStr) continue;    // vergangene Tage überspringen
+      if (dailyMax[day] === undefined || val > dailyMax[day]) {
+        dailyMax[day] = val;
+      }
+    }
+
     return res.json({
-      W_GEW_01: result,
+      W_GEW_01: {
+        hourly: hourly,
+        daily:  dailyMax,
+      },
       meta: {
         lat,
         lon,
-        timesteps:    Object.keys(result).length,
-        interpolated: interpolate,
-        from:         currentHourStr,
+        timestepsHourly: Object.keys(hourly).length,
+        timestepsDaily:  Object.keys(dailyMax).length,
+        interpolated:    interpolate,
+        from:            currentHourStr,
+        to:              in24hStr,
       },
     });
   } catch (err) {
