@@ -177,7 +177,7 @@ export class OMFileR2 {
     const currentRunLong  = runMatchLong  ? parseInt(runMatchLong[1])  : null;
 
     const isLongRun   = LONG_RUNS.has(String(currentRunLong).padStart(2, "0"));
-    const longIsNewer = currentRunLong >= currentRunShort;
+    const longIsNewer = new Date(this.generatedLong) >= new Date(this.generatedShort);
 
     let merged;
     if (isLongRun && longIsNewer) {
