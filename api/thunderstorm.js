@@ -22,7 +22,7 @@ export default async function handler(req, res) {
   try {
     const om = new OMFileR2();
     const interpolate = req.query.interpolate !== "false";
-    const { data: allResults, generatedShort, generatedLong } =
+    const { data: allResults, generatedShort, generatedLong, currentRun, source } =
       await om.getAllForPoint(lat, lon, interpolate);
 
     // UTC → Berlin Zeit
