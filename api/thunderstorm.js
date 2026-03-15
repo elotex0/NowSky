@@ -67,8 +67,7 @@ export default async function handler(req, res) {
         interpolated:    interpolate,
         from:            currentHourStr,
         to:              in24hStr,
-        updatedShort:    generatedShort,
-        updatedLong:     generatedLong,
+        updatedAt:       new Date(generatedShort) > new Date(generatedLong) ? generatedShort : generatedLong,
       },
     });
   } catch (err) {
