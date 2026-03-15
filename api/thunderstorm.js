@@ -1,186 +1,79 @@
-// om_reader_r2.js
-import { inflateSync } from "zlib";
+// api/thunderstorm.js
+import { OMFileR2 } from "./om_reader_r2.js";
 
-const BASE_SHORT = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos";
-const BASE_LONG  = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmoslong";
-const LONG_RUNS  = new Set(["04", "09", "16", "21"]);
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Cache-Control", "public, max-age=0, no-store");
 
-function interpolateHourly(data) {
-  const entries = Object.entries(data)
-    .map(([ts, val]) => ({ ts: new Date(ts), val }))
-    .sort((a, b) => a.ts - b.ts);
-
-  if (entries.length === 0) return {};
-
-  const result = {};
-  const first = entries[0].ts;
-  const last  = entries[entries.length - 1].ts;
-
-  for (let t = new Date(first); t <= last; t = new Date(t.getTime() + 3600000)) {
-    const tsStr = t.toISOString().replace("T", " ").substring(0, 19);
-    const exact = entries.find(e => e.ts.getTime() === t.getTime());
-    if (exact) { result[tsStr] = exact.val; continue; }
-    const before = [...entries].reverse().find(e => e.ts < t);
-    const after  = entries.find(e => e.ts > t);
-    if (!before) { result[tsStr] = after.val;  continue; }
-    if (!after)  { result[tsStr] = before.val; continue; }
-    const ratio = (t - before.ts) / (after.ts - before.ts);
-    result[tsStr] = Math.round(before.val + ratio * (after.val - before.val));
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Max-Age", "86400");
+    return res.status(204).end();
   }
 
-  return result;
-}
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
 
-export class OMFileR2 {
-  constructor() {
-    this.blocksShort    = null;
-    this.blocksLong     = null;
-    this.omUrlShort     = null;
-    this.omUrlLong      = null;
-    this.generatedShort = null;
-    this.generatedLong  = null;
+  if (isNaN(lat) || isNaN(lon)) {
+    return res.status(400).json({ error: "lat and lon required" });
   }
 
-  async _loadSource(baseUrl) {
-    const metaRes = await fetch(`${baseUrl}/metadata.json`);
-    if (!metaRes.ok) throw new Error(`metadata.json fetch failed: ${metaRes.status} – ${baseUrl}/metadata.json`);
-    const metadata = await metaRes.json();
+  try {
+    const om = new OMFileR2();
+    const interpolate = req.query.interpolate !== "false";
+    const { data: allResults, generatedShort, generatedLong, currentRun, source } =
+      await om.getAllForPoint(lat, lon, interpolate);
 
-    if (!metadata.runs || metadata.runs.length === 0) {
-      throw new Error(`Keine Runs in metadata.json: ${baseUrl}`);
+    // UTC → Berlin Zeit
+    const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Berlin" }));
+    const pad = (n) => String(n).padStart(2, "0");
+    const currentHourStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:00:00`;
+
+    // 24h Grenze
+    const in24h    = new Date(now.getTime() + 24 * 3600000);
+    const in24hStr = `${in24h.getFullYear()}-${pad(in24h.getMonth() + 1)}-${pad(in24h.getDate())} ${pad(in24h.getHours())}:00:00`;
+
+    // Timestamps -1h verschieben
+    const shifted = {};
+    for (const [ts, val] of Object.entries(allResults)) {
+      const d = new Date(ts.replace(" ", "T"));
+      d.setHours(d.getHours() - 1);
+      const newTs = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00:00`;
+      shifted[newTs] = val;
     }
 
-    const latest = metadata.runs[metadata.runs.length - 1];
-    const omUrl  = `${baseUrl}/${latest.run}/${latest.file}.om`;
-    const idxUrl = `${baseUrl}/${latest.run}/${latest.file}.om.idx`;
-
-    const idxRes = await fetch(idxUrl);
-    if (!idxRes.ok) throw new Error(`IDX fetch failed: ${idxRes.status} – ${idxUrl}`);
-    const blocks = await idxRes.json();
-
-    return { omUrl, blocks, generatedAt: metadata.generatedAt };
-  }
-
-  async init() {
-    if (this.blocksShort && this.blocksLong) return;
-
-    const [short, long] = await Promise.all([
-      this._loadSource(BASE_SHORT),
-      this._loadSource(BASE_LONG),
-    ]);
-
-    this.omUrlShort     = short.omUrl;
-    this.blocksShort    = short.blocks;
-    this.generatedShort = short.generatedAt;
-    this.omUrlLong      = long.omUrl;
-    this.blocksLong     = long.blocks;
-    this.generatedLong  = long.generatedAt;
-  }
-
-  _getChunkIndex(header, lat, lon) {
-    const { nx, chunk, latMin, latMax, lonMin, lonMax } = header;
-    const dlon = (lonMax - lonMin) / (nx - 1);
-    const dlat = (latMax - latMin) / (nx - 1);
-
-    let gx = Math.round((lon - lonMin) / dlon);
-    let gy = Math.round((lat - latMin) / dlat);
-    gx = Math.min(Math.max(gx, 0), nx - 1);
-    gy = Math.min(Math.max(gy, 0), nx - 1);
-
-    const chunksPerRow = Math.ceil(nx / chunk);
-    const chunkIndex   = Math.floor(gy / chunk) * chunksPerRow + Math.floor(gx / chunk);
-    const lx = gx % chunk;
-    const ly = gy % chunk;
-
-    return { chunkIndex, lx, ly, chunk };
-  }
-
-  async _fetchAllChunks(omUrl, blocks, lat, lon) {
-    if (blocks.length === 0) return {};
-
-    const { chunkIndex, lx, ly, chunk } =
-      this._getChunkIndex(blocks[0].header, lat, lon);
-
-    const ranges = blocks.map((b) => ({
-      timestamp: b.header.timestamp,
-      offset:    b.chunkOffsets[chunkIndex] + 4,
-      len:       b.chunkLens[chunkIndex],
-    }));
-
-    const minOffset = Math.min(...ranges.map((r) => r.offset));
-    const maxOffset = Math.max(...ranges.map((r) => r.offset + r.len));
-
-    const res = await fetch(omUrl, {
-      headers: { Range: `bytes=${minOffset}-${maxOffset - 1}` },
-    });
-    if (!res.ok && res.status !== 206) {
-      throw new Error(`Bulk chunk fetch failed: ${res.status} – ${omUrl}`);
-    }
-
-    const blob = Buffer.from(await res.arrayBuffer());
-
-    const result = {};
-    for (const r of ranges) {
-      const start        = r.offset - minOffset;
-      const slice        = blob.subarray(start, start + r.len);
-      const decompressed = inflateSync(slice);
-      const arr          = new Float32Array(
-        decompressed.buffer,
-        decompressed.byteOffset,
-        decompressed.byteLength / 4
-      );
-      result[r.timestamp] = arr[ly * chunk + lx];
-    }
-
-    return result;
-  }
-
-  async getAllForPoint(lat, lon, interpolate = true) {
-    await this.init();
-
-    const [shortResult, longResult] = await Promise.all([
-      this._fetchAllChunks(this.omUrlShort, this.blocksShort, lat, lon),
-      this._fetchAllChunks(this.omUrlLong,  this.blocksLong,  lat, lon),
-    ]);
-
-    // Runs aus URLs extrahieren
-    const runMatchShort   = this.omUrlShort.match(/\/(\d{2})\/warnmos/);
-    const runMatchLong    = this.omUrlLong.match(/\/(\d{2})\/warnmos/);
-    const currentRunShort = runMatchShort ? parseInt(runMatchShort[1]) : null;
-    const currentRunLong  = runMatchLong  ? parseInt(runMatchLong[1])  : null;
-
-    const isLongRun   = LONG_RUNS.has(String(currentRunLong).padStart(2, "0"));
-    const longIsNewer = currentRunLong >= currentRunShort;
-
-    let merged;
-    if (isLongRun && longIsNewer) {
-      // Long-Run 04/09/16/21 aktiv UND neuer als Short → Long hat Vorrang
-      merged = { ...shortResult, ...longResult };
-    } else {
-      // Short neuer → Short hat Vorrang für erste 24h
-      merged = { ...longResult, ...shortResult };
-    }
-
-    const sorted = Object.fromEntries(
-      Object.entries(merged).sort(([a], [b]) => new Date(a) - new Date(b))
+    // Nächste 24h
+    const hourly = Object.fromEntries(
+      Object.entries(shifted).filter(([ts]) => ts >= currentHourStr && ts <= in24hStr)
     );
 
-    return {
-      data:            interpolate ? interpolateHourly(sorted) : sorted,
-      generatedShort:  this.generatedShort,
-      generatedLong:   this.generatedLong,
-      currentRunShort: String(currentRunShort).padStart(2, "0"),
-      currentRunLong:  String(currentRunLong).padStart(2, "0"),
-      source:          (isLongRun && longIsNewer) ? "long" : "short",
-    };
-  }
+    // Tages-Maxima ab heute
+    const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const dailyMax = {};
+    for (const [ts, val] of Object.entries(shifted)) {
+      const day = ts.substring(0, 10);
+      if (day < todayStr) continue;
+      if (dailyMax[day] === undefined || val > dailyMax[day]) dailyMax[day] = val;
+    }
 
-  getTimestamps() {
-    if (!this.blocksShort) throw new Error("init() noch nicht aufgerufen");
-    const shortTs = new Set(this.blocksShort.map((b) => b.header.timestamp));
-    const longTs  = this.blocksLong
-      .map((b) => b.header.timestamp)
-      .filter((ts) => !shortTs.has(ts));
-    return [...shortTs, ...longTs].sort((a, b) => new Date(a) - new Date(b));
+    return res.json({
+      W_GEW_01: { hourly, daily: dailyMax },
+      meta: {
+        lat,
+        lon,
+        timestepsHourly: Object.keys(hourly).length,
+        timestepsDaily:  Object.keys(dailyMax).length,
+        interpolated:    interpolate,
+        from:            currentHourStr,
+        to:              in24hStr,
+        updatedAt:       new Date(generatedShort) > new Date(generatedLong) ? generatedShort : generatedLong,
+        source,           
+        currentRun,                                            
+      },
+    });
+  } catch (err) {
+    console.error("thunderstorm error:", err);
+    return res.status(500).json({ error: err.message });
   }
 }
