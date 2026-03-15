@@ -146,6 +146,9 @@ export class OMFileR2 {
     // Aktuellen Short-Run aus URL extrahieren z.B. /13/warnmos_2026031513.om → "13"
     const runMatch   = this.omUrlShort.match(/\/(\d{2})\/warnmos_/);
     const currentRun = runMatch ? runMatch[1] : null;
+    console.log("omUrlShort:", this.omUrlShort);
+    console.log("currentRun:", currentRun);
+    console.log("isLongRun:", LONG_RUNS.has(currentRun));
 
     let merged;
     if (LONG_RUNS.has(currentRun)) {
