@@ -1,4 +1,4 @@
-import { OMFileR2 } from "../om_reader_r2.js";
+import { OMFileR2 } from "./om_reader_r2.js";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
