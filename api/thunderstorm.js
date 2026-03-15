@@ -59,6 +59,11 @@ export default async function handler(req, res) {
 
     return res.json({
       W_GEW_01: { hourly, daily: dailyMax },
+      debug: {
+        short:  om.lastShortResult,
+        long:   om.lastLongResult,
+        merged: allResults,
+      },
       meta: {
         lat,
         lon,
