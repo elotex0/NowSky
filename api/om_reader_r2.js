@@ -4,6 +4,36 @@ import { inflateSync } from "zlib";
 const BASE_SHORT = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos";
 const BASE_LONG  = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmoslong";
 
+function interpolateHourly(data) {
+  const entries = Object.entries(data)
+    .map(([ts, val]) => ({ ts: new Date(ts), val }))
+    .sort((a, b) => a.ts - b.ts);
+
+  if (entries.length === 0) return {};
+
+  const result = {};
+  const first = entries[0].ts;
+  const last  = entries[entries.length - 1].ts;
+
+  for (let t = new Date(first); t <= last; t = new Date(t.getTime() + 3600000)) {
+    const tsStr = t.toISOString().replace("T", " ").substring(0, 19);
+
+    const exact = entries.find(e => e.ts.getTime() === t.getTime());
+    if (exact) { result[tsStr] = exact.val; continue; }
+
+    const before = [...entries].reverse().find(e => e.ts < t);
+    const after  = entries.find(e => e.ts > t);
+
+    if (!before) { result[tsStr] = after.val;   continue; }
+    if (!after)  { result[tsStr] = before.val;  continue; }
+
+    const ratio = (t - before.ts) / (after.ts - before.ts);
+    result[tsStr] = Math.round(before.val + ratio * (after.val - before.val));
+  }
+
+  return result;
+}
+
 export class OMFileR2 {
   constructor() {
     this.blocksShort = null;
@@ -13,7 +43,6 @@ export class OMFileR2 {
   }
 
   async _loadSource(baseUrl) {
-    // Metadata laden
     const metaRes = await fetch(`${baseUrl}/metadata.json`);
     if (!metaRes.ok) throw new Error(`metadata.json fetch failed: ${metaRes.status} – ${baseUrl}/metadata.json`);
     const metadata = await metaRes.json();
@@ -26,9 +55,6 @@ export class OMFileR2 {
     const omUrl  = `${baseUrl}/${latest.run}/${latest.file}.om`;
     const idxUrl = `${baseUrl}/${latest.run}/${latest.file}.om.idx`;
 
-    console.log(`Run geladen: ${omUrl}`);
-
-    // IDX laden
     const idxRes = await fetch(idxUrl);
     if (!idxRes.ok) throw new Error(`IDX fetch failed: ${idxRes.status} – ${idxUrl}`);
     const blocks = await idxRes.json();
@@ -39,7 +65,6 @@ export class OMFileR2 {
   async init() {
     if (this.blocksShort && this.blocksLong) return;
 
-    // Beide parallel laden
     const [short, long] = await Promise.all([
       this._loadSource(BASE_SHORT),
       this._loadSource(BASE_LONG),
@@ -49,8 +74,6 @@ export class OMFileR2 {
     this.blocksShort = short.blocks;
     this.omUrlLong   = long.omUrl;
     this.blocksLong  = long.blocks;
-
-    console.log(`Short: ${this.blocksShort.length} Blocks, Long: ${this.blocksLong.length} Blocks`);
   }
 
   _getChunkIndex(header, lat, lon) {
@@ -111,22 +134,23 @@ export class OMFileR2 {
     return result;
   }
 
-  async getAllForPoint(lat, lon) {
+  async getAllForPoint(lat, lon, interpolate = true) {
     await this.init();
 
-    // Beide parallel fetchen
     const [shortResult, longResult] = await Promise.all([
       this._fetchAllChunks(this.omUrlShort, this.blocksShort, lat, lon),
       this._fetchAllChunks(this.omUrlLong,  this.blocksLong,  lat, lon),
     ]);
 
-    // Short hat Vorrang bei Duplikaten → Long zuerst, Short drüber
+    // Short hat Vorrang bei Duplikaten
     const merged = { ...longResult, ...shortResult };
 
-    // Sortiert nach Timestamp
-    return Object.fromEntries(
+    // Sortiert
+    const sorted = Object.fromEntries(
       Object.entries(merged).sort(([a], [b]) => new Date(a) - new Date(b))
     );
+
+    return interpolate ? interpolateHourly(sorted) : sorted;
   }
 
   getTimestamps() {
