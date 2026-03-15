@@ -68,8 +68,8 @@ export default async function handler(req, res) {
         from:            currentHourStr,
         to:              in24hStr,
         updatedAt:       new Date(generatedShort) > new Date(generatedLong) ? generatedShort : generatedLong,
-        source:          LONG_RUNS.has(currentRun) ? "long" : "short", 
-        currentRun:      currentRun,                                      
+        source,           
+        currentRun,                                            
       },
     });
   } catch (err) {
