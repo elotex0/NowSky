@@ -1,17 +1,40 @@
 // om_reader_r2.js
 import { inflateSync } from "zlib";
 
-const OM_URL  = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos/13/warnmos_2026031513.om";
-const IDX_URL = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos/13/warnmos_2026031513.om.idx";
+const BASE_URL    = "https://pub-76dea2a1875e47eab49e15efb5bcff2b.r2.dev/warnmos";
+const METADATA_URL = `${BASE_URL}/metadata.json`;
 
 export class OMFileR2 {
   constructor() {
     this.blocks = null;
+    this.omUrl  = null;
+    this.idxUrl = null;
   }
 
   async init() {
     if (this.blocks) return;
-    const idxRes = await fetch(IDX_URL);
+
+    // 1. Metadata laden → aktuelle Run + Dateiname
+    const metaRes = await fetch(METADATA_URL);
+    if (!metaRes.ok) throw new Error(`metadata.json fetch failed: ${metaRes.status}`);
+    const metadata = await metaRes.json();
+
+    if (!metadata.runs || metadata.runs.length === 0) {
+      throw new Error("Keine Runs in metadata.json gefunden");
+    }
+
+    // Neuesten Run nehmen
+    const latest = metadata.runs[metadata.runs.length - 1];
+    const run    = latest.run;
+    const file   = latest.file;
+
+    this.omUrl  = `${BASE_URL}/${run}/${file}.om`;
+    this.idxUrl = `${BASE_URL}/${run}/${file}.om.idx`;
+
+    console.log(`Aktueller Run: ${run} → ${this.omUrl}`);
+
+    // 2. IDX laden
+    const idxRes = await fetch(this.idxUrl);
     if (!idxRes.ok) throw new Error(`IDX fetch failed: ${idxRes.status}`);
     this.blocks = await idxRes.json();
     console.log(`Index geladen: ${this.blocks.length} Blocks`);
@@ -51,7 +74,7 @@ export class OMFileR2 {
     const minOffset = Math.min(...ranges.map((r) => r.offset));
     const maxOffset = Math.max(...ranges.map((r) => r.offset + r.len));
 
-    const res = await fetch(OM_URL, {
+    const res = await fetch(this.omUrl, {
       headers: { Range: `bytes=${minOffset}-${maxOffset - 1}` },
     });
     if (!res.ok && res.status !== 206) {
