@@ -143,6 +143,9 @@ export class OMFileR2 {
       this._fetchAllChunks(this.omUrlLong,  this.blocksLong,  lat, lon),
     ]);
 
+    this.lastShortResult = shortResult;
+    this.lastLongResult  = longResult;
+
     // Runs aus URLs extrahieren
     const runMatchShort   = this.omUrlShort.match(/\/(\d{2})\/warnmos/);
     const runMatchLong    = this.omUrlLong.match(/\/(\d{2})\/warnmos/);
