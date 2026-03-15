@@ -35,7 +35,7 @@ export class OMFileR2 {
 
     // 2. IDX laden
     const idxRes = await fetch(this.idxUrl);
-    if (!idxRes.ok) throw new Error(`IDX fetch failed: ${idxRes.status}`);
+    if (!idxRes.ok) throw new Error(`IDX fetch failed: ${idxRes.status} – URL: ${this.idxUrl}`);
     this.blocks = await idxRes.json();
     console.log(`Index geladen: ${this.blocks.length} Blocks`);
   }
