@@ -143,19 +143,20 @@ export class OMFileR2 {
       this._fetchAllChunks(this.omUrlLong,  this.blocksLong,  lat, lon),
     ]);
 
-    // Aktuellen Short-Run aus URL extrahieren z.B. /13/warnmos_2026031513.om → "13"
-    const runMatch   = this.omUrlShort.match(/\/(\d{2})\/warnmos_/);
-    const currentRun = runMatch ? runMatch[1] : null;
-    console.log("omUrlShort:", this.omUrlShort);
-    console.log("currentRun:", currentRun);
-    console.log("isLongRun:", LONG_RUNS.has(currentRun));
+    // Long-Run aus URL extrahieren z.B. /21/warnmoslong_2026031521.om → "21"
+    const runMatchLong   = this.omUrlLong.match(/\/(\d{2})\/warnmos/);
+    const currentRunLong = runMatchLong ? runMatchLong[1] : null;
+
+    // Short-Run aus URL extrahieren
+    const runMatchShort   = this.omUrlShort.match(/\/(\d{2})\/warnmos/);
+    const currentRunShort = runMatchShort ? runMatchShort[1] : null;
 
     let merged;
-    if (LONG_RUNS.has(currentRun)) {
-      // Run 04/09/16/21 → Long hat Vorrang für alle Timestamps
+    if (LONG_RUNS.has(currentRunLong)) {
+      // Long-Run 04/09/16/21 aktiv → Long hat Vorrang
       merged = { ...shortResult, ...longResult };
     } else {
-      // Normale Stunden → Short hat Vorrang für erste 24h
+      // Normaler Run → Short hat Vorrang für erste 24h
       merged = { ...longResult, ...shortResult };
     }
 
@@ -164,11 +165,12 @@ export class OMFileR2 {
     );
 
     return {
-      data:           interpolate ? interpolateHourly(sorted) : sorted,
-      generatedShort: this.generatedShort,
-      generatedLong:  this.generatedLong,
-      currentRun:     currentRun,
-      source:         LONG_RUNS.has(currentRun) ? "long" : "short",
+      data:            interpolate ? interpolateHourly(sorted) : sorted,
+      generatedShort:  this.generatedShort,
+      generatedLong:   this.generatedLong,
+      currentRunShort: currentRunShort,
+      currentRunLong:  currentRunLong,
+      source:          LONG_RUNS.has(currentRunLong) ? "long" : "short",
     };
   }
 
