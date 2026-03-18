@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// AR-CHaMo v3 – GEFS Ensemble Edition
-// Modell: ncep_gefs05 (31 Member: control + member01–member30)
+// AR-CHaMo v3 – GEFS Ensemble Edition (Request-Split Fix)
+// Problem: 31 Member × 37 Vars = ~1150 Felder → URL zu lang → HTML-Fehler
+// Lösung:  3 parallele Requests via Promise.all(), dann mergen
 // ═══════════════════════════════════════════════════════════════════════════
 
 export default async function handler(req, res) {
@@ -19,88 +20,78 @@ export default async function handler(req, res) {
     if (isNaN(latitude) || isNaN(longitude)) return res.status(400).json({ error: 'Ungültige Koordinaten' });
 
     try {
-        // ── GEFS hat 31 Member (control = kein Suffix, member01–member30)
         const MEMBER_COUNT = 30;
-        const MEMBERS = ['', ...Array.from({ length: MEMBER_COUNT }, (_, i) =>
-            `_member${String(i + 1).padStart(2, '0')}`)];
+        const BASE = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latitude}&longitude=${longitude}&forecast_days=16&models=ncep_gefs05&timezone=auto`;
 
-        // Variablen die GEFS als Member liefert
-        const gefsVars = [
-            'wind_gusts_10m',
-            'wind_speed_10m',
-            'temperature_2m',
-            'dew_point_2m',
-            'cloud_cover_low',
-            'cloud_cover_mid',
-            'cloud_cover_high',
-            'precipitation_probability',
-            'wind_direction_1000hPa',
-            'wind_direction_925hPa',
-            'wind_direction_850hPa',
-            'wind_direction_700hPa',
-            'wind_direction_500hPa',
-            'wind_direction_300hPa',
-            'wind_speed_1000hPa',
-            'wind_speed_925hPa',
-            'wind_speed_850hPa',
-            'wind_speed_700hPa',
-            'wind_speed_500hPa',
-            'wind_speed_300hPa',
-            'temperature_925hPa',
-            'temperature_850hPa',
-            'temperature_700hPa',
-            'temperature_500hPa',
-            'dew_point_925hPa',
-            'dew_point_850hPa',
-            'dew_point_700hPa',
-            'relative_humidity_925hPa',
-            'relative_humidity_850hPa',
-            'relative_humidity_700hPa',
-            'relative_humidity_500hPa',
+        // ── Hilfsfunktion: Member-Suffixe für eine Basis-Variable erzeugen
+        function withMembers(vars) {
+            const out = [];
+            for (const v of vars) {
+                out.push(v);
+                for (let m = 1; m <= MEMBER_COUNT; m++) {
+                    out.push(`${v}_member${String(m).padStart(2, '0')}`);
+                }
+            }
+            return out.join(',');
+        }
+
+        // ── Request 1: Instabilitäts-/Konvektionsparameter (mit Membern)
+        const vars1 = withMembers([
             'cape',
             'lifted_index',
             'convective_inhibition',
             'precipitation',
             'freezing_level_height',
             'total_column_integrated_water_vapour',
-        ];
+        ]);
 
-        // Alle Member-Varianten für den API-Request aufbauen
-        // GEFS liefert: cape, cape_member01, cape_member02, ... cape_member30
-        const memberVarList = [];
-        for (const v of gefsVars) {
-            memberVarList.push(v); // control (kein Suffix)
-            for (let m = 1; m <= MEMBER_COUNT; m++) {
-                memberVarList.push(`${v}_member${String(m).padStart(2, '0')}`);
-            }
-        }
+        // ── Request 2: Wind, Temperatur, Feuchte aller Druckniveaus (mit Membern)
+        const vars2 = withMembers([
+            'wind_speed_1000hPa','wind_speed_925hPa','wind_speed_850hPa',
+            'wind_speed_700hPa','wind_speed_500hPa','wind_speed_300hPa',
+            'wind_direction_1000hPa','wind_direction_925hPa','wind_direction_850hPa',
+            'wind_direction_700hPa','wind_direction_500hPa','wind_direction_300hPa',
+            'temperature_2m','dew_point_2m',
+            'temperature_925hPa','temperature_850hPa','temperature_700hPa','temperature_500hPa',
+            'dew_point_925hPa','dew_point_850hPa','dew_point_700hPa',
+            'relative_humidity_925hPa','relative_humidity_850hPa',
+            'relative_humidity_700hPa','relative_humidity_500hPa',
+        ]);
 
-        // Variablen die GEFS NICHT als Member hat (nur control)
-        const singleVars = [
+        // ── Request 3: Einzel-Variablen (KEIN Member-Suffix – GEFS liefert nur Control)
+        const vars3 = [
+            'wind_gusts_10m',
+            'wind_speed_10m',
+            'cloud_cover_low','cloud_cover_mid','cloud_cover_high',
+            'precipitation_probability',
+            'wind_direction_975hPa','wind_direction_950hPa','wind_direction_900hPa',
+            'wind_speed_975hPa','wind_speed_950hPa','wind_speed_900hPa',
             'boundary_layer_height',
             'direct_radiation',
-            'wind_direction_975hPa',
-            'wind_direction_950hPa',
-            'wind_direction_900hPa',
-            'wind_speed_975hPa',
-            'wind_speed_950hPa',
-            'wind_speed_900hPa',
-        ];
+        ].join(',');
 
-        const allVars = [...memberVarList, ...singleVars].join(',');
+        // ── Alle 3 Requests parallel feuern
+        const [r1, r2, r3] = await Promise.all([
+            fetch(`${BASE}&hourly=${vars1}`).then(r => r.json()),
+            fetch(`${BASE}&hourly=${vars2}`).then(r => r.json()),
+            fetch(`${BASE}&hourly=${vars3}`).then(r => r.json()),
+        ]);
 
-        const url = `https://ensemble-api.open-meteo.com/v1/ensemble?` +
-            `latitude=${latitude}&longitude=${longitude}` +
-            `&hourly=${allVars}` +
-            `&forecast_days=16&models=ncep_gefs05&timezone=auto`;
+        // Fehlerprüfung für jeden Request
+        for (const [idx, d] of [[1,r1],[2,r2],[3,r3]]) {
+            if (d.error) return res.status(500).json({ error: `API-Fehler Request ${idx}: ${d.reason || 'Unbekannt'}` });
+            if (!d?.hourly?.time?.length) return res.status(500).json({ error: `Keine Daten in Request ${idx}` });
+        }
 
-        const response = await fetch(url);
-        const data     = await response.json();
+        // ── Hourly-Daten mergen: einfach alle Felder in ein Objekt zusammenführen
+        const mergedHourly = {
+            time: r1.hourly.time,
+            ...r1.hourly,
+            ...r2.hourly,
+            ...r3.hourly,
+        };
 
-        if (data.error) return res.status(500).json({ error: 'API-Fehler: ' + (data.reason || 'Unbekannt') });
-        if (!data?.hourly?.time?.length) return res.status(500).json({ error: 'Keine Daten verfügbar' });
-
-        const timezone = data.timezone || 'UTC';
+        const timezone = r1.timezone || 'UTC';
         const region   = getRegion(latitude, longitude);
         if (region !== 'europe') {
             return res.status(400).json({ error: 'Vorhersage nur für Europa verfügbar', region, onlyEurope: true });
@@ -116,49 +107,26 @@ export default async function handler(req, res) {
         const [currentHour] = timePart_now.split(':').map(Number);
         const currentDateStr = `${year_now}-${month_now.padStart(2,'0')}-${day_now.padStart(2,'0')}`;
 
-        // ═══════════════════════════════════════════════════════════════════
-        // HILFSFUNKTION: Ensemble-Mittelwert eines Feldes über alle Member
-        // ═══════════════════════════════════════════════════════════════════
-        function getMemberMean(hourly, fieldBase, i) {
-            const values = [];
-            // Control Member (kein Suffix)
-            const ctrl = hourly[fieldBase]?.[i];
-            if (ctrl !== null && ctrl !== undefined) values.push(ctrl);
-            // Member 01–30
-            for (let m = 1; m <= MEMBER_COUNT; m++) {
-                const key = `${fieldBase}_member${String(m).padStart(2, '0')}`;
-                const v = hourly[key]?.[i];
-                if (v !== null && v !== undefined) values.push(v);
-            }
-            if (values.length === 0) return null;
-            return values.reduce((s, x) => s + x, 0) / values.length;
-        }
+        // ── Member-Suffixe: '' = Control, '_member01'..'_member30'
+        const memberSuffixes = [
+            '',
+            ...Array.from({ length: MEMBER_COUNT }, (_, i) =>
+                `_member${String(i + 1).padStart(2, '0')}`)
+        ];
 
-        // Ensemble-Spread (Standardabweichung) – für Konsens-Berechnung
-        function getMemberSpread(hourly, fieldBase, i) {
-            const values = [];
-            const ctrl = hourly[fieldBase]?.[i];
-            if (ctrl !== null && ctrl !== undefined) values.push(ctrl);
-            for (let m = 1; m <= MEMBER_COUNT; m++) {
-                const key = `${fieldBase}_member${String(m).padStart(2, '0')}`;
-                const v = hourly[key]?.[i];
-                if (v !== null && v !== undefined) values.push(v);
-            }
-            if (values.length < 2) return 0;
-            const mean = values.reduce((s, x) => s + x, 0) / values.length;
-            return Math.sqrt(values.reduce((s, x) => s + (x - mean) ** 2, 0) / values.length);
-        }
-
-        // ─── Pro Member eine vollständige "hour"-Struktur extrahieren
-        function extractMemberHour(hourly, i, memberSuffix) {
+        // ═══════════════════════════════════════════════════════════════════
+        // Pro Member eine hour-Struktur aus dem gemergten Hourly extrahieren
+        // ═══════════════════════════════════════════════════════════════════
+        function extractMemberHour(hourly, i, suffix) {
+            // suffix = '' (Control) oder '_member01' etc.
             function get(field) {
-                const key = memberSuffix ? `${field}${memberSuffix}` : field;
+                const key = `${field}${suffix}`;
                 const arr = hourly[key];
-                if (Array.isArray(arr) && arr[i] !== undefined && arr[i] !== null) return arr[i];
-                // Fallback: versuche ohne Suffix (single-var Felder)
-                if (memberSuffix) {
+                if (Array.isArray(arr) && arr[i] !== null && arr[i] !== undefined) return arr[i];
+                // Fallback auf Control (für Single-Vars wie direct_radiation)
+                if (suffix !== '') {
                     const arr2 = hourly[field];
-                    if (Array.isArray(arr2) && arr2[i] !== undefined && arr2[i] !== null) return arr2[i];
+                    if (Array.isArray(arr2) && arr2[i] !== null && arr2[i] !== undefined) return arr2[i];
                 }
                 return null;
             }
@@ -176,7 +144,7 @@ export default async function handler(req, res) {
             const d700 = get('dew_point_700hPa');
             const rawCin = get('convective_inhibition');
             const rawLI  = get('lifted_index');
-            const rawPBL = get('boundary_layer_height'); // nur im Control
+            const rawPBL = get('boundary_layer_height'); // nur Control
 
             const hour = {
                 time:               hourly.time[i],
@@ -223,7 +191,7 @@ export default async function handler(req, res) {
                 rh500: get('relative_humidity_500hPa') ?? 50,
 
                 cape:            Math.max(0, get('cape') ?? 0),
-                directRadiation: get('direct_radiation') ?? 0, // nur Control
+                directRadiation: get('direct_radiation') ?? 0,
                 precipAcc:       get('precipitation') ?? 0,
                 pwat:            get('total_column_integrated_water_vapour') ?? 25,
                 freezingLevel:   null,
@@ -232,7 +200,6 @@ export default async function handler(req, res) {
                 pblHeight:       null,
             };
 
-            // Gefrierniveau
             const apiFL = get('freezing_level_height');
             hour.freezingLevel = (apiFL !== null && apiFL >= 100 && apiFL <= 6000)
                 ? apiFL : calcFreezingLevel(hour);
@@ -257,32 +224,23 @@ export default async function handler(req, res) {
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        // SCHRITT: Alle 31 Member pro Stunde verarbeiten
+        // Alle 31 Member pro Zeitstempel verarbeiten
         // ═══════════════════════════════════════════════════════════════════
-        const memberSuffixes = [
-            '',  // control
-            ...Array.from({ length: MEMBER_COUNT }, (_, i) =>
-                `_member${String(i + 1).padStart(2, '0')}`)
-        ];
-
-        const hours = data.hourly.time.map((t, i) => {
-            const forecastTime = new Date(t);
-            const lt = Math.round((forecastTime - now) / 3600000);
-
-            // Alle Member berechnen
+        const hours = mergedHourly.time.map((t, i) => {
             const memberProbs = [];
+            let ctrlHour = null;
+
             for (const suffix of memberSuffixes) {
-                const mh = extractMemberHour(data.hourly, i, suffix);
+                const mh = extractMemberHour(mergedHourly, i, suffix);
                 if (!mh) continue;
-                const p = calculateLightningProbability(mh);
-                memberProbs.push(p);
+                if (suffix === '') ctrlHour = mh;
+                memberProbs.push(calculateLightningProbability(mh));
             }
 
             if (memberProbs.length === 0) {
                 return { time: t, probability: 0, modell_konsens: 'niedrig', modell_stddev: 0 };
             }
 
-            // Ensemble-Statistik der Blitzwahrscheinlichkeiten
             const mean   = memberProbs.reduce((s, p) => s + p, 0) / memberProbs.length;
             const sorted = [...memberProbs].sort((a, b) => a - b);
             const median = sorted.length % 2 === 1
@@ -291,7 +249,6 @@ export default async function handler(req, res) {
             const variance = memberProbs.reduce((s, p) => s + (p - mean) ** 2, 0) / memberProbs.length;
             const stddev   = Math.sqrt(variance);
 
-            // Konsens-Faktor (wie bisher, jetzt über Member-Spread)
             const kf = stddev <= 15
                 ? Math.max(0.65, Math.min(1.15, 1.15 - (stddev / 15) * 0.15))
                 : Math.max(0.65, Math.min(1.15, 1.00 - ((stddev - 15) / 25) * 0.35));
@@ -299,26 +256,23 @@ export default async function handler(req, res) {
             const prob    = Math.round(Math.max(0, Math.min(100, mean * kf)));
             const konsens = stddev <= 10 ? 'hoch' : stddev <= 22 ? 'mittel' : 'niedrig';
 
-            // Kontroll-Member für ensHour (Shear/SRH-Berechnung)
-            const ctrlHour = extractMemberHour(data.hourly, i, '');
-
             return {
                 time:           t,
                 probability:    prob,
                 modell_konsens: konsens,
                 modell_stddev:  Math.round(stddev * 10) / 10,
-                member_probs:   memberProbs,  // alle 31 Member-Wahrscheinlichkeiten
+                member_probs:   memberProbs,
                 member_mean:    Math.round(mean * 10) / 10,
                 member_median:  Math.round(median * 10) / 10,
                 ensHour:        ctrlHour,
                 temperature:    ctrlHour ? Math.round(ctrlHour.temperature * 10) / 10 : null,
-                cape:           ctrlHour ? Math.round(getMemberMean(data.hourly, 'cape', i) ?? 0) : null,
+                cape:           ctrlHour ? Math.round(ctrlHour.cape) : null,
                 shear:          ctrlHour ? Math.round(calcShear(ctrlHour) * 10) / 10 : null,
                 srh:            ctrlHour ? Math.round(calcSRH(ctrlHour, '0-3km') * 10) / 10 : null,
             };
         });
 
-        // ── Filter auf aktuelle und zukünftige Stunden
+        // ── Filter: aktuelle + zukünftige Stunden
         const nextHours = hours.filter(h => {
             const [dp, tp] = h.time.split('T');
             const hr = parseInt(tp);
@@ -332,13 +286,7 @@ export default async function handler(req, res) {
             const hr = parseInt(tp);
             if (dp < currentDateStr || (dp === currentDateStr && hr < currentHour)) return;
             if (!daysMap.has(dp)) {
-                daysMap.set(dp, {
-                    date:           dp,
-                    maxProbability: h.probability,
-                    peakKonsens:    h.modell_konsens,
-                    peakStddev:     h.modell_stddev,
-                    ensHour:        h.ensHour,
-                });
+                daysMap.set(dp, { date: dp, maxProbability: h.probability, peakKonsens: h.modell_konsens, peakStddev: h.modell_stddev, ensHour: h.ensHour });
             } else {
                 const d = daysMap.get(dp);
                 if (h.probability > d.maxProbability) {
@@ -369,26 +317,27 @@ export default async function handler(req, res) {
                 modell_stddev:  day.peakStddev,
             }));
 
-        // ── Debug-Ausgabe (erste 20 Stunden, Control-Member)
+        // ── Debug (erste 20 Stunden, Control-Member)
         const debugStunden = nextHours.slice(0, 20).map(h => {
-            const i  = data.hourly.time.indexOf(h.time);
-            const mh = extractMemberHour(data.hourly, i, ''); // Control
+            const i  = mergedHourly.time.indexOf(h.time);
+            const mh = extractMemberHour(mergedHourly, i, '');
             if (!mh) return { timestamp: h.time, error: 'no data' };
 
-            const shear   = calcShear(mh);
-            const srh3    = calcSRH(mh, '0-3km');
-            const srh1    = calcSRH(mh, '0-1km');
-            const lcl     = calcLCLHeight(mh.temperature, mh.dew);
-            const ki      = calcKIndex(mh);
-            const si      = calcShowalter(mh);
-            const midLap  = calcMidLapseRate(mh.temp700, mh.temp500);
-            const shearMS = shear / 3.6;
-            const scpVal  = calcSCP(mh.cape, shearMS, srh3, mh.cin ?? 0);
-            const ehiVal  = calcEHI(mh);
-            const stpVal  = calcSTP(mh);
+            const shear  = calcShear(mh);
+            const srh3   = calcSRH(mh, '0-3km');
+            const srh1   = calcSRH(mh, '0-1km');
+            const scpVal = calcSCP(mh.cape, shear / 3.6, srh3, mh.cin ?? 0);
+            const ehiVal = calcEHI(mh);
+            const stpVal = calcSTP(mh);
 
-            // CAPE-Spread über alle Member (Unsicherheitsmaß)
-            const capeSpread = Math.round(getMemberSpread(data.hourly, 'cape', i));
+            // CAPE-Spread: Standardabweichung über alle Member
+            const capeValues = memberSuffixes
+                .map(s => mergedHourly[`cape${s}`]?.[i])
+                .filter(v => v !== null && v !== undefined);
+            const capeMean = capeValues.reduce((s, v) => s + v, 0) / (capeValues.length || 1);
+            const capeSpread = Math.round(Math.sqrt(
+                capeValues.reduce((s, v) => s + (v - capeMean) ** 2, 0) / (capeValues.length || 1)
+            ));
 
             return {
                 timestamp:         h.time,
@@ -397,41 +346,31 @@ export default async function handler(req, res) {
                 member_median:     h.member_median,
                 modell_konsens:    h.modell_konsens,
                 modell_stddev:     h.modell_stddev,
-                member_probs:      h.member_probs,  // alle 31 Member-Wahrscheinlichkeiten
+                member_probs:      h.member_probs,
                 control_member: {
-                    archamo_li:       Math.round(mh.liftedIndex * 10) / 10,
-                    archamo_dls:      Math.round(shear * 10) / 10,
-                    archamo_meanRH:   Math.round(mh.meanRH),
-                    archamo_q925:     Math.round(mh.q925 * 10) / 10,
-                    archamo_mlMR:     Math.round(mh.mlMixRatio * 10) / 10,
-                    archamo_wbz:      Math.round(mh.wbzHeight),
-                    archamo_cape:     Math.round(mh.cape),
-                    archamo_elTemp:   Math.round((mh.elTemp ?? -99) * 10) / 10,
-                    cape_spread:      capeSpread,
-                    scp: Math.round(scpVal * 100) / 100,
-                    ehi: Math.round(ehiVal * 100) / 100,
-                    stp: Math.round(stpVal * 100) / 100,
-                    cape: Math.round(mh.cape), cin: Math.round(mh.cin ?? 0),
-                    lcl: Math.round(lcl),
-                    liftedIndex: Math.round(mh.liftedIndex * 10) / 10,
-                    kIndex: Math.round(ki * 10) / 10,
-                    showalter: Math.round(si * 10) / 10,
-                    midLapse: Math.round(midLap * 10) / 10,
-                    shear: Math.round(shear * 10) / 10,
-                    srh1km: Math.round(srh1 * 10) / 10,
-                    srh3km: Math.round(srh3 * 10) / 10,
-                    meanRH: Math.round(mh.meanRH),
-                    mlMixRatio: Math.round(mh.mlMixRatio * 10) / 10,
-                    q925: Math.round(mh.q925 * 10) / 10,
-                    pwat: Math.round(mh.pwat),
-                    temp2m: mh.temperature, dew2m: mh.dew,
-                    temp850: mh.temp850, temp700: mh.temp700, temp500: mh.temp500,
-                    rh850: Math.round(mh.rh850), rh700: Math.round(mh.rh700),
-                    rh500: Math.round(mh.rh500),
-                    wind10m: Math.round(mh.wind * 10) / 10,
-                    gust10m: Math.round(mh.gust * 10) / 10,
-                    precipAcc: Math.round(mh.precipAcc * 10) / 10,
-                    radiation: Math.round(mh.directRadiation),
+                    cape:         Math.round(mh.cape),
+                    cape_spread:  capeSpread,
+                    cin:          Math.round(mh.cin ?? 0),
+                    liftedIndex:  Math.round(mh.liftedIndex * 10) / 10,
+                    meanRH:       Math.round(mh.meanRH),
+                    q925:         Math.round(mh.q925 * 10) / 10,
+                    mlMixRatio:   Math.round(mh.mlMixRatio * 10) / 10,
+                    wbzHeight:    Math.round(mh.wbzHeight),
+                    elTemp:       Math.round((mh.elTemp ?? -99) * 10) / 10,
+                    shear:        Math.round(shear * 10) / 10,
+                    srh1km:       Math.round(srh1 * 10) / 10,
+                    srh3km:       Math.round(srh3 * 10) / 10,
+                    scp:          Math.round(scpVal * 100) / 100,
+                    ehi:          Math.round(ehiVal * 100) / 100,
+                    stp:          Math.round(stpVal * 100) / 100,
+                    temp2m:       mh.temperature,
+                    dew2m:        mh.dew,
+                    temp850:      mh.temp850,
+                    temp500:      mh.temp500,
+                    rh850:        Math.round(mh.rh850),
+                    rh700:        Math.round(mh.rh700),
+                    precipAcc:    Math.round(mh.precipAcc * 10) / 10,
+                    radiation:    Math.round(mh.directRadiation),
                 },
             };
         });
@@ -439,20 +378,21 @@ export default async function handler(req, res) {
         return res.status(200).json({
             timezone,
             region,
-            modell: 'ncep_gefs05',
-            member_count: memberProbs?.length ?? MEMBER_COUNT + 1,
+            modell:        'ncep_gefs05',
+            member_count:  memberSuffixes.length,
             stunden,
             tage,
             debug: {
                 hinweis: 'AR-CHaMo v3 + GEFS Ensemble (ncep_gefs05, 31 Member). ' +
-                    'Blitzwahrscheinlichkeit wird pro Member berechnet, dann Ensemble-Statistik. ' +
-                    'Konsens-Faktor basiert auf Member-Spread der Blitzwahrscheinlichkeit.',
+                    'URL-Split: 3 parallele Requests via Promise.all(). ' +
+                    'Request 1: Instabilität+Konvektion, Request 2: Wind+Temp+Feuchte, ' +
+                    'Request 3: Einzel-Variablen (Control only).',
                 stunden: debugStunden,
             },
         });
 
     } catch (err) {
         console.error('Fehler:', err);
-        return res.status(500).json({ error: 'Netzwerkfehler beim Laden der Wetterdaten' });
+        return res.status(500).json({ error: err.message || 'Netzwerkfehler beim Laden der Wetterdaten' });
     }
 }
