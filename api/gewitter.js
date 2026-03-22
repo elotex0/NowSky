@@ -194,7 +194,7 @@ export default async function handler(req, res) {
             const MW = computeMeanWinds(sfc, profile);
 
             // ── Bunkers Storm Motion ────────────────────────────────────
-            const bunkers = computeBunkers(MW, BS);
+            const bunkers = computeBunkers(sfc, profile);
 
             // ── SRH (Storm Relative Helicity) ────────────────────────────
             const SRH = computeSRH(sfc, profile, bunkers);
@@ -215,8 +215,9 @@ export default async function handler(req, res) {
             const SB_WMAXSHEAR  = Math.sqrt(2 * SB.CAPE)  * BS.BS_06km;
             const ML_WMAXSHEAR  = Math.sqrt(2 * ML.CAPE)  * BS.BS_06km;
 
-            const EHI_01km = SB.CAPE > 0 ? (SB.CAPE * SRH.SRH_1km_RM) / 160000 : 0;
-            const EHI_03km = SB.CAPE > 0 ? (SB.CAPE * SRH.SRH_3km_RM) / 160000 : 0;
+            // EHI: (CAPE * SRH) / 160000  – thundeR-Standard (SB-Parcel)
+            const EHI_01km = (SB.CAPE * SRH.SRH_1km_RM) / 160000;
+            const EHI_03km = (SB.CAPE * SRH.SRH_3km_RM) / 160000;
 
             const SCP_fix  = computeSCP(MU.CAPE, BS.BS_06km, SRH.SRH_3km_RM, sfc.cin);
             const STP_fix  = computeSTP(SB.CAPE, SRH.SRH_1km_RM, BS.BS_06km, SB.LCL_HGT, sfc.cin);
@@ -354,6 +355,11 @@ export default async function handler(req, res) {
                 Bunkers_RM_A:  bunkers.RM_dir,
                 Bunkers_LM_M:  bunkers.LM_speed,
                 Bunkers_LM_A:  bunkers.LM_dir,
+                Bunkers_MW_M:  bunkers.MW_speed,
+                Bunkers_MW_A:  bunkers.MW_dir,
+                // ── SRH LM (Links-devierend) ──────────────────────────
+                SRH_1km_LM:    SRH.SRH_1km_LM,
+                SRH_3km_LM:    SRH.SRH_3km_LM,
 
                 // ── Oberflächenwerte für Ausgabe ─────────────────────
                 T2m:           sfc.t2m,
@@ -732,6 +738,10 @@ export default async function handler(req, res) {
                 Bunkers_RM_A: Math.round(p.Bunkers_RM_A),
                 Bunkers_LM_M: Math.round(p.Bunkers_LM_M * 10) / 10,
                 Bunkers_LM_A: Math.round(p.Bunkers_LM_A),
+                Bunkers_MW_M: Math.round(p.Bunkers_MW_M * 10) / 10,
+                Bunkers_MW_A: Math.round(p.Bunkers_MW_A),
+                SRH_1km_LM:  Math.round(p.SRH_1km_LM ?? 0),
+                SRH_3km_LM:  Math.round(p.SRH_3km_LM ?? 0),
                 // ── Oberfläche ─────────────────────────────────────────────
                 T2m:       Math.round(p.T2m * 10) / 10,
                 Td2m:      Math.round(p.Td2m * 10) / 10,
@@ -1019,78 +1029,137 @@ function lclHeight(T, Td) {
     return Math.max(0, 125 * (T - Td));
 }
 
-// Einfache Parcelberechnung Surface-Based (SB)
+// Parcel-Temperatur an beliebigem Druckniveau via Theta-E Iteration (Bolton 1980)
+function parcelTempAtLevel(theta_e_parcel, p_level, T_guess) {
+    let Tp = T_guess;
+    for (let it = 0; it < 12; it++) {
+        const Tp_K = Tp + 273.15;
+        const es   = 6.112 * Math.exp(17.67 * Tp / (Tp + 243.5));
+        const ws   = 0.622 * es / (p_level - es);
+        const ws_g = ws * 1000;
+        const th_e = Tp_K
+            * Math.pow(1000 / p_level, 0.2854 * (1 - 0.00028 * ws_g))
+            * Math.exp((3.376 / Tp_K - 0.00254) * ws_g * (1 + 0.00081 * ws_g));
+        const err = theta_e_parcel - th_e;
+        Tp += err * 0.25;
+        if (Math.abs(err) < 0.005) break;
+    }
+    return Tp;
+}
+
+// Surface-Based / ML / MU Parcel (Bolton 1980, Doswell & Rasmussen 1994)
 function computeParcel(T, Td, p_sfc, sfc, profile, type) {
-    const lclH    = lclHeight(T, Td);
-    const T_LCL   = T - 0.212 * (T - Td) - 0.001 * Math.pow(T - Td, 2);
+    const dewDep  = Math.max(0, T - Td);
+    const lclH    = 125 * dewDep;
+    const T_LCL   = T - 0.212 * dewDep - 0.001 * dewDep * dewDep;
     const T_LCL_K = T_LCL + 273.15;
-    const e_d     = 6.112 * Math.exp(17.67 * Td / (Td + 243.5));
-    const w       = 0.622 * e_d / (p_sfc - e_d);
-    const w_gkg   = w * 1000;
+
+    const e_d   = 6.112 * Math.exp(17.67 * Td / (Td + 243.5));
+    const w_gkg = 1000 * 0.622 * e_d / (p_sfc - e_d);
+
+    // Theta-E des Parcels (Bolton 1980 Gl. 43)
     const theta_e_parcel = (T + 273.15)
         * Math.pow(1000 / p_sfc, 0.2854 * (1 - 0.00028 * w_gkg))
         * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
 
-    let cape = 0, cin = 0, el_hgt = lclH, el_temp = T_LCL, lfc_hgt = lclH;
+    // Profil aufsteigend nach Höhe sortieren
+    const sorted = [...profile].sort((a, b) => a.z - b.z);
+
+    let cape = 0, cin = 0;
+    let lfc_hgt = null, el_hgt = lclH, el_temp = T_LCL;
     let aboveLFC = false;
+    let T_parcel_500 = null;
+    let prevTp = null, prevEnvT = null, prevZ = null;
 
-    for (let idx = 0; idx < profile.length - 1; idx++) {
-        const env = profile[idx];
-        if (env.z < lclH) continue;
+    for (let idx = 0; idx < sorted.length - 1; idx++) {
+        const env  = sorted[idx];
+        const next = sorted[idx + 1];
 
-        // Parceltemperatur auf diesem Level via theta_e Iteration
-        let T_parcel = env.T + 4;
-        for (let it = 0; it < 6; it++) {
-            const Tp_K  = T_parcel + 273.15;
-            const es    = 6.112 * Math.exp(17.67 * T_parcel / (T_parcel + 243.5));
-            const ws    = 0.622 * es / (env.p - es);
-            const ws_gkg= ws * 1000;
-            const th_e  = Tp_K
-                * Math.pow(1000 / env.p, 0.2854 * (1 - 0.00028 * ws_gkg))
-                * Math.exp((3.376 / Tp_K - 0.00254) * ws_gkg * (1 + 0.00081 * ws_gkg));
-            T_parcel += (theta_e_parcel - th_e) * 0.3;
+        if (env.z < lclH) {
+            // Unterhalb LCL: trocken-adiabatisch für CIN
+            const Tp_dry = T - 9.8 * (env.z / 1000);
+            const dT_dry = Tp_dry - env.T;
+            const dz_eff = Math.min(next.z, lclH) - env.z;
+            if (dz_eff > 0 && dT_dry < 0) {
+                cin += (dT_dry / (env.T + 273.15)) * 9.81 * dz_eff;
+            }
+            prevTp = null; prevEnvT = env.T; prevZ = env.z;
+            continue;
         }
 
-        const dT   = T_parcel - env.T;
-        const next = profile[idx + 1];
-        const dz   = (next ? next.z - env.z : 100);
-        const T_mean_K = env.T + 273.15;
+        // Oberhalb LCL: feucht-adiabatisch
+        const Tp = parcelTempAtLevel(theta_e_parcel, env.p, env.T + 1);
+        if (env.p <= 502 && T_parcel_500 === null) T_parcel_500 = Tp;
+
+        const dT = Tp - env.T;
+        const dz = next.z - env.z;
 
         if (dT > 0) {
-            if (!aboveLFC) { aboveLFC = true; lfc_hgt = env.z; }
-            cape     += (dT / T_mean_K) * 9.81 * dz;
-            el_hgt    = env.z;
-            el_temp   = env.T;
-        } else if (!aboveLFC) {
-            cin      += (dT / T_mean_K) * 9.81 * dz;
+            if (!aboveLFC) {
+                aboveLFC = true;
+                // LFC interpolieren zwischen vorherigem (negativ) und aktuellem (positiv) Level
+                if (prevTp !== null && prevEnvT !== null) {
+                    const dT_prev = prevTp - prevEnvT;
+                    if (dT_prev < 0) {
+                        const frac = Math.abs(dT_prev) / (Math.abs(dT_prev) + dT);
+                        lfc_hgt = prevZ + frac * (env.z - prevZ);
+                    } else { lfc_hgt = env.z; }
+                } else { lfc_hgt = env.z; }
+            }
+            cape   += (dT / (env.T + 273.15)) * 9.81 * dz;
+            el_hgt  = next.z;
+            el_temp = next.T;
+        } else {
+            if (!aboveLFC) {
+                cin += (dT / (env.T + 273.15)) * 9.81 * dz;
+            }
         }
+
+        prevTp = Tp; prevEnvT = env.T; prevZ = env.z;
     }
 
-    const li = profile.find(l => l.p <= 500)?.T != null
-        ? (profile.find(l => l.p <= 500).T) - (T - 9.8 * lclH / 1000 + 4)
-        : 0;
+    // LI = T_env(500hPa) - T_parcel(500hPa)  [negativ = instabil]
+    const env500 = sorted.find(l => l.p <= 502 && l.p >= 498)
+                ?? interpProfile(sorted, 500);
+    const li = (env500 && T_parcel_500 !== null)
+        ? Math.round((env500.T - T_parcel_500) * 10) / 10
+        : null;
 
     return {
-        CAPE:    Math.max(0, Math.round(cape)),
-        CIN:     Math.round(Math.max(-500, Math.min(0, cin))),
-        LCL_HGT: Math.round(lclH),
-        LFC_HGT: Math.round(lfc_hgt),
-        EL_HGT:  Math.round(el_hgt),
-        EL_TEMP: Math.round(el_temp * 10) / 10,
-        LI:      Math.round(li * 10) / 10,
+        CAPE:      Math.max(0, Math.round(cape)),
+        CIN:       Math.round(Math.max(-500, Math.min(0, cin))),
+        LCL_HGT:   Math.round(Math.max(0, lclH)),
+        LFC_HGT:   Math.round(lfc_hgt ?? lclH),
+        EL_HGT:    Math.round(el_hgt),
+        EL_TEMP:   Math.round(el_temp * 10) / 10,
+        LI:        li,
         Td_parcel: Td,
         p_parcel:  p_sfc,
     };
 }
 
-// ML-Parcel: Mittelwert unterste 500m
+// ML-Parcel: Mittelwert unterste 500m AGL (inkl. 10m Surface-Level)
 function computeMLParcel(sfc, profile) {
-    const ml_levels = profile.filter(l => l.z <= 500);
-    const ml_T  = ml_levels.length ? ml_levels.reduce((s,l) => s + l.T,  0) / ml_levels.length : sfc.t2m;
-    const ml_Td = ml_levels.length ? ml_levels.reduce((s,l) => s + l.Td, 0) / ml_levels.length : sfc.d2m;
-    const ml_p  = ml_levels.length ? ml_levels[0].p : 1013.25;
-    const res   = computeParcel(ml_T, ml_Td, ml_p, sfc, profile, 'ML');
-    res.mixR    = mixingRatio(ml_Td, ml_p);
+    // Surface-Level (10m) immer einschliessen
+    const sfcLevel = { T: sfc.t2m, Td: sfc.d2m, z: 10 };
+    const ml_levels = [sfcLevel, ...profile.filter(l => l.z <= 500)];
+
+    // Höhengewichteter Mittelwert (trapez-Methode)
+    let sumT = 0, sumTd = 0, totalDz = 0;
+    for (let i = 0; i < ml_levels.length - 1; i++) {
+        const dz = ml_levels[i + 1].z - ml_levels[i].z;
+        sumT  += 0.5 * (ml_levels[i].T  + ml_levels[i + 1].T)  * dz;
+        sumTd += 0.5 * (ml_levels[i].Td + ml_levels[i + 1].Td) * dz;
+        totalDz += dz;
+    }
+    const ml_T  = totalDz > 0 ? sumT  / totalDz : sfc.t2m;
+    const ml_Td = totalDz > 0 ? sumTd / totalDz : sfc.d2m;
+
+    // Startdruck: höchstes Level der untersten 500m als Repräsentant
+    const ml_p = ml_levels[0].p ?? 1013.25;
+
+    const res = computeParcel(ml_T, ml_Td, ml_p, sfc, profile, 'ML');
+    res.mixR  = mixingRatio(ml_Td, ml_p);
     return res;
 }
 
@@ -1205,36 +1274,68 @@ function computeMeanWinds(sfc, profile) {
     return { MW_01km: mw(1000), MW_02km: mw(2000), MW_03km: mw(3000), MW_06km: mw(6000) };
 }
 
-// Bunkers Storm Motion (Bunkers 2000)
-function computeBunkers(MW, BS) {
-    const prop = 7.5;  // m/s Deviation
-    const sh   = BS.BS_06km || 1;
-    // Vereinfachte Version ohne vollständige U/V-Decomposition
-    return { RM_speed: MW.MW_06km + prop, RM_dir: 0, LM_speed: MW.MW_06km + prop, LM_dir: 0 };
+// Bunkers Storm Motion (Bunkers et al. 2000) – echte U/V-Decomposition
+function computeBunkers(sfc, profile) {
+    // 0-6km Mittelwind (Bezugspunkt für Bunkers-Abweichung)
+    const levels06 = [
+        { z: 10,    u: toUV(sfc.ws10_ms, sfc.wd10).u,  v: toUV(sfc.ws10_ms, sfc.wd10).v },
+        ...profile.filter(l => l.z <= 6000).map(l => ({ z: l.z, ...toUV(l.ws_ms, l.wd) })),
+    ];
+    const mwU = levels06.reduce((s, l) => s + l.u, 0) / levels06.length;
+    const mwV = levels06.reduce((s, l) => s + l.v, 0) / levels06.length;
+
+    // 0-6km Shear-Vektor
+    const bot = toUV(sfc.ws10_ms, sfc.wd10);
+    const top6 = profile.filter(l => l.z <= 6000).sort((a,b) => b.z - a.z)[0];
+    const topUV = top6 ? toUV(top6.ws_ms, top6.wd) : bot;
+    const shU = topUV.u - bot.u;
+    const shV = topUV.v - bot.v;
+    const shMag = Math.hypot(shU, shV) || 1;
+
+    // Rechts-devierender (RM) und Links-devierender (LM) Storm
+    const D = 7.5; // m/s Deviattion (Bunkers 2000)
+    const rm_u = mwU + D * (shV / shMag);
+    const rm_v = mwV - D * (shU / shMag);
+    const lm_u = mwU - D * (shV / shMag);
+    const lm_v = mwV + D * (shU / shMag);
+
+    function uvToSpeedDir(u, v) {
+        const speed = Math.hypot(u, v);
+        let dir = (270 - Math.atan2(v, u) * 180 / Math.PI) % 360;
+        return { speed: Math.round(speed * 10) / 10, dir: Math.round(dir) };
+    }
+    const rm = uvToSpeedDir(rm_u, rm_v);
+    const lm = uvToSpeedDir(lm_u, lm_v);
+    const mw = uvToSpeedDir(mwU, mwV);
+
+    return {
+        RM_speed: rm.speed, RM_dir: rm.dir, RM_u: rm_u, RM_v: rm_v,
+        LM_speed: lm.speed, LM_dir: lm.dir, LM_u: lm_u, LM_v: lm_v,
+        MW_speed: mw.speed, MW_dir:  mw.dir, MW_u: mwU,  MW_v: mwV,
+    };
 }
 
-// SRH (Storm Relative Helicity) – Bunkers RM
+// SRH (Storm Relative Helicity) – mit Bunkers RM/LM Storm Motion
 function computeSRH(sfc, profile, bunkers) {
-    function srh(z_top) {
+    // Echte Bunkers-Stormvektoren verwenden
+    const stormU_RM = bunkers.RM_u;
+    const stormV_RM = bunkers.RM_v;
+    const stormU_LM = bunkers.LM_u;
+    const stormV_LM = bunkers.LM_v;
+
+    function srhLayer(z_top, stormU, stormV) {
+        // Surface + alle Level bis z_top
+        const sfcUV = toUV(sfc.ws10_ms, sfc.wd10);
         const levels = [
-            { z: 10,    u: toUV(sfc.ws10_ms, sfc.wd10).u,   v: toUV(sfc.ws10_ms, sfc.wd10).v },
-            ...profile.filter(l => l.z <= z_top).map(l => ({ z: l.z, ...toUV(l.ws_ms, l.wd) })),
+            { z: 10, u: sfcUV.u, v: sfcUV.v },
+            ...profile
+                .filter(l => l.z > 10 && l.z <= z_top)
+                .sort((a, b) => a.z - b.z)
+                .map(l => ({ z: l.z, ...toUV(l.ws_ms, l.wd) })),
         ];
         if (levels.length < 2) return 0;
 
-        // Storm motion (Bunkers RM – vereinfacht: Methode nach shear-Vektor)
-        const sfcUV   = toUV(sfc.ws10_ms, sfc.wd10);
-        const topLevel= profile.filter(l => l.z <= 6000).sort((a,b) => b.z - a.z)[0];
-        const topUV   = topLevel ? toUV(topLevel.ws_ms, topLevel.wd) : sfcUV;
-        const shU     = topUV.u - sfcUV.u;
-        const shV     = topUV.v - sfcUV.v;
-        const shMag   = Math.hypot(shU, shV) || 1;
-        const mwU     = levels.reduce((s,l) => s + l.u, 0) / levels.length;
-        const mwV     = levels.reduce((s,l) => s + l.v, 0) / levels.length;
-        const devMag  = 7.5;
-        const stormU  = mwU + devMag * (shV / shMag);
-        const stormV  = mwV - devMag * (shU / shMag);
-
+        // Helizitäts-Integral: H = Σ (V_sr × ΔV)  (Kreuzprodukt-Methode)
         let helicity = 0;
         for (let i = 0; i < levels.length - 1; i++) {
             const u1 = levels[i].u   - stormU;
@@ -1243,12 +1344,16 @@ function computeSRH(sfc, profile, bunkers) {
             const v2 = levels[i+1].v - stormV;
             helicity += u1 * v2 - u2 * v1;
         }
-        return Math.abs(helicity);
+        // Positiv für RM (zyklonal), negativ für LM
+        return helicity;
     }
+
     return {
-        SRH_500m_RM: Math.round(srh(500)),
-        SRH_1km_RM:  Math.round(srh(1000)),
-        SRH_3km_RM:  Math.round(srh(3000)),
+        SRH_500m_RM: Math.round(Math.max(0, srhLayer(500,  stormU_RM, stormV_RM))),
+        SRH_1km_RM:  Math.round(Math.max(0, srhLayer(1000, stormU_RM, stormV_RM))),
+        SRH_3km_RM:  Math.round(Math.max(0, srhLayer(3000, stormU_RM, stormV_RM))),
+        SRH_1km_LM:  Math.round(Math.max(0, -srhLayer(1000, stormU_LM, stormV_LM))),
+        SRH_3km_LM:  Math.round(Math.max(0, -srhLayer(3000, stormU_LM, stormV_LM))),
     };
 }
 
