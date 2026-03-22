@@ -93,9 +93,10 @@ export default async function handler(req, res) {
         }
 
         // Vollständiges Druckniveau-Profil für thundeR-Parameter
-        // Gibt sortiertes Array von {p, z, T, Td, rh, ws_ms, wd} zurück
+        // z = Geopotentialhöhe ASL [m], z_agl = Höhe über Grund [m]
+        // Surface-Höhe z_sfc wird aus dem niedrigsten verfügbaren Level geschätzt
         function buildProfile(hourly, i, model) {
-            const profile = [];
+            const raw = [];
             for (const lv of LEVELS) {
                 const T  = getVal(hourly, `temperature_${lv}hPa`,        model, i);
                 const Td = getVal(hourly, `dewpoint_${lv}hPa`,           model, i);
@@ -103,21 +104,38 @@ export default async function handler(req, res) {
                 const ws = getVal(hourly, `wind_speed_${lv}hPa`,         model, i);  // km/h
                 const wd = getVal(hourly, `wind_direction_${lv}hPa`,     model, i);
                 const z  = getVal(hourly, `geopotential_height_${lv}hPa`,model, i);
-
-                if (T === null) continue;  // Level nicht verfügbar für dieses Modell
-
-                profile.push({
-                    p:      lv,
-                    z:      z  ?? pressureToAltitude(lv),  // Fallback: Standardatmosphäre
+                if (T === null) continue;
+                raw.push({
+                    p:     lv,   // Druckniveau [hPa]
                     T,
-                    Td:     Td ?? deriveDewpoint(T, rh ?? 70),
-                    rh:     rh ?? calcRH(T, Td ?? T - 5),
-                    ws_ms:  ws != null ? ws / 3.6 : 0,     // km/h → m/s
-                    wd:     wd ?? 0,
+                    z_asl: z ?? pressureToAltitude(lv),
+                    Td:    Td ?? deriveDewpoint(T, rh ?? 70),
+                    rh:    rh ?? calcRH(T, Td ?? T - 5),
+                    ws_ms: ws != null ? ws / 3.6 : 0,
+                    wd:    wd ?? 0,
                 });
             }
-            // Aufsteigend nach Druck (Surface zuerst)
-            return profile.sort((a, b) => b.p - a.p);
+            // Aufsteigend nach Druck sortieren (höchster Druck = niedrigstes Level zuerst)
+            raw.sort((a, b) => b.p - a.p);
+
+            // z_sfc aus dem untersten verfügbaren Level
+            const z_sfc = raw.length > 0 ? raw[0].z_asl : 0;
+
+            // Bodendruck via hypsometrische Gleichung aus dem untersten Level
+            // p_sfc = p_lowest * exp(g * (z_lowest_asl - z_sfc) / (Rd * T_mean))
+            // Für z_sfc ≈ z_lowest → p_sfc ≈ p_lowest (kein Fehler bei flachem Terrain)
+            const p_lowest = raw[0]?.p ?? 1000;
+            const T_lowest = raw[0]?.T ?? 15;
+            const dz_to_sfc = raw[0]?.z_asl - z_sfc;  // ≈ 0 per Definition
+            const p_sfc = p_lowest * Math.exp(9.81 * dz_to_sfc / (287 * (T_lowest + 273.15)));
+
+            // z_agl = Höhe über Grund = z_asl - z_sfc (mindestens 0)
+            const profile = raw.map(l => ({
+                ...l,
+                z: Math.max(0, l.z_asl - z_sfc),  // z ist ab jetzt AGL!
+            }));
+
+            return { profile, p_sfc: Math.round(p_sfc * 10) / 10 };
         }
 
         function extractSurface(hourly, i, model) {
@@ -151,16 +169,18 @@ export default async function handler(req, res) {
         // Alle Parameter analog zu sounding_compute() – rekonstruiert aus
         // diskreten Druckniveaus (accuracy=1 äquivalent)
 
-        function computeThunderParams(sfc, profile) {
+        function computeThunderParams(sfc, profile, p_sfc_in) {
             if (!profile.length || !sfc) return null;
 
             // ── Lapse Rates (LR_*) ──────────────────────────────────────
             const LR = computeLapseRates(profile, sfc);
 
             // ── CAPE/CIN/LCL/LFC/EL (SB, ML, MU) ──────────────────────
-            const SB = computeParcel(sfc.t2m, sfc.d2m, 1013.25, sfc, profile, 'SB');
-            const ML = computeMLParcel(sfc, profile);
-            const MU = computeMUParcel(sfc, profile);
+            // Bodendruck: aus Profil berechnet oder Fallback 1013.25
+            const p_sfc = p_sfc_in ?? 1013.25;
+            const SB = computeParcel(sfc.t2m, sfc.d2m, p_sfc, sfc, profile, 'SB');
+            const ML = computeMLParcel(sfc, profile, p_sfc);
+            const MU = computeMUParcel(sfc, profile, p_sfc);
 
             // ── Feuchte-Indizes ─────────────────────────────────────────
             const p850  = interpProfile(profile, 850);
@@ -203,9 +223,21 @@ export default async function handler(req, res) {
             const K_Index       = p850 && p700 && p500
                 ? (p850.T - p500.T) + p850.Td - (p700.T - p700.Td)
                 : 0;
-            const Showalter     = p500 && p850
-                ? p500.T - liftParcel(p850.T, p850.Td, 850, 500)
-                : 0;
+            // Showalter Index: T_env(500) - T_parcel(500) geliftet von 850hPa
+            // Negativ = instabil, Positiv = stabil
+            let Showalter = 0;
+            if (p500 && p850) {
+                const dewDep850 = Math.max(0, p850.T - p850.Td);
+                const T_LCL850  = p850.T - 0.212 * dewDep850 - 0.001 * dewDep850 * dewDep850;
+                const T_LCL_K   = T_LCL850 + 273.15;
+                const e_850     = 6.112 * Math.exp(17.67 * p850.Td / (p850.Td + 243.5));
+                const w_gkg850  = 1000 * 0.622 * e_850 / (850 - e_850);
+                const thetaE_850 = (p850.T + 273.15)
+                    * Math.pow(1000 / 850, 0.2854 * (1 - 0.00028 * w_gkg850))
+                    * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg850 * (1 + 0.00081 * w_gkg850));
+                const T_parcel_500 = parcelTempAtLevel(thetaE_850, 500, p500.T + 1);
+                Showalter = p500.T - T_parcel_500;
+            }
             const TotalTotals   = p850 && p700 && p500
                 ? (p850.T + p850.Td) - (2 * p500.T)
                 : 0;
@@ -764,9 +796,9 @@ export default async function handler(req, res) {
             const sfcByModel      = {};
 
             for (const model of MODELS) {
-                const sfc     = extractSurface(data.hourly, i, model);
-                const profile = buildProfile(data.hourly, i, model);
-                const params  = computeThunderParams(sfc, profile);
+                const sfc             = extractSurface(data.hourly, i, model);
+                const { profile, p_sfc } = buildProfile(data.hourly, i, model);
+                const params  = computeThunderParams(sfc, profile, p_sfc);
                 sfcByModel[model]      = sfc;
                 paramsByModel[model]   = params;
                 gewitterByModel[model] = sfc ? calculateLightningProb(params, sfc) : null;
@@ -1139,7 +1171,7 @@ function computeParcel(T, Td, p_sfc, sfc, profile, type) {
 }
 
 // ML-Parcel: Mittelwert unterste 500m AGL (inkl. 10m Surface-Level)
-function computeMLParcel(sfc, profile) {
+function computeMLParcel(sfc, profile, p_sfc_in) {
     // Surface-Level (10m) immer einschliessen
     const sfcLevel = { T: sfc.t2m, Td: sfc.d2m, z: 10 };
     const ml_levels = [sfcLevel, ...profile.filter(l => l.z <= 500)];
@@ -1155,8 +1187,8 @@ function computeMLParcel(sfc, profile) {
     const ml_T  = totalDz > 0 ? sumT  / totalDz : sfc.t2m;
     const ml_Td = totalDz > 0 ? sumTd / totalDz : sfc.d2m;
 
-    // Startdruck: höchstes Level der untersten 500m als Repräsentant
-    const ml_p = ml_levels[0].p ?? 1013.25;
+    // Startdruck: Bodendruck
+    const ml_p = p_sfc_in ?? (ml_levels[0]?.p ?? 1013.25);
 
     const res = computeParcel(ml_T, ml_Td, ml_p, sfc, profile, 'ML');
     res.mixR  = mixingRatio(ml_Td, ml_p);
@@ -1164,10 +1196,12 @@ function computeMLParcel(sfc, profile) {
 }
 
 // MU-Parcel: feuchteste Luftmasse in untersten 300 hPa
-function computeMUParcel(sfc, profile) {
+function computeMUParcel(sfc, profile, p_sfc_in) {
     let maxThetaE = -Infinity, best = null;
-    const p_sfc = profile.length ? profile[0].p : 1013.25;
-    const levels = [{ T: sfc.t2m, Td: sfc.d2m, p: p_sfc }, ...profile.filter(l => l.p >= p_sfc - 300)];
+    const p_sfc = p_sfc_in ?? (profile.length ? profile[0].p : 1013.25);
+    // Surface-Level (2m) + alle Levels innerhalb 300 hPa von Boden
+    const levels = [{ T: sfc.t2m, Td: sfc.d2m, p: p_sfc, z: 0 },
+                    ...profile.filter(l => l.p >= p_sfc - 300)];
     for (const l of levels) {
         const te = thetaE(l.T, l.Td, l.p);
         if (te > maxThetaE) { maxThetaE = te; best = l; }
