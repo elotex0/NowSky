@@ -635,6 +635,130 @@ export default async function handler(req, res) {
             return v.length ? v.reduce((s, x) => s + x, 0) / v.length : 0;
         }
 
+        // Hilfsfunktion: alle thundeR-Parameter eines Modells runden und ausgeben
+        function formatParams(p, prob) {
+            if (!p) return null;
+            return {
+                gewitter: prob ?? null,
+                // ── CAPE / CIN ─────────────────────────────────────────────
+                MU_CAPE:        Math.round(p.MU_CAPE),
+                MU_CIN:         Math.round(p.MU_CIN),
+                MU_LCL_HGT:    Math.round(p.MU_LCL_HGT),
+                MU_LFC_HGT:    Math.round(p.MU_LFC_HGT),
+                MU_EL_HGT:     Math.round(p.MU_EL_HGT),
+                MU_EL_TEMP:    Math.round(p.MU_EL_TEMP * 10) / 10,
+                MU_LI:         Math.round(p.MU_LI * 10) / 10,
+                MU_WMAX:       Math.round(p.MU_WMAX * 10) / 10,
+                MU_MIXR:       Math.round(p.MU_MIXR * 10) / 10,
+                SB_CAPE:       Math.round(p.SB_CAPE),
+                SB_CIN:        Math.round(p.SB_CIN),
+                SB_LCL_HGT:   Math.round(p.SB_LCL_HGT),
+                SB_LFC_HGT:   Math.round(p.SB_LFC_HGT),
+                SB_EL_HGT:    Math.round(p.SB_EL_HGT),
+                SB_EL_TEMP:   Math.round(p.SB_EL_TEMP * 10) / 10,
+                SB_LI:        Math.round(p.SB_LI * 10) / 10,
+                SB_WMAX:      Math.round(p.SB_WMAX * 10) / 10,
+                SB_MIXR:      Math.round(p.SB_MIXR * 10) / 10,
+                ML_CAPE:      Math.round(p.ML_CAPE),
+                ML_CIN:       Math.round(p.ML_CIN),
+                ML_LCL_HGT:  Math.round(p.ML_LCL_HGT),
+                ML_LFC_HGT:  Math.round(p.ML_LFC_HGT),
+                ML_EL_HGT:   Math.round(p.ML_EL_HGT),
+                ML_EL_TEMP:  Math.round(p.ML_EL_TEMP * 10) / 10,
+                ML_LI:       Math.round(p.ML_LI * 10) / 10,
+                ML_WMAX:     Math.round(p.ML_WMAX * 10) / 10,
+                ML_MIXR:     Math.round(p.ML_MIXR * 10) / 10,
+                // ── CAPE-Teilschichten ─────────────────────────────────────
+                SB_02km_CAPE: Math.round(p.SB_02km_CAPE),
+                SB_03km_CAPE: Math.round(p.SB_03km_CAPE),
+                MU_03km_CAPE: Math.round(p.MU_03km_CAPE),
+                // ── Lapse Rates ────────────────────────────────────────────
+                LR_01km:      Math.round(p.LR_01km * 10) / 10,
+                LR_02km:      Math.round(p.LR_02km * 10) / 10,
+                LR_03km:      Math.round(p.LR_03km * 10) / 10,
+                LR_06km:      Math.round(p.LR_06km * 10) / 10,
+                LR_16km:      Math.round(p.LR_16km * 10) / 10,
+                LR_26km:      Math.round(p.LR_26km * 10) / 10,
+                LR_36km:      Math.round(p.LR_36km * 10) / 10,
+                LR_500700hPa: Math.round(p.LR_500700hPa * 10) / 10,
+                LR_500800hPa: Math.round(p.LR_500800hPa * 10) / 10,
+                LR_600800hPa: Math.round(p.LR_600800hPa * 10) / 10,
+                // ── Gefrierniveau ──────────────────────────────────────────
+                FRZG_HGT:         Math.round(p.FRZG_HGT),
+                FRZG_wetbulb_HGT: Math.round(p.FRZG_wetbulb_HGT),
+                // ── Theta-E ────────────────────────────────────────────────
+                Thetae_01km:         Math.round(p.Thetae_01km * 10) / 10,
+                Thetae_02km:         Math.round(p.Thetae_02km * 10) / 10,
+                Delta_thetae:        Math.round(p.Delta_thetae * 10) / 10,
+                HGT_max_thetae_03km: Math.round(p.HGT_max_thetae_03km),
+                HGT_min_thetae_04km: Math.round(p.HGT_min_thetae_04km),
+                // ── Feuchte ────────────────────────────────────────────────
+                PRCP_WATER:         Math.round(p.PRCP_WATER * 10) / 10,
+                RH_01km:            Math.round(p.RH_01km),
+                RH_02km:            Math.round(p.RH_02km),
+                RH_14km:            Math.round(p.RH_14km),
+                RH_25km:            Math.round(p.RH_25km),
+                RH_36km:            Math.round(p.RH_36km),
+                Moisture_Flux_02km: Math.round(p.Moisture_Flux_02km),
+                // ── DCAPE / Wind ───────────────────────────────────────────
+                DCAPE:              Math.round(p.DCAPE),
+                Cold_Pool_Strength: Math.round(p.Cold_Pool_Strength * 10) / 10,
+                Wind_Index:         Math.round(p.Wind_Index),
+                // ── Bulk Shear [m/s] ───────────────────────────────────────
+                BS_01km:  Math.round(p.BS_01km * 10) / 10,
+                BS_02km:  Math.round(p.BS_02km * 10) / 10,
+                BS_03km:  Math.round(p.BS_03km * 10) / 10,
+                BS_06km:  Math.round(p.BS_06km * 10) / 10,
+                BS_08km:  Math.round(p.BS_08km * 10) / 10,
+                BS_36km:  Math.round(p.BS_36km * 10) / 10,
+                BS_26km:  Math.round(p.BS_26km * 10) / 10,
+                BS_16km:  Math.round(p.BS_16km * 10) / 10,
+                // ── Mittlere Winde [m/s] ───────────────────────────────────
+                MW_01km:  Math.round(p.MW_01km * 10) / 10,
+                MW_02km:  Math.round(p.MW_02km * 10) / 10,
+                MW_03km:  Math.round(p.MW_03km * 10) / 10,
+                MW_06km:  Math.round(p.MW_06km * 10) / 10,
+                // ── SRH [m²/s²] ───────────────────────────────────────────
+                SRH_500m_RM: Math.round(p.SRH_500m_RM),
+                SRH_1km_RM:  Math.round(p.SRH_1km_RM),
+                SRH_3km_RM:  Math.round(p.SRH_3km_RM),
+                // ── Composite-Indizes ──────────────────────────────────────
+                K_Index:           Math.round(p.K_Index * 10) / 10,
+                Showalter_Index:   Math.round(p.Showalter_Index * 10) / 10,
+                TotalTotals_Index: Math.round(p.TotalTotals_Index * 10) / 10,
+                SWEAT_Index:       Math.round(p.SWEAT_Index),
+                SCP_fix:           Math.round(p.SCP_fix * 100) / 100,
+                STP_fix:           Math.round(p.STP_fix * 100) / 100,
+                EHI_01km:          Math.round(p.EHI_01km * 100) / 100,
+                EHI_03km:          Math.round(p.EHI_03km * 100) / 100,
+                SHIP:              Math.round(p.SHIP * 100) / 100,
+                DCP:               Math.round(p.DCP * 100) / 100,
+                SHERBS3:           Math.round(p.SHERBS3 * 100) / 100,
+                SHERBE:            Math.round(p.SHERBE  * 100) / 100,
+                DEI:               Math.round(p.DEI * 100) / 100,
+                TIP:               Math.round(p.TIP * 100) / 100,
+                // ── WMAXSHEAR ─────────────────────────────────────────────
+                MU_WMAXSHEAR: Math.round(p.MU_WMAXSHEAR),
+                SB_WMAXSHEAR: Math.round(p.SB_WMAXSHEAR),
+                ML_WMAXSHEAR: Math.round(p.ML_WMAXSHEAR),
+                // ── Bunkers ────────────────────────────────────────────────
+                Bunkers_RM_M: Math.round(p.Bunkers_RM_M * 10) / 10,
+                Bunkers_RM_A: Math.round(p.Bunkers_RM_A),
+                Bunkers_LM_M: Math.round(p.Bunkers_LM_M * 10) / 10,
+                Bunkers_LM_A: Math.round(p.Bunkers_LM_A),
+                // ── Oberfläche ─────────────────────────────────────────────
+                T2m:       Math.round(p.T2m * 10) / 10,
+                Td2m:      Math.round(p.Td2m * 10) / 10,
+                CAPE_sfc:  Math.round(p.CAPE_sfc),
+                CIN_sfc:   Math.round(p.CIN_sfc),
+                LI_sfc:    p.LI_sfc != null ? Math.round(p.LI_sfc * 10) / 10 : null,
+                PWAT:      Math.round(p.PWAT * 10) / 10,
+                FRZ_LVL:   Math.round(p.FRZ_LVL),
+                PBL_H:     Math.round(p.PBL_H),
+                RADIATION: Math.round(p.RADIATION),
+            };
+        }
+
         // ── Schritt 5: Alle Stunden verarbeiten ────────────────────────────
         const hours = data.hourly.time.map((t, i) => {
             const fTime   = new Date(t);
@@ -642,38 +766,50 @@ export default async function handler(req, res) {
 
             const gewitterByModel = {};
             const paramsByModel   = {};
+            const sfcByModel      = {};
 
             for (const model of MODELS) {
                 const sfc     = extractSurface(data.hourly, i, model);
                 const profile = buildProfile(data.hourly, i, model);
                 const params  = computeThunderParams(sfc, profile);
+                sfcByModel[model]      = sfc;
                 paramsByModel[model]   = params;
                 gewitterByModel[model] = sfc ? calculateLightningProb(params, sfc) : null;
             }
 
             const prob = ensembleProb(gewitterByModel, leadH);
 
-            // Display-Mittelwerte aus Ensemble
+            // Ensemble-Mittelwerte
             const validParams = Object.values(paramsByModel).filter(Boolean);
             const mean = (fn) => ensembleMean(validParams.map(fn));
+
+            // Pro-Modell-Objekte
+            const modelle = {};
+            for (const model of MODELS) {
+                modelle[model] = formatParams(paramsByModel[model], gewitterByModel[model]);
+            }
 
             return {
                 time:        t,
                 probability: prob,
-                // Wichtigste Parameter für Debug/Anzeige
-                cape:        Math.round(mean(p => p.MU_CAPE)),
-                shear06:     Math.round(mean(p => p.BS_06km) * 10) / 10,
-                srh1km:      Math.round(mean(p => p.SRH_1km_RM)),
-                srh3km:      Math.round(mean(p => p.SRH_3km_RM)),
-                wmaxshear:   Math.round(mean(p => p.ML_WMAXSHEAR)),
-                dcape:       Math.round(mean(p => p.DCAPE)),
-                li:          Math.round(mean(p => p.SB_LI) * 10) / 10,
-                kIndex:      Math.round(mean(p => p.K_Index)),
-                theta_e:     Math.round(mean(p => p.Thetae_01km)),
-                lr36:        Math.round(mean(p => p.LR_36km) * 10) / 10,
-                scp:         Math.round(mean(p => p.SCP_fix) * 100) / 100,
-                stp:         Math.round(mean(p => p.STP_fix) * 100) / 100,
-                ship:        Math.round(mean(p => p.SHIP)    * 100) / 100,
+                // Ensemble-Mittelwerte der wichtigsten Parameter
+                ensemble: {
+                    MU_CAPE:     Math.round(mean(p => p.MU_CAPE)),
+                    BS_06km:     Math.round(mean(p => p.BS_06km) * 10) / 10,
+                    SRH_1km_RM:  Math.round(mean(p => p.SRH_1km_RM)),
+                    SRH_3km_RM:  Math.round(mean(p => p.SRH_3km_RM)),
+                    ML_WMAXSHEAR:Math.round(mean(p => p.ML_WMAXSHEAR)),
+                    DCAPE:       Math.round(mean(p => p.DCAPE)),
+                    SB_LI:       Math.round(mean(p => p.SB_LI) * 10) / 10,
+                    K_Index:     Math.round(mean(p => p.K_Index)),
+                    Thetae_01km: Math.round(mean(p => p.Thetae_01km)),
+                    LR_36km:     Math.round(mean(p => p.LR_36km) * 10) / 10,
+                    SCP_fix:     Math.round(mean(p => p.SCP_fix) * 100) / 100,
+                    STP_fix:     Math.round(mean(p => p.STP_fix) * 100) / 100,
+                    SHIP:        Math.round(mean(p => p.SHIP)    * 100) / 100,
+                },
+                // Alle Parameter pro Modell
+                modelle,
             };
         });
 
@@ -686,15 +822,54 @@ export default async function handler(req, res) {
             })
             .slice(0, 24);
 
+        // Tages-Aggregation: Max-Prob + Max-Wert je Parameter je Modell
         const daysMap = new Map();
         hours.forEach(h => {
             const [dp] = h.time.split('T');
-            if (dp >= currentDateStr) {
-                if (!daysMap.has(dp)) {
-                    daysMap.set(dp, { date: dp, maxProbability: h.probability });
-                } else {
-                    const d = daysMap.get(dp);
-                    d.maxProbability = Math.max(d.maxProbability, h.probability);
+            if (dp < currentDateStr) return;
+
+            if (!daysMap.has(dp)) {
+                // Initialisieren
+                const entry = {
+                    date:           dp,
+                    maxProbability: h.probability,
+                    ensemble:       { ...h.ensemble },
+                    modelle:        {},
+                };
+                for (const model of MODELS) {
+                    if (h.modelle[model]) {
+                        entry.modelle[model] = { ...h.modelle[model] };
+                    }
+                }
+                daysMap.set(dp, entry);
+            } else {
+                const d = daysMap.get(dp);
+
+                // Gesamt-Max
+                d.maxProbability = Math.max(d.maxProbability, h.probability);
+
+                // Ensemble-Mittelwert-Felder: Max über den Tag
+                for (const key of Object.keys(d.ensemble)) {
+                    if (h.ensemble[key] != null) {
+                        d.ensemble[key] = Math.max(d.ensemble[key] ?? 0, h.ensemble[key]);
+                    }
+                }
+
+                // Pro Modell: Max über den Tag (für jeden numerischen Parameter)
+                for (const model of MODELS) {
+                    const mh = h.modelle[model];
+                    if (!mh) continue;
+                    if (!d.modelle[model]) {
+                        d.modelle[model] = { ...mh };
+                    } else {
+                        const dm = d.modelle[model];
+                        for (const key of Object.keys(mh)) {
+                            const val = mh[key];
+                            if (typeof val === 'number') {
+                                dm[key] = Math.max(dm[key] ?? 0, val);
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -703,20 +878,10 @@ export default async function handler(req, res) {
             timestamp:     h.time,
             gewitter:      h.probability,
             gewitter_risk: categorizeRisk(h.probability),
-            // Prädiktoren für Frontend-Anzeige
-            cape:          h.cape,
-            shear_06km:    h.shear06,
-            srh_1km:       h.srh1km,
-            srh_3km:       h.srh3km,
-            wmaxshear:     h.wmaxshear,
-            dcape:         h.dcape,
-            lifted_index:  h.li,
-            k_index:       h.kIndex,
-            theta_e:       h.theta_e,
-            lr_36km:       h.lr36,
-            scp:           h.scp,
-            stp:           h.stp,
-            ship:          h.ship,
+            // Ensemble-Mittelwerte
+            ensemble:      h.ensemble,
+            // Vollständige Parameter pro Modell
+            modelle:       h.modelle,
         }));
 
         const tage = Array.from(daysMap.values())
@@ -725,6 +890,10 @@ export default async function handler(req, res) {
                 date:          day.date,
                 gewitter:      day.maxProbability,
                 gewitter_risk: categorizeRisk(day.maxProbability),
+                // Tages-Maxima Ensemble
+                ensemble:      day.ensemble,
+                // Tages-Maxima pro Modell
+                modelle:       day.modelle,
             }));
 
         return res.status(200).json({ timezone, stunden, tage });
