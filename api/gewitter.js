@@ -46,7 +46,6 @@ export default async function handler(req, res) {
         'cape',
         'convective_inhibition',
         'lifted_index',
-        'freezing_level_height',
         'boundary_layer_height',
         'precipitation',
         'precipitation_probability',
@@ -137,7 +136,6 @@ export default async function handler(req, res) {
                 cape:        Math.max(0, g('cape')             ?? 0),
                 cin:         g('convective_inhibition')         ?? 0,
                 li:          g('lifted_index')                  ?? null,
-                frzLvl:      g('freezing_level_height')         ?? 3000,
                 pblH:        g('boundary_layer_height')         ?? null,
                 precip:      g('precipitation')                 ?? 0,
                 precipProb:  g('precipitation_probability')    ?? 0,
@@ -226,9 +224,6 @@ export default async function handler(req, res) {
             const SHIP     = computeSHIP(MU, BS, p500, p700);
             const DCP      = computeDCP(DCAPE, MU.CAPE, BS.BS_06km, SRH.SRH_1km_RM);
 
-            // ── Wind_Index (Modifizierter McCann 1994) ───────────────────
-            const Wind_Index = computeWindIndex(MU.CAPE, DCAPE, BS.BS_06km, sfc.frzLvl);
-
             // SHERBS3 / SHERBE (Sherburn & Parker 2014 – HSLC)
             const SHERBS3  = computeSHERBS3(LR.LR_36km, BS.BS_06km, SRH.SRH_3km_RM, MU.CAPE);
             const SHERBE   = computeSHERBE (LR.LR_36km, BS.BS_06km, SRH.SRH_3km_RM, MU.CAPE);
@@ -292,9 +287,6 @@ export default async function handler(req, res) {
                 LR_600800hPa: LR.LR_600800hPa,
 
                 // ── Gefrierniveau ────────────────────────────────────
-                FRZG_HGT:          sfc.frzLvl,
-                FRZG_wetbulb_HGT:  sfc.frzLvl - 200,  // Approx.
-
                 // ── Theta-E ──────────────────────────────────────────
                 Thetae_01km:       ThetaE_01km,
                 Thetae_02km:       ThetaE_02km,
@@ -311,10 +303,9 @@ export default async function handler(req, res) {
                 RH_36km,
                 Moisture_Flux_02km: MoistFlux02,
 
-                // ── DCAPE / Wind ─────────────────────────────────────
+                // ── DCAPE ────────────────────────────────────────────
                 DCAPE,
                 Cold_Pool_Strength: CPS,
-                Wind_Index,
 
                 // ── Bulk Shear ────────────────────────────────────────
                 BS_01km:       BS.BS_01km,
@@ -371,7 +362,6 @@ export default async function handler(req, res) {
                 CIN_sfc:       sfc.cin,
                 LI_sfc:        sfc.li,
                 PWAT:          sfc.pwat,
-                FRZ_LVL:       sfc.frzLvl,
                 PBL_H:         sfc.pblH ?? ML.LCL_HGT,
                 RADIATION:     sfc.radiation,
             };
@@ -683,9 +673,6 @@ export default async function handler(req, res) {
                 LR_500700hPa: Math.round(p.LR_500700hPa * 10) / 10,
                 LR_500800hPa: Math.round(p.LR_500800hPa * 10) / 10,
                 LR_600800hPa: Math.round(p.LR_600800hPa * 10) / 10,
-                // ── Gefrierniveau ──────────────────────────────────────────
-                FRZG_HGT:         Math.round(p.FRZG_HGT),
-                FRZG_wetbulb_HGT: Math.round(p.FRZG_wetbulb_HGT),
                 // ── Theta-E ────────────────────────────────────────────────
                 Thetae_01km:         Math.round(p.Thetae_01km * 10) / 10,
                 Thetae_02km:         Math.round(p.Thetae_02km * 10) / 10,
@@ -700,10 +687,9 @@ export default async function handler(req, res) {
                 RH_25km:            Math.round(p.RH_25km),
                 RH_36km:            Math.round(p.RH_36km),
                 Moisture_Flux_02km: Math.round(p.Moisture_Flux_02km),
-                // ── DCAPE / Wind ───────────────────────────────────────────
+                // ── DCAPE ─────────────────────────────────────────────────
                 DCAPE:              Math.round(p.DCAPE),
                 Cold_Pool_Strength: Math.round(p.Cold_Pool_Strength * 10) / 10,
-                Wind_Index:         Math.round(p.Wind_Index),
                 // ── Bulk Shear [m/s] ───────────────────────────────────────
                 BS_01km:  Math.round(p.BS_01km * 10) / 10,
                 BS_02km:  Math.round(p.BS_02km * 10) / 10,
@@ -753,7 +739,6 @@ export default async function handler(req, res) {
                 CIN_sfc:   Math.round(p.CIN_sfc),
                 LI_sfc:    p.LI_sfc != null ? Math.round(p.LI_sfc * 10) / 10 : null,
                 PWAT:      Math.round(p.PWAT * 10) / 10,
-                FRZ_LVL:   Math.round(p.FRZ_LVL),
                 PBL_H:     Math.round(p.PBL_H),
                 RADIATION: Math.round(p.RADIATION),
             };
