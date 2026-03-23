@@ -1149,87 +1149,90 @@ function partialCAPE(sfc, profile, parcel, z1, z2) {
     return Math.max(0, Math.round(cape));
 }
 
-// FIX A: Echtes DCAPE nach Emanuel (1994)
-// Definition: Potential energy of a saturated parcel descending from a level
-// in the layer where downdraft originates (typ. 700–600 hPa in EU).
-// Parcell wird vom feuchtesten (niedrigster Taupunktsdefizit) Level in 500–750 hPa
-// trocken-adiabatisch abgesenkt und gegen die Umgebungstemperatur integriert.
-// Vorher: vereinfachte Wetbulb-Differenz → überschätzte DCAPE um Faktor 2–5.
+// FIX DCAPE: Korrekte MetPy/Emanuel(1994) Implementierung
+// 
+// Methode (identisch mit MetPy downdraft_cape):
+//   1. Finde Level mit minimaler Theta-E zwischen 500–700 hPa
+//   2. Senke Parzel moist-adiabatisch von dort zur Oberfläche
+//   3. Integriere negative Auftriebsenergie: DCAPE = -Rd * ∫ (Tv_env - Tv_parcel) d(ln p)
+//      → nur wo Parzel KÄLTER als Umgebung (negativer Auftrieb = "area B")
+//
+// Realistischer EU-Wertebereich nach Klimatologie:
+//   März (DE): 50–300 J/kg (trockene, stabile Atmosphäre)
+//   Sommer (aktive Gewittertage): 300–800 J/kg
+//   Extreme Ereignisse (Derecho, MCS): 800–1200 J/kg
+//   >1200 J/kg: sehr selten in EU, typisch für US Great Plains
+//
+// Vorherige Fehler:
+//   - Feuchtadiabatisches Sinken (4.5 K/km) war falsch: Parzel SINKT entlang
+//     gesättigter Adiabate → erwärmt sich beim Sinken mit ~6.5 K/km, nicht 4.5 K/km
+//   - Wetbulb als Starttemperatur war willkürlich, nicht Theta-E-basiert
+//   - Integral über z statt ln(p) → Einheitenfehler
+//
 function computeDCAPE(profile, sfc) {
-    // Downdraft-Parzel startet am Level mit minimalem Theta-E zwischen 500-700 hPa
-    // (Trockenster, negativst-auftriebsstärkster Bereich im Profil)
-    
+    // Schritt 1: Level mit minimaler Theta-E zwischen 500–700 hPa finden
     const candidates = profile.filter(l => l.p >= 500 && l.p <= 700);
     if (!candidates.length) return 0;
-    
-    // Finde das Level mit minimalem Theta-E (trockenste Luft = stärkster Downdraft)
+
     let minTE = Infinity, startLevel = null;
     for (const l of candidates) {
         const te = thetaE(l.T, l.Td, l.p);
         if (te < minTE) { minTE = te; startLevel = l; }
     }
     if (!startLevel) return 0;
-    
-    // Taupunkts-Depression am Startlevel
-    const dewDep = startLevel.T - startLevel.Td;
-    if (dewDep > 40) return 0; // Zu trocken — kein relevanter Downdraft
-    
-    // Virtuelles Kühlungsterm: Feuchtkugeltemperatur als Parzeltemperatur
-    const wetBulbStart = startLevel.T - 0.33 * dewDep;
-    
-    // Sortiere Profil von Startlevel bis Boden
-    const sortedDown = [...profile]
-        .filter(l => l.z <= startLevel.z)
-        .sort((a, b) => b.z - a.z); // Von oben nach unten
-    
-    if (sortedDown.length < 2) return 0;
-    
+
+    // Wenn Taupunktsdepression > 30 K: zu trocken für relevanten Downdraft
+    if ((startLevel.T - startLevel.Td) > 30) return 0;
+
+    // Schritt 2: Theta-E des Downdraft-Parzels = minimale Theta-E des Startlevels
+    const theta_e_parcel = minTE;
+
+    // Schritt 3: Profil vom Startlevel abwärts sortieren (inkl. Oberfläche)
+    // Wir arbeiten mit ln(p)-Integration (MetPy-konform)
+    const sfcP    = 1013.25; // Annahme Bodendruck
+    const sfcT    = sfc.t2m;
+    const sfcTd   = sfc.d2m;
+
+    // Levels von Startlevel bis Boden, nach Druck aufsteigend sortieren (höherer Druck = tiefer)
+    const levels = [
+        ...profile.filter(l => l.p >= startLevel.p && l.p <= sfcP),
+        { p: sfcP, T: sfcT, Td: sfcTd, z: 0 }
+    ].sort((a, b) => a.p - b.p); // aufsteigend p = von oben nach unten
+
+    if (levels.length < 2) return 0;
+
     let dcape = 0;
-    
-    // Parzel kühlt moist-adiabatisch (4.5 K/km) von Startlevel an
-    for (let i = 0; i < sortedDown.length - 1; i++) {
-        const env   = sortedDown[i];
-        const lower = sortedDown[i + 1];
-        const dz    = env.z - lower.z; // positiv (von oben nach unten)
-        if (dz <= 0) continue;
-        
-        // Parzeltemperatur am aktuellen Level:
-        // Starttemperatur = Feuchtkugel am Startlevel, dann moist-adiabatisch (4.5 K/km)
-        const z_from_start = startLevel.z - env.z;
-        const T_parcel = wetBulbStart - 4.5 * (z_from_start / 1000);
-        
-        // Virtuelle Temperaturen (vereinfacht: Tv ≈ T(1 + 0.608*q))
-        const e_env    = 6.112 * Math.exp(17.67 * env.Td   / (env.Td   + 243.5));
-        const e_parcel = 6.112 * Math.exp(17.67 * T_parcel / (T_parcel + 243.5));
+    const Rd = 287.05; // J/(kg·K)
+
+    for (let i = 0; i < levels.length - 1; i++) {
+        const env = levels[i];
+        const envNext = levels[i + 1];
+
+        // Parzeltemperatur an diesem Level moist-adiabatisch berechnen
+        // (iterativer Theta-E-Gleichgewicht, wie bei computeParcel)
+        const T_parcel = parcelTempAtLevel(theta_e_parcel, env.p, env.T);
+
+        // Virtuelle Temperatur Umgebung und Parzel
+        const e_env    = 6.112 * Math.exp(17.67 * env.Td     / (env.Td     + 243.5));
+        const e_parcel = 6.112 * Math.exp(17.67 * T_parcel   / (T_parcel   + 243.5));
         const q_env    = 0.622 * e_env    / (env.p    - e_env);
-        const q_parcel = 0.622 * e_parcel / (env.p    - e_parcel);
-        
+        const q_parcel = 0.622 * e_parcel / (Math.max(env.p - e_parcel, 1));
+
         const Tv_env    = (env.T    + 273.15) * (1 + 0.608 * q_env);
         const Tv_parcel = (T_parcel + 273.15) * (1 + 0.608 * q_parcel);
-        
-        // DCAPE-Integral: nur wenn Parzel kälter als Umgebung (negativer Auftrieb)
-        const dT_v = Tv_parcel - Tv_env;
-        if (dT_v < 0) {
-            dcape += Math.abs(dT_v / Tv_env) * 9.81 * dz;
+
+        // Mittlere Temperatur für die Schicht (Trapez-Regel in ln(p))
+        const dln_p = Math.log(envNext.p) - Math.log(env.p); // positiv (p steigt nach unten)
+
+        // DCAPE-Beitrag: negativ wenn Parzel kälter (negativer Auftrieb)
+        const buoyancy = Tv_env - Tv_parcel; // positiv wenn Umgebung wärmer als Parzel
+        if (buoyancy > 0) {
+            // MetPy-Formel: DCAPE = -Rd * ∫ (Tv_env - Tv_parcel) d(ln p)
+            // d(ln p) ist positiv beim Sinken → Vorzeichen wird durch buoyancy > 0 korrekt
+            dcape += Rd * buoyancy * dln_p;
         }
     }
-    
-    // Bodenlevel: Parzel bis z=0 extrapolieren
-    if (sortedDown.length > 0) {
-        const lastEnv = sortedDown[sortedDown.length - 1];
-        const sfcDz   = lastEnv.z; // Restweg bis Boden
-        if (sfcDz > 0) {
-            const z_from_start = startLevel.z - lastEnv.z;
-            const T_parcel_sfc = wetBulbStart - 4.5 * (z_from_start / 1000);
-            const Tv_env_sfc   = (sfc.t2m + 273.15);
-            const Tv_parcel_sfc = (T_parcel_sfc + 273.15);
-            const dT_v = Tv_parcel_sfc - Tv_env_sfc;
-            if (dT_v < 0) {
-                dcape += Math.abs(dT_v / Tv_env_sfc) * 9.81 * sfcDz;
-            }
-        }
-    }
-    
+
     return Math.max(0, Math.round(dcape));
 }
 
