@@ -6,6 +6,17 @@
 // Druckniveaus Open-Meteo: 1000/975/950/925/900/850/800/700/600/500/400/300/250/200 hPa
 // Variablen pro Level:  temperature, dewpoint, relative_humidity,
 //                       wind_speed, wind_direction, geopotential_height
+//
+// KORREKTUREN (v2):
+//   FIX 1 – DEI: Formel auf Romanic et al. (2022) korrigiert:
+//            DEI = (WMAXSHEAR/500) * (Cold_Pool_Strength/30)
+//            (vorher fälschlich: SCP × min(shear/20,1.5))
+//   FIX 2 – SHERBE: Lapse-Rate-Term auf maximale 2-km-LR zwischen 2–6 km AGL
+//            korrigiert (thundeR-Doku; Sherburn & Parker 2014 SHERBE_v2)
+//            (vorher: LR_36km statt max_LR_2km_2_6km)
+//   FIX 3 – WMAXSHEAR-Scoring: Schwellen an europäisches Klimaperzentil
+//            (Taszarek 2020) angepasst; 95th-Pz. DE ≈ 400–600 m²/s²
+//            (vorher: 1500/1200/900/700 → jetzt: 800/600/450/300/200/150/100)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export default async function handler(req, res) {
@@ -28,15 +39,10 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Vorhersage nur für Europa verfügbar', onlyEurope: true });
 
     // ── Open-Meteo Druckniveaus ─────────────────────────────────────────────
-    // Alle verfügbaren Levels die thundeR-Parameter ermöglichen:
-    // 1000/975/950/925/900/850/800/700/600/500/400/300/250/200 hPa
-    // Variablen: temperature, dewpoint, relative_humidity,
-    //            wind_speed (km/h), wind_direction, geopotential_height
     const LEVELS    = [1000,975,950,925,900,850,800,700,600,500,400,300,250,200];
     const LEV_VARS  = ['temperature','dewpoint','relative_humidity','wind_speed','wind_direction','geopotential_height'];
     const MODELS    = ['icon_eu','ecmwf_ifs025','gfs_global'];
 
-    // Surface-Variablen
     const surfaceVars = [
         'temperature_2m',
         'dew_point_2m',
@@ -56,7 +62,6 @@ export default async function handler(req, res) {
         'cloud_cover_high',
     ].join(',');
 
-    // Druckniveau-Variablen dynamisch aufbauen
     const pressureVars = LEVELS.flatMap(lv =>
         LEV_VARS.map(v => `${v}_${lv}hPa`)
     ).join(',');
@@ -79,7 +84,6 @@ export default async function handler(req, res) {
         const timezone = data.timezone || 'UTC';
         const now      = new Date();
 
-        // Aktuelles Datum/Stunde in lokaler Zeitzone
         const localStr    = now.toLocaleString('en-CA', { year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hour12:false,timeZone:timezone });
         const [currentDateStr, currentHourStr] = localStr.split(', ');
         const currentHour = parseInt(currentHourStr?.split(':')[0] ?? '0', 10);
@@ -92,21 +96,18 @@ export default async function handler(req, res) {
             return null;
         }
 
-        // Vollständiges Druckniveau-Profil für thundeR-Parameter
-        // z = Geopotentialhöhe ASL [m], z_agl = Höhe über Grund [m]
-        // Surface-Höhe z_sfc wird aus dem niedrigsten verfügbaren Level geschätzt
         function buildProfile(hourly, i, model) {
             const raw = [];
             for (const lv of LEVELS) {
                 const T  = getVal(hourly, `temperature_${lv}hPa`,        model, i);
                 const Td = getVal(hourly, `dewpoint_${lv}hPa`,           model, i);
                 const rh = getVal(hourly, `relative_humidity_${lv}hPa`,  model, i);
-                const ws = getVal(hourly, `wind_speed_${lv}hPa`,         model, i);  // km/h
+                const ws = getVal(hourly, `wind_speed_${lv}hPa`,         model, i);
                 const wd = getVal(hourly, `wind_direction_${lv}hPa`,     model, i);
                 const z  = getVal(hourly, `geopotential_height_${lv}hPa`,model, i);
                 if (T === null) continue;
                 raw.push({
-                    p:     lv,   // Druckniveau [hPa]
+                    p:     lv,
                     T,
                     z_asl: z ?? pressureToAltitude(lv),
                     Td:    Td ?? deriveDewpoint(T, rh ?? 70),
@@ -115,24 +116,17 @@ export default async function handler(req, res) {
                     wd:    wd ?? 0,
                 });
             }
-            // Aufsteigend nach Druck sortieren (höchster Druck = niedrigstes Level zuerst)
             raw.sort((a, b) => b.p - a.p);
 
-            // z_sfc aus dem untersten verfügbaren Level
             const z_sfc = raw.length > 0 ? raw[0].z_asl : 0;
-
-            // Bodendruck via hypsometrische Gleichung aus dem untersten Level
-            // p_sfc = p_lowest * exp(g * (z_lowest_asl - z_sfc) / (Rd * T_mean))
-            // Für z_sfc ≈ z_lowest → p_sfc ≈ p_lowest (kein Fehler bei flachem Terrain)
             const p_lowest = raw[0]?.p ?? 1000;
             const T_lowest = raw[0]?.T ?? 15;
-            const dz_to_sfc = raw[0]?.z_asl - z_sfc;  // ≈ 0 per Definition
+            const dz_to_sfc = raw[0]?.z_asl - z_sfc;
             const p_sfc = p_lowest * Math.exp(9.81 * dz_to_sfc / (287 * (T_lowest + 273.15)));
 
-            // z_agl = Höhe über Grund = z_asl - z_sfc (mindestens 0)
             const profile = raw.map(l => ({
                 ...l,
-                z: Math.max(0, l.z_asl - z_sfc),  // z ist ab jetzt AGL!
+                z: Math.max(0, l.z_asl - z_sfc),
             }));
 
             return { profile, p_sfc: Math.round(p_sfc * 10) / 10 };
@@ -147,7 +141,7 @@ export default async function handler(req, res) {
             return {
                 t2m,
                 d2m:         d2m ?? (t2m - 10),
-                ws10:        (g('wind_speed_10m')   ?? 0),           // km/h
+                ws10:        (g('wind_speed_10m')   ?? 0),
                 ws10_ms:     (g('wind_speed_10m')   ?? 0) / 3.6,
                 gust_ms:     (g('wind_gusts_10m')   ?? 0) / 3.6,
                 wd10:        g('wind_direction_10m') ?? 0,
@@ -166,23 +160,16 @@ export default async function handler(req, res) {
         }
 
         // ── Schritt 2: thundeR-Prädiktoren aus Profil berechnen ───────────
-        // Alle Parameter analog zu sounding_compute() – rekonstruiert aus
-        // diskreten Druckniveaus (accuracy=1 äquivalent)
-
         function computeThunderParams(sfc, profile, p_sfc_in) {
             if (!profile.length || !sfc) return null;
 
-            // ── Lapse Rates (LR_*) ──────────────────────────────────────
             const LR = computeLapseRates(profile, sfc);
 
-            // ── CAPE/CIN/LCL/LFC/EL (SB, ML, MU) ──────────────────────
-            // Bodendruck: aus Profil berechnet oder Fallback 1013.25
             const p_sfc = p_sfc_in ?? 1013.25;
             const SB = computeParcel(sfc.t2m, sfc.d2m, p_sfc, sfc, profile, 'SB');
             const ML = computeMLParcel(sfc, profile, p_sfc);
             const MU = computeMUParcel(sfc, profile, p_sfc);
 
-            // ── Feuchte-Indizes ─────────────────────────────────────────
             const p850  = interpProfile(profile, 850);
             const p700  = interpProfile(profile, 700);
             const p500  = interpProfile(profile, 500);
@@ -198,33 +185,22 @@ export default async function handler(req, res) {
             const RH_25km   = avgRH(profile, 2000, 5000);
             const RH_36km   = avgRH(profile, 3000, 6000);
 
-            // ── Theta-E ─────────────────────────────────────────────────
             const ThetaE_01km = thetaE(sfc.t2m, sfc.d2m, 1013.25);
             const ThetaE_02km = p850 ? thetaE(p850.T, p850.Td, 850) : ThetaE_01km;
             const Delta_ThetaE = ThetaE_01km - (p500 ? thetaE(p500.T, p500.Td, 500) : ThetaE_01km - 10);
 
-            // ── DCAPE & Cold Pool ────────────────────────────────────────
             const DCAPE = computeDCAPE(profile, p700, p500);
-            const CPS   = DCAPE > 0 ? Math.sqrt(2 * DCAPE) : 0;  // Cold_Pool_Strength [m/s]
+            const CPS   = DCAPE > 0 ? Math.sqrt(2 * DCAPE) : 0;
 
-            // ── Kinetik: Bulk Shear ──────────────────────────────────────
             const BS = computeBulkShear(sfc, profile);
-
-            // ── Mittlere Windvektoren (MW_*) ────────────────────────────
             const MW = computeMeanWinds(sfc, profile);
-
-            // ── Bunkers Storm Motion ────────────────────────────────────
             const bunkers = computeBunkers(sfc, profile);
-
-            // ── SRH (Storm Relative Helicity) ────────────────────────────
             const SRH = computeSRH(sfc, profile, bunkers);
 
-            // ── Composite-Indizes ────────────────────────────────────────
-            const K_Index       = p850 && p700 && p500
+            const K_Index = p850 && p700 && p500
                 ? (p850.T - p500.T) + p850.Td - (p700.T - p700.Td)
                 : 0;
-            // Showalter Index: T_env(500) - T_parcel(500) geliftet von 850hPa
-            // Negativ = instabil, Positiv = stabil
+
             let Showalter = 0;
             if (p500 && p850) {
                 const dewDep850 = Math.max(0, p850.T - p850.Td);
@@ -238,40 +214,39 @@ export default async function handler(req, res) {
                 const T_parcel_500 = parcelTempAtLevel(thetaE_850, 500, p500.T + 1);
                 Showalter = p500.T - T_parcel_500;
             }
-            const TotalTotals   = p850 && p700 && p500
+
+            const TotalTotals = p850 && p700 && p500
                 ? (p850.T + p850.Td) - (2 * p500.T)
                 : 0;
-            const SWEAT         = computeSWEAT(p850, p500, SRH.SRH_1km_RM, TotalTotals);
+            const SWEAT = computeSWEAT(p850, p500, SRH.SRH_1km_RM, TotalTotals);
 
             const MU_WMAXSHEAR  = Math.sqrt(2 * MU.CAPE)  * BS.BS_06km;
             const SB_WMAXSHEAR  = Math.sqrt(2 * SB.CAPE)  * BS.BS_06km;
             const ML_WMAXSHEAR  = Math.sqrt(2 * ML.CAPE)  * BS.BS_06km;
 
-            // EHI: (CAPE * SRH) / 160000  – thundeR-Standard (SB-Parcel)
             const EHI_01km = (SB.CAPE * SRH.SRH_1km_RM) / 160000;
             const EHI_03km = (SB.CAPE * SRH.SRH_3km_RM) / 160000;
 
             const SCP_fix  = computeSCP(MU.CAPE, BS.BS_06km, SRH.SRH_3km_RM, sfc.cin);
             const STP_fix  = computeSTP(SB.CAPE, SRH.SRH_1km_RM, BS.BS_06km, SB.LCL_HGT, sfc.cin);
-
             const SHIP     = computeSHIP(MU, BS, p500, p700);
             const DCP      = computeDCP(DCAPE, MU.CAPE, BS.BS_06km, SRH.SRH_1km_RM);
 
-            // SHERBS3 / SHERBE (Sherburn & Parker 2014 – HSLC)
             const SHERBS3  = computeSHERBS3(LR.LR_36km, BS.BS_06km, SRH.SRH_3km_RM, MU.CAPE);
-            const SHERBE   = computeSHERBE (LR.LR_36km, BS.BS_06km, SRH.SRH_3km_RM, MU.CAPE);
 
-            // DEI (Gropp & Davenport 2019 – dominant Superzellen-Index)
-            const DEI      = computeDEI(MU.CAPE, SCP_fix, BS.BS_06km);
+            // FIX 2: SHERBE nutzt jetzt maximale 2-km-Lapse-Rate zwischen 2–6 km AGL
+            // statt LR_36km (Sherburn & Parker 2014, SHERBE_v2; thundeR-Doku)
+            const maxLR_2km_2_6km = computeMaxLapseRate2km(profile, sfc, 2000, 6000);
+            const SHERBE   = computeSHERBE(maxLR_2km_2_6km, BS.BS_06km, SRH.SRH_3km_RM, MU.CAPE);
 
-            // TIP (Tornadic Index für Europa, Púčik 2015)
-            const TIP      = computeTIP(MU.CAPE, SRH.SRH_1km_RM, BS.BS_06km, SB.LCL_HGT);
+            // FIX 1: DEI nach Romanic et al. (2022): DEI = WMAXSHEAR × Cold_Pool_Strength
+            // (normiert: WMAXSHEAR/500, CPS/30) — vorher fälschlich SCP-basiert
+            const DEI = computeDEI(ML_WMAXSHEAR, CPS);
 
-            // Moisture Flux 0-2km
+            const TIP = computeTIP(MU.CAPE, SRH.SRH_1km_RM, BS.BS_06km, SB.LCL_HGT);
             const MoistFlux02 = computeMoistureFlux(sfc, profile, 2000);
 
             return {
-                // ── CAPE / CIN ────────────────────────────────────────
                 MU_CAPE:        MU.CAPE,
                 MU_CIN:         MU.CIN,
                 MU_LCL_HGT:    MU.LCL_HGT,
@@ -302,12 +277,10 @@ export default async function handler(req, res) {
                 ML_WMAX:     Math.sqrt(2 * Math.max(0, ML.CAPE)),
                 ML_MIXR:     ML.mixR,
 
-                // ── CAPE-Teilschichten (thundeR: 0-2km, 0-3km, HGL) ─
                 SB_02km_CAPE: partialCAPE(sfc, profile, SB, 0,    2000),
                 SB_03km_CAPE: partialCAPE(sfc, profile, SB, 0,    3000),
                 MU_03km_CAPE: partialCAPE(sfc, profile, MU, 0,    3000),
 
-                // ── Lapse Rates ──────────────────────────────────────
                 LR_01km:      LR.LR_01km,
                 LR_02km:      LR.LR_02km,
                 LR_03km:      LR.LR_03km,
@@ -319,15 +292,12 @@ export default async function handler(req, res) {
                 LR_500800hPa: LR.LR_500800hPa,
                 LR_600800hPa: LR.LR_600800hPa,
 
-                // ── Gefrierniveau ────────────────────────────────────
-                // ── Theta-E ──────────────────────────────────────────
                 Thetae_01km:       ThetaE_01km,
                 Thetae_02km:       ThetaE_02km,
                 Delta_thetae:      Delta_ThetaE,
                 HGT_max_thetae_03km: maxThetaEHeight(profile, sfc, 3000),
                 HGT_min_thetae_04km: minThetaEHeight(profile, sfc, 4000),
 
-                // ── Feuchte ──────────────────────────────────────────
                 PRCP_WATER:        PRCP_WATER,
                 RH_01km,
                 RH_02km,
@@ -336,11 +306,9 @@ export default async function handler(req, res) {
                 RH_36km,
                 Moisture_Flux_02km: MoistFlux02,
 
-                // ── DCAPE ────────────────────────────────────────────
                 DCAPE,
                 Cold_Pool_Strength: CPS,
 
-                // ── Bulk Shear ────────────────────────────────────────
                 BS_01km:       BS.BS_01km,
                 BS_02km:       BS.BS_02km,
                 BS_03km:       BS.BS_03km,
@@ -350,18 +318,15 @@ export default async function handler(req, res) {
                 BS_26km:       BS.BS_26km,
                 BS_16km:       BS.BS_16km,
 
-                // ── Mittlere Winde ────────────────────────────────────
                 MW_01km:       MW.MW_01km,
                 MW_02km:       MW.MW_02km,
                 MW_03km:       MW.MW_03km,
                 MW_06km:       MW.MW_06km,
 
-                // ── SRH ───────────────────────────────────────────────
                 SRH_500m_RM:   SRH.SRH_500m_RM,
                 SRH_1km_RM:    SRH.SRH_1km_RM,
                 SRH_3km_RM:    SRH.SRH_3km_RM,
 
-                // ── Indizes ───────────────────────────────────────────
                 K_Index,
                 Showalter_Index: Showalter,
                 TotalTotals_Index: TotalTotals,
@@ -377,26 +342,22 @@ export default async function handler(req, res) {
                 DEI,
                 TIP,
 
-                // ── WMAXSHEAR ─────────────────────────────────────────
                 MU_WMAXSHEAR:  Math.round(MU_WMAXSHEAR),
                 SB_WMAXSHEAR:  Math.round(SB_WMAXSHEAR),
                 ML_WMAXSHEAR:  Math.round(ML_WMAXSHEAR),
 
-                // ── Bunkers Storm Motion ──────────────────────────────
                 Bunkers_RM_M:  bunkers.RM_speed,
                 Bunkers_RM_A:  bunkers.RM_dir,
                 Bunkers_LM_M:  bunkers.LM_speed,
                 Bunkers_LM_A:  bunkers.LM_dir,
                 Bunkers_MW_M:  bunkers.MW_speed,
                 Bunkers_MW_A:  bunkers.MW_dir,
-                // ── SRH LM (Links-devierend) ──────────────────────────
                 SRH_1km_LM:    SRH.SRH_1km_LM,
                 SRH_3km_LM:    SRH.SRH_3km_LM,
 
-                // ── Oberflächenwerte für Ausgabe ─────────────────────
                 T2m:           sfc.t2m,
                 Td2m:          sfc.d2m,
-                CAPE_sfc:      sfc.cape,       // API-CAPE direkt
+                CAPE_sfc:      sfc.cape,
                 CIN_sfc:       sfc.cin,
                 LI_sfc:        sfc.li,
                 PWAT:          sfc.pwat,
@@ -405,9 +366,8 @@ export default async function handler(req, res) {
             };
         }
 
-        // ── Schritt 3: Gewitterwahrscheinlichkeit aus thundeR-Params ───────
+        // ── Schritt 3: Gewitterwahrscheinlichkeit aus thundeR-Params ───────────
         // AR-CHaMo Logistik: Rädler 2018 / Taszarek 2021
-        // Primärprädiktoren: MUCAPE, ML-WMAXSHEAR, SRH1km, DCAPE, MeanRH, ThetaE850
         function calculateLightningProb(p, sfc) {
             if (!p) return 0;
 
@@ -416,27 +376,26 @@ export default async function handler(req, res) {
             const cin       = sfc.cin ?? 0;
             const magCin    = -Math.min(0, cin);
 
-            // Harte Ausschlüsse (physikalische Mindestbedingungen)
             if (sfc.t2m  < 3  && cape < 300)                  return 0;
             if (sfc.t2m  < 8  && cape < 180 && p.BS_06km < 15) return 0;
             if (cape     < 80 && sfc.precip < 0.1 && sfc.precipProb < 15) return 0;
             if (magCin   > 300)                                return 0;
 
-            const wmaxshear = p.ML_WMAXSHEAR;     // thundeR Haupt-Prädiktor
-            const shear06   = p.BS_06km;           // 0-6km Bulk Shear [m/s]
-            const srh1km    = p.SRH_1km_RM;        // 0-1km SRH [m²/s²]
+            const wmaxshear = p.ML_WMAXSHEAR;
+            const shear06   = p.BS_06km;
+            const srh1km    = p.SRH_1km_RM;
             const srh3km    = p.SRH_3km_RM;
             const dcape     = p.DCAPE;
-            const lr36      = p.LR_36km;           // 3-6 km Lapse Rate [K/km]
-            const lr26      = p.LR_26km;           // 2-6 km Lapse Rate
-            const muEl      = p.MU_EL_TEMP ?? -15; // EL-Temperatur
+            const lr36      = p.LR_36km;
+            const lr26      = p.LR_26km;
+            const muEl      = p.MU_EL_TEMP ?? -15;
             const lclH      = p.SB_LCL_HGT;
-            const meanRH    = (p.RH_14km + p.RH_25km + p.RH_36km) / 3;  // 1-6km RH
-            const thetaE    = p.Thetae_01km;
-            const deltaTE   = p.Delta_thetae;      // Lapse der Theta-E
+            const meanRH    = (p.RH_14km + p.RH_25km + p.RH_36km) / 3;
+            const thetaE_   = p.Thetae_01km;
+            const deltaTE   = p.Delta_thetae;
             const pwat      = p.PWAT;
             const pbl       = p.PBL_H;
-            const mixR850   = p.ML_MIXR;           // Mixing Ratio
+            const mixR850   = p.ML_MIXR;
             const kIdx      = p.K_Index;
             const ttIdx     = p.TotalTotals_Index;
             const scp       = p.SCP_fix;
@@ -446,7 +405,6 @@ export default async function handler(req, res) {
             const sherbs3   = p.SHERBS3;
 
             // ── HSLC-Regime (High Shear Low CAPE) ───────────────────────
-            // Sherburn & Parker 2014; SHERBS3 > 1.0 = konvektiv kritisch
             if (cape < 300 && shear06 >= 18) {
                 let hslcScore = 0;
                 if      (shear06 >= 25) hslcScore += 30;
@@ -462,7 +420,7 @@ export default async function handler(req, res) {
 
             let score = 0;
 
-            // ── (1) MUCAPE – abgeflacht (Westermayer 2017: Plateau ab ~500) ─
+            // ── (1) MUCAPE ────────────────────────────────────────────────
             if      (cape >= 2000) score += 16;
             else if (cape >= 1500) score += 14;
             else if (cape >= 1200) score += 12;
@@ -471,14 +429,24 @@ export default async function handler(req, res) {
             else if (cape >= 300)  score += 6;
             else if (cape >= 150)  score += 3;
 
-            // ── (2) ML_WMAXSHEAR – Taszarek 2020 bester Single-Prädiktor ─
-            if      (wmaxshear >= 1500) score += 22;
-            else if (wmaxshear >= 1200) score += 18;
-            else if (wmaxshear >= 900)  score += 14;
-            else if (wmaxshear >= 700)  score += 10;
-            else if (wmaxshear >= 500)  score += 6;
-            else if (wmaxshear >= 400)  score += 3;
-            else if (wmaxshear >= 300)  score += 1;
+            // ── (2) ML_WMAXSHEAR – FIX 3: Europa-kalibrierte Schwellen ───
+            // Taszarek 2020: 95th-Pz. DE/EU ≈ 400–600 m²/s²
+            // Alte Schwellen (1500/1200/900/700/500/400/300) lagen für EU viel zu hoch.
+            // Neue Schwellen orientieren sich an EU-Klimatologie:
+            //   > 800  → schwere organisierte Konvektion (selten EU, ~99th Pz.)
+            //   > 600  → starke Konvektion (EU ~95th Pz.)
+            //   > 450  → moderate Konvektion (EU ~85th Pz.)
+            //   > 300  → schwache–moderate Konvektion (EU ~70th Pz.)
+            //   > 200  → schwache Konvektion (EU ~55th Pz.)
+            //   > 150  → Randwert (EU ~45th Pz.)
+            //   > 100  → minimaler Signal
+            if      (wmaxshear >= 800) score += 22;
+            else if (wmaxshear >= 600) score += 18;
+            else if (wmaxshear >= 450) score += 14;
+            else if (wmaxshear >= 300) score += 10;
+            else if (wmaxshear >= 200) score += 6;
+            else if (wmaxshear >= 150) score += 3;
+            else if (wmaxshear >= 100) score += 1;
 
             // ── (3) 0-6km Bulk Shear ─────────────────────────────────────
             if      (shear06 >= 25) score += 13;
@@ -487,114 +455,114 @@ export default async function handler(req, res) {
             else if (shear06 >= 12) score += 4;
             else if (shear06 >= 10) score += 2;
 
-            // ── (4) SRH 0-1km (Taszarek 2020 Part II) ───────────────────
+            // ── (4) SRH 0-1km ─────────────────────────────────────────────
             if      (srh1km >= 200) score += 12;
             else if (srh1km >= 150) score += 9;
             else if (srh1km >= 100) score += 6;
             else if (srh1km >= 60)  score += 3;
             else if (srh1km >= 30)  score += 1;
 
-            // ── (5) SRH 0-3km ────────────────────────────────────────────
+            // ── (5) SRH 0-3km ─────────────────────────────────────────────
             if      (srh3km >= 300) score += 8;
             else if (srh3km >= 200) score += 6;
             else if (srh3km >= 150) score += 4;
             else if (srh3km >= 100) score += 2;
 
-            // ── (6) SCP (Supercell Composite) ────────────────────────────
+            // ── (6) SCP ───────────────────────────────────────────────────
             if      (scp >= 3.0) score += 22;
             else if (scp >= 2.0) score += 18;
             else if (scp >= 1.5) score += 14;
             else if (scp >= 1.0) score += 10;
 
-            // ── (7) STP ──────────────────────────────────────────────────
+            // ── (7) STP ───────────────────────────────────────────────────
             if      (stp >= 2.0) score += 16;
             else if (stp >= 1.5) score += 13;
             else if (stp >= 1.0) score += 10;
             else if (stp >= 0.5) score += 6;
             else if (stp >= 0.3) score += 3;
 
-            // ── (8) EHI 0-1km ────────────────────────────────────────────
+            // ── (8) EHI 0-1km ─────────────────────────────────────────────
             if      (ehi1 >= 2.5) score += 12;
             else if (ehi1 >= 2.0) score += 10;
             else if (ehi1 >= 1.0) score += 7;
             else if (ehi1 >= 0.5) score += 4;
 
-            // ── (9) DCAPE (Downburst-Potential) ──────────────────────────
+            // ── (9) DCAPE ─────────────────────────────────────────────────
             if      (dcape >= 1000 && cape >= 400) score += 7;
             else if (dcape >= 800  && cape >= 300) score += 5;
             else if (dcape >= 600  && cape >= 200) score += 3;
             else if (dcape >= 400  && cape >= 150) score += 1;
 
-            // ── (10) EL-Temperatur Proxy (ESTOFEX-Indikator) ─────────────
+            // ── (10) EL-Temperatur ────────────────────────────────────────
             if      (muEl <= -25 && cape >= 200) score += 10;
             else if (muEl <= -20 && cape >= 150) score += 7;
             else if (muEl <= -15 && cape >= 100) score += 4;
             else if (muEl <= -10 && cape >= 80)  score += 2;
             else if (muEl >  -5  && cape <  500) score -= 5;
 
-            // ── (11) 3-6km Lapse Rate (thundeR: LR_36km) ─────────────────
+            // ── (11) 3-6km Lapse Rate ──────────────────────────────────────
             if      (lr36 >= 8.5) score += 8;
             else if (lr36 >= 8.0) score += 6;
             else if (lr36 >= 7.5) score += 4;
             else if (lr36 >= 7.0) score += 2;
             else if (lr36 <  5.5 && cape < 800) score -= 5;
 
-            // ── (12) LCL-Höhe ─────────────────────────────────────────────
+            // ── (12) LCL-Höhe ──────────────────────────────────────────────
             if      (lclH <  500)  score += 8;
             else if (lclH <  800)  score += 6;
             else if (lclH <  1200) score += 4;
             else if (lclH <  1500) score += 2;
             else if (lclH >= 2500) score -= 6;
 
-            // ── (13) Mittlere RH 1-6km (AR-CHaMo Rädler 2018) ────────────
+            // ── (13) Mittlere RH 1-6km ─────────────────────────────────────
             if      (meanRH >= 75) score += 8;
             else if (meanRH >= 65) score += 5;
             else if (meanRH >= 55) score += 2;
             else if (meanRH <  50) score -= 12;
             else if (meanRH <  40) score -= 20;
 
-            // ── (14) Theta-E 0-1km (ESTOFEX: > 335K gut, > 345K sehr instabil) ─
-            if      (thetaE >= 345) score += 8;
-            else if (thetaE >= 335) score += 5;
-            else if (thetaE >= 325) score += 2;
-            else if (thetaE <  315) score -= 4;
+            // ── (14) Theta-E 0-1km ─────────────────────────────────────────
+            if      (thetaE_ >= 345) score += 8;
+            else if (thetaE_ >= 335) score += 5;
+            else if (thetaE_ >= 325) score += 2;
+            else if (thetaE_ <  315) score -= 4;
 
-            // ── (15) Delta-Theta-E (Instabilitätsmaß – thundeR) ──────────
+            // ── (15) Delta-Theta-E ─────────────────────────────────────────
             if      (deltaTE >= 20) score += 6;
             else if (deltaTE >= 15) score += 4;
             else if (deltaTE >= 10) score += 2;
             else if (deltaTE <   5) score -= 3;
 
-            // ── (16) K-Index ──────────────────────────────────────────────
+            // ── (16) K-Index ───────────────────────────────────────────────
             if      (kIdx >= 38) score += 7;
             else if (kIdx >= 35) score += 5;
             else if (kIdx >= 30) score += 3;
             else if (kIdx >= 25) score += 1;
 
-            // ── (17) Total Totals ─────────────────────────────────────────
+            // ── (17) Total Totals ──────────────────────────────────────────
             if      (ttIdx >= 55) score += 5;
             else if (ttIdx >= 50) score += 3;
             else if (ttIdx >= 45) score += 1;
 
-            // ── (18) PWAT (Niederschlagswasser) ───────────────────────────
+            // ── (18) PWAT ──────────────────────────────────────────────────
             if      (pwat >= 35 && cape >= 500) score += 5;
             else if (pwat >= 25 && cape >= 300) score += 3;
             else if (pwat >= 15 && cape >= 200) score += 1;
 
-            // ── (19) Mixing Ratio ML (Feuchte) ────────────────────────────
+            // ── (19) Mixing Ratio ML ───────────────────────────────────────
             if      (mixR850 >= 13) score += 7;
             else if (mixR850 >= 10) score += 4;
             else if (mixR850 >= 6)  score += 1;
             else if (mixR850 <  4)  score -= 5;
 
-            // ── (20) CIN (Hemmung) ────────────────────────────────────────
+            // ── (20) CIN ───────────────────────────────────────────────────
             if      (magCin <  25 && cape >= 300) score += 5;
             else if (magCin <  50 && cape >= 200) score += 2;
             else if (magCin > 200)                score -= 18;
             else if (magCin > 100)                score -= 10;
             else if (magCin > 50)                 score -= 5;
 
-            // ── (21) Precipitation (Auslösung-Indikator) ─────────────────
+            // ── (21) Precipitation ─────────────────────────────────────────
             if      (sfc.precip >= 3.0 && cape >= 600) score += 7;
             else if (sfc.precip >= 2.0 && cape >= 400) score += 5;
             else if (sfc.precip >= 1.0 && cape >= 300) score += 3;
@@ -603,7 +571,7 @@ export default async function handler(req, res) {
             else if (sfc.precipProb >= 55 && cape >= 400) score += 3;
             else if (sfc.precipProb >= 40 && cape >= 300) score += 1;
 
-            // ── (22) Strahlung / Tageszeit ────────────────────────────────
+            // ── (22) Strahlung / Tageszeit ─────────────────────────────────
             const isNight     = sfc.radiation < 20;
             const isDaytime   = sfc.radiation >= 200;
             const isStrongDay = sfc.radiation >= 600;
@@ -615,26 +583,24 @@ export default async function handler(req, res) {
                 else if (!llj && shear06 < 10 && cape < 400) score -= 4;
             }
 
-            // ── (23) PBL-Höhe (thundeR: boundary_layer_height) ───────────
+            // ── (23) PBL-Höhe ──────────────────────────────────────────────
             if      (pbl >= 2000 && cape >= 300) score += 4;
             else if (pbl >= 1500 && cape >= 200) score += 2;
             else if (pbl <  300  && cape <  500) score -= 3;
 
-            // ── (24) SHIP (Severe Hail Index – Proxy für tiefe Konvektion) ─
+            // ── (24) SHIP ──────────────────────────────────────────────────
             if      (ship >= 2.0 && cape >= 1000) score += 5;
             else if (ship >= 1.0 && cape >= 500)  score += 3;
             else if (ship >= 0.5 && cape >= 300)  score += 1;
 
-            // ── Temperatur-Skalierung ─────────────────────────────────────
+            // ── Temperatur-Skalierung ──────────────────────────────────────
             if      (sfc.t2m < 8)  score = Math.round(score * (shear06 < 15 && cape < 500 ? 0.4 : 0.6));
             else if (sfc.t2m < 12) score = Math.round(score * 0.7);
             else if (sfc.t2m < 15) score = Math.round(score * 0.85);
 
-            // ── Korrekturen ───────────────────────────────────────────────
+            // ── Korrekturen ────────────────────────────────────────────────
             if (score > 0 && cape < 100 && shear06 < 8) score = Math.max(0, score - 10);
             if (score > 0 && magCin > 150 && cape < 1000) score = Math.max(0, score - 12);
-
-            // Mindestschwelle bei hohem Shear
             if (shear06 >= 20 && cape >= 150 && score < 30) score = Math.min(score + 5, 35);
 
             return Math.min(100, Math.max(0, Math.round(score)));
@@ -663,12 +629,10 @@ export default async function handler(req, res) {
             return v.length ? v.reduce((s, x) => s + x, 0) / v.length : 0;
         }
 
-        // Hilfsfunktion: alle thundeR-Parameter eines Modells runden und ausgeben
         function formatParams(p, prob) {
             if (!p) return null;
             return {
                 gewitter: prob ?? null,
-                // ── CAPE / CIN ─────────────────────────────────────────────
                 MU_CAPE:        Math.round(p.MU_CAPE),
                 MU_CIN:         Math.round(p.MU_CIN),
                 MU_LCL_HGT:    Math.round(p.MU_LCL_HGT),
@@ -696,11 +660,9 @@ export default async function handler(req, res) {
                 ML_LI:       Math.round(p.ML_LI * 10) / 10,
                 ML_WMAX:     Math.round(p.ML_WMAX * 10) / 10,
                 ML_MIXR:     Math.round(p.ML_MIXR * 10) / 10,
-                // ── CAPE-Teilschichten ─────────────────────────────────────
                 SB_02km_CAPE: Math.round(p.SB_02km_CAPE),
                 SB_03km_CAPE: Math.round(p.SB_03km_CAPE),
                 MU_03km_CAPE: Math.round(p.MU_03km_CAPE),
-                // ── Lapse Rates ────────────────────────────────────────────
                 LR_01km:      Math.round(p.LR_01km * 10) / 10,
                 LR_02km:      Math.round(p.LR_02km * 10) / 10,
                 LR_03km:      Math.round(p.LR_03km * 10) / 10,
@@ -711,13 +673,11 @@ export default async function handler(req, res) {
                 LR_500700hPa: Math.round(p.LR_500700hPa * 10) / 10,
                 LR_500800hPa: Math.round(p.LR_500800hPa * 10) / 10,
                 LR_600800hPa: Math.round(p.LR_600800hPa * 10) / 10,
-                // ── Theta-E ────────────────────────────────────────────────
                 Thetae_01km:         Math.round(p.Thetae_01km * 10) / 10,
                 Thetae_02km:         Math.round(p.Thetae_02km * 10) / 10,
                 Delta_thetae:        Math.round(p.Delta_thetae * 10) / 10,
                 HGT_max_thetae_03km: Math.round(p.HGT_max_thetae_03km),
                 HGT_min_thetae_04km: Math.round(p.HGT_min_thetae_04km),
-                // ── Feuchte ────────────────────────────────────────────────
                 PRCP_WATER:         Math.round(p.PRCP_WATER * 10) / 10,
                 RH_01km:            Math.round(p.RH_01km),
                 RH_02km:            Math.round(p.RH_02km),
@@ -725,10 +685,8 @@ export default async function handler(req, res) {
                 RH_25km:            Math.round(p.RH_25km),
                 RH_36km:            Math.round(p.RH_36km),
                 Moisture_Flux_02km: Math.round(p.Moisture_Flux_02km),
-                // ── DCAPE ─────────────────────────────────────────────────
                 DCAPE:              Math.round(p.DCAPE),
                 Cold_Pool_Strength: Math.round(p.Cold_Pool_Strength * 10) / 10,
-                // ── Bulk Shear [m/s] ───────────────────────────────────────
                 BS_01km:  Math.round(p.BS_01km * 10) / 10,
                 BS_02km:  Math.round(p.BS_02km * 10) / 10,
                 BS_03km:  Math.round(p.BS_03km * 10) / 10,
@@ -737,16 +695,13 @@ export default async function handler(req, res) {
                 BS_36km:  Math.round(p.BS_36km * 10) / 10,
                 BS_26km:  Math.round(p.BS_26km * 10) / 10,
                 BS_16km:  Math.round(p.BS_16km * 10) / 10,
-                // ── Mittlere Winde [m/s] ───────────────────────────────────
                 MW_01km:  Math.round(p.MW_01km * 10) / 10,
                 MW_02km:  Math.round(p.MW_02km * 10) / 10,
                 MW_03km:  Math.round(p.MW_03km * 10) / 10,
                 MW_06km:  Math.round(p.MW_06km * 10) / 10,
-                // ── SRH [m²/s²] ───────────────────────────────────────────
                 SRH_500m_RM: Math.round(p.SRH_500m_RM),
                 SRH_1km_RM:  Math.round(p.SRH_1km_RM),
                 SRH_3km_RM:  Math.round(p.SRH_3km_RM),
-                // ── Composite-Indizes ──────────────────────────────────────
                 K_Index:           Math.round(p.K_Index * 10) / 10,
                 Showalter_Index:   Math.round(p.Showalter_Index * 10) / 10,
                 TotalTotals_Index: Math.round(p.TotalTotals_Index * 10) / 10,
@@ -761,11 +716,9 @@ export default async function handler(req, res) {
                 SHERBE:            Math.round(p.SHERBE  * 100) / 100,
                 DEI:               Math.round(p.DEI * 100) / 100,
                 TIP:               Math.round(p.TIP * 100) / 100,
-                // ── WMAXSHEAR ─────────────────────────────────────────────
                 MU_WMAXSHEAR: Math.round(p.MU_WMAXSHEAR),
                 SB_WMAXSHEAR: Math.round(p.SB_WMAXSHEAR),
                 ML_WMAXSHEAR: Math.round(p.ML_WMAXSHEAR),
-                // ── Bunkers ────────────────────────────────────────────────
                 Bunkers_RM_M: Math.round(p.Bunkers_RM_M * 10) / 10,
                 Bunkers_RM_A: Math.round(p.Bunkers_RM_A),
                 Bunkers_LM_M: Math.round(p.Bunkers_LM_M * 10) / 10,
@@ -774,7 +727,6 @@ export default async function handler(req, res) {
                 Bunkers_MW_A: Math.round(p.Bunkers_MW_A),
                 SRH_1km_LM:  Math.round(p.SRH_1km_LM ?? 0),
                 SRH_3km_LM:  Math.round(p.SRH_3km_LM ?? 0),
-                // ── Oberfläche ─────────────────────────────────────────────
                 T2m:       Math.round(p.T2m * 10) / 10,
                 Td2m:      Math.round(p.Td2m * 10) / 10,
                 CAPE_sfc:  Math.round(p.CAPE_sfc),
@@ -806,11 +758,9 @@ export default async function handler(req, res) {
 
             const prob = ensembleProb(gewitterByModel, leadH);
 
-            // Ensemble-Mittelwerte
             const validParams = Object.values(paramsByModel).filter(Boolean);
             const mean = (fn) => ensembleMean(validParams.map(fn));
 
-            // Pro-Modell-Objekte
             const modelle = {};
             for (const model of MODELS) {
                 modelle[model] = formatParams(paramsByModel[model], gewitterByModel[model]);
@@ -819,7 +769,6 @@ export default async function handler(req, res) {
             return {
                 time:        t,
                 probability: prob,
-                // Ensemble-Mittelwerte der wichtigsten Parameter
                 ensemble: {
                     MU_CAPE:     Math.round(mean(p => p.MU_CAPE)),
                     BS_06km:     Math.round(mean(p => p.BS_06km) * 10) / 10,
@@ -835,7 +784,6 @@ export default async function handler(req, res) {
                     STP_fix:     Math.round(mean(p => p.STP_fix) * 100) / 100,
                     SHIP:        Math.round(mean(p => p.SHIP)    * 100) / 100,
                 },
-                // Alle Parameter pro Modell
                 modelle,
             };
         });
@@ -849,14 +797,12 @@ export default async function handler(req, res) {
             })
             .slice(0, 24);
 
-        // Tages-Aggregation: Max-Prob + Max-Wert je Parameter je Modell
         const daysMap = new Map();
         hours.forEach(h => {
             const [dp] = h.time.split('T');
             if (dp < currentDateStr) return;
 
             if (!daysMap.has(dp)) {
-                // Initialisieren
                 const entry = {
                     date:           dp,
                     maxProbability: h.probability,
@@ -871,18 +817,12 @@ export default async function handler(req, res) {
                 daysMap.set(dp, entry);
             } else {
                 const d = daysMap.get(dp);
-
-                // Gesamt-Max
                 d.maxProbability = Math.max(d.maxProbability, h.probability);
-
-                // Ensemble-Mittelwert-Felder: Max über den Tag
                 for (const key of Object.keys(d.ensemble)) {
                     if (h.ensemble[key] != null) {
                         d.ensemble[key] = Math.max(d.ensemble[key] ?? 0, h.ensemble[key]);
                     }
                 }
-
-                // Pro Modell: Max über den Tag (für jeden numerischen Parameter)
                 for (const model of MODELS) {
                     const mh = h.modelle[model];
                     if (!mh) continue;
@@ -905,9 +845,7 @@ export default async function handler(req, res) {
             timestamp:     h.time,
             gewitter:      h.probability,
             gewitter_risk: categorizeRisk(h.probability),
-            // Ensemble-Mittelwerte
             ensemble:      h.ensemble,
-            // Vollständige Parameter pro Modell
             modelle:       h.modelle,
         }));
 
@@ -917,9 +855,7 @@ export default async function handler(req, res) {
                 date:          day.date,
                 gewitter:      day.maxProbability,
                 gewitter_risk: categorizeRisk(day.maxProbability),
-                // Tages-Maxima Ensemble
                 ensemble:      day.ensemble,
-                // Tages-Maxima pro Modell
                 modelle:       day.modelle,
             }));
 
@@ -947,32 +883,27 @@ function categorizeRisk(prob) {
     return { level: 0, label: 'none' };
 }
 
-// Standardatmosphäre Höhe aus Druck (ISA-Approximation)
 function pressureToAltitude(p_hPa) {
     return 44330 * (1 - Math.pow(p_hPa / 1013.25, 0.1903));
 }
 
-// Taupunkt aus Temperatur und RH
 function deriveDewpoint(T, rh) {
     const a = 17.625, b = 243.04;
     const gamma = Math.log(rh / 100) + a * T / (b + T);
     return (b * gamma) / (a - gamma);
 }
 
-// Relative Feuchte aus T und Td
 function calcRH(T, Td) {
     const es = 6.112 * Math.exp(17.67 * T  / (T  + 243.5));
     const e  = 6.112 * Math.exp(17.67 * Td / (Td + 243.5));
     return Math.min(100, Math.max(0, (e / es) * 100));
 }
 
-// Mischungsverhältnis [g/kg]
 function mixingRatio(Td, p_hPa) {
     const e = 6.112 * Math.exp(17.67 * Td / (Td + 243.5));
     return 1000 * 0.622 * e / (p_hPa - e);
 }
 
-// Theta-E nach Bolton (1980)
 function thetaE(T, Td, p) {
     const T_K = T + 273.15;
     const e   = 6.112 * Math.exp(17.67 * Td / (Td + 243.5));
@@ -980,7 +911,6 @@ function thetaE(T, Td, p) {
     return T_K * Math.pow(1000 / p, 0.285) * Math.exp(2501000 * q / (1005 * T_K));
 }
 
-// Lineares Interpolieren zwischen Druckniveaus
 function interpProfile(profile, p_target) {
     if (!profile.length) return null;
     const above = profile.filter(l => l.p <= p_target).sort((a,b) => b.p - a.p)[0];
@@ -1008,13 +938,11 @@ function interpAngle(a1, a2, frac) {
     return (a1 + frac * diff + 360) % 360;
 }
 
-// Wind U/V Komponenten
 function toUV(ws, wd) {
     const r = wd * Math.PI / 180;
     return { u: -ws * Math.sin(r), v: -ws * Math.cos(r) };
 }
 
-// Lapse Rates [K/km] zwischen Höhen aus Profil
 function computeLapseRates(profile, sfc) {
     function lrBetween(z1, z2) {
         const interp1 = getAtZ(profile, sfc, z1);
@@ -1044,10 +972,25 @@ function computeLapseRates(profile, sfc) {
     };
 }
 
-// Profil-Wert bei Zielhöhe (AGL)
+// FIX 2 (Hilfsfunktion): Maximale 2-km-Lapse-Rate in einem Fenster z1..z2 AGL
+// Sherburn & Parker (2014), SHERBE_v2: sliding 2-km window zwischen 2–6 km AGL
+// Schrittweite 500 m für Diskretisierung über Open-Meteo Druckniveaus
+function computeMaxLapseRate2km(profile, sfc, z_bottom, z_top) {
+    const WINDOW = 2000; // 2 km Fensterbreite
+    const STEP   = 500;  // 500 m Schritt
+    let maxLR = 0;
+    for (let zBase = z_bottom; zBase <= z_top - WINDOW; zBase += STEP) {
+        const lo = getAtZ(profile, sfc, zBase);
+        const hi = getAtZ(profile, sfc, zBase + WINDOW);
+        if (!lo || !hi) continue;
+        const lr = (lo.T - hi.T) / 2.0; // K/km (2 km Abstand)
+        if (lr > maxLR) maxLR = lr;
+    }
+    return maxLR;
+}
+
 function getAtZ(profile, sfc, z_agl) {
     if (z_agl === 0) return { T: sfc.t2m, Td: sfc.d2m, rh: calcRH(sfc.t2m, sfc.d2m) };
-    // Annahme: profile.z ist bereits AGL (erster Level = Surface)
     const above = profile.filter(l => l.z >= z_agl).sort((a,b) => a.z - b.z)[0];
     const below = profile.filter(l => l.z <  z_agl).sort((a,b) => b.z - a.z)[0];
     if (!above) return profile[profile.length - 1];
@@ -1056,12 +999,10 @@ function getAtZ(profile, sfc, z_agl) {
     return { T: below.T + frac * (above.T - below.T), Td: below.Td + frac * (above.Td - below.Td) };
 }
 
-// LCL-Höhe [m] – Bolton (1980)
 function lclHeight(T, Td) {
     return Math.max(0, 125 * (T - Td));
 }
 
-// Parcel-Temperatur an beliebigem Druckniveau via Theta-E Iteration (Bolton 1980)
 function parcelTempAtLevel(theta_e_parcel, p_level, T_guess) {
     let Tp = T_guess;
     for (let it = 0; it < 12; it++) {
@@ -1079,7 +1020,6 @@ function parcelTempAtLevel(theta_e_parcel, p_level, T_guess) {
     return Tp;
 }
 
-// Surface-Based / ML / MU Parcel (Bolton 1980, Doswell & Rasmussen 1994)
 function computeParcel(T, Td, p_sfc, sfc, profile, type) {
     const dewDep  = Math.max(0, T - Td);
     const lclH    = 125 * dewDep;
@@ -1089,12 +1029,10 @@ function computeParcel(T, Td, p_sfc, sfc, profile, type) {
     const e_d   = 6.112 * Math.exp(17.67 * Td / (Td + 243.5));
     const w_gkg = 1000 * 0.622 * e_d / (p_sfc - e_d);
 
-    // Theta-E des Parcels (Bolton 1980 Gl. 43)
     const theta_e_parcel = (T + 273.15)
         * Math.pow(1000 / p_sfc, 0.2854 * (1 - 0.00028 * w_gkg))
         * Math.exp((3.376 / T_LCL_K - 0.00254) * w_gkg * (1 + 0.00081 * w_gkg));
 
-    // Profil aufsteigend nach Höhe sortieren
     const sorted = [...profile].sort((a, b) => a.z - b.z);
 
     let cape = 0, cin = 0;
@@ -1108,7 +1046,6 @@ function computeParcel(T, Td, p_sfc, sfc, profile, type) {
         const next = sorted[idx + 1];
 
         if (env.z < lclH) {
-            // Unterhalb LCL: trocken-adiabatisch für CIN
             const Tp_dry = T - 9.8 * (env.z / 1000);
             const dT_dry = Tp_dry - env.T;
             const dz_eff = Math.min(next.z, lclH) - env.z;
@@ -1119,7 +1056,6 @@ function computeParcel(T, Td, p_sfc, sfc, profile, type) {
             continue;
         }
 
-        // Oberhalb LCL: feucht-adiabatisch
         const Tp = parcelTempAtLevel(theta_e_parcel, env.p, env.T + 1);
         if (env.p <= 502 && T_parcel_500 === null) T_parcel_500 = Tp;
 
@@ -1129,7 +1065,6 @@ function computeParcel(T, Td, p_sfc, sfc, profile, type) {
         if (dT > 0) {
             if (!aboveLFC) {
                 aboveLFC = true;
-                // LFC interpolieren zwischen vorherigem (negativ) und aktuellem (positiv) Level
                 if (prevTp !== null && prevEnvT !== null) {
                     const dT_prev = prevTp - prevEnvT;
                     if (dT_prev < 0) {
@@ -1150,7 +1085,6 @@ function computeParcel(T, Td, p_sfc, sfc, profile, type) {
         prevTp = Tp; prevEnvT = env.T; prevZ = env.z;
     }
 
-    // LI = T_env(500hPa) - T_parcel(500hPa)  [negativ = instabil]
     const env500 = sorted.find(l => l.p <= 502 && l.p >= 498)
                 ?? interpProfile(sorted, 500);
     const li = (env500 && T_parcel_500 !== null)
@@ -1170,13 +1104,10 @@ function computeParcel(T, Td, p_sfc, sfc, profile, type) {
     };
 }
 
-// ML-Parcel: Mittelwert unterste 500m AGL (inkl. 10m Surface-Level)
 function computeMLParcel(sfc, profile, p_sfc_in) {
-    // Surface-Level (10m) immer einschliessen
     const sfcLevel = { T: sfc.t2m, Td: sfc.d2m, z: 10 };
     const ml_levels = [sfcLevel, ...profile.filter(l => l.z <= 500)];
 
-    // Höhengewichteter Mittelwert (trapez-Methode)
     let sumT = 0, sumTd = 0, totalDz = 0;
     for (let i = 0; i < ml_levels.length - 1; i++) {
         const dz = ml_levels[i + 1].z - ml_levels[i].z;
@@ -1186,8 +1117,6 @@ function computeMLParcel(sfc, profile, p_sfc_in) {
     }
     const ml_T  = totalDz > 0 ? sumT  / totalDz : sfc.t2m;
     const ml_Td = totalDz > 0 ? sumTd / totalDz : sfc.d2m;
-
-    // Startdruck: Bodendruck
     const ml_p = p_sfc_in ?? (ml_levels[0]?.p ?? 1013.25);
 
     const res = computeParcel(ml_T, ml_Td, ml_p, sfc, profile, 'ML');
@@ -1195,11 +1124,9 @@ function computeMLParcel(sfc, profile, p_sfc_in) {
     return res;
 }
 
-// MU-Parcel: feuchteste Luftmasse in untersten 300 hPa
 function computeMUParcel(sfc, profile, p_sfc_in) {
     let maxThetaE = -Infinity, best = null;
     const p_sfc = p_sfc_in ?? (profile.length ? profile[0].p : 1013.25);
-    // Surface-Level (2m) + alle Levels innerhalb 300 hPa von Boden
     const levels = [{ T: sfc.t2m, Td: sfc.d2m, p: p_sfc, z: 0 },
                     ...profile.filter(l => l.p >= p_sfc - 300)];
     for (const l of levels) {
@@ -1210,7 +1137,6 @@ function computeMUParcel(sfc, profile, p_sfc_in) {
     return computeParcel(best.T, best.Td, best.p, sfc, profile, 'MU');
 }
 
-// Teilschichten-CAPE (0-2km, 0-3km)
 function partialCAPE(sfc, profile, parcel, z1, z2) {
     let cape = 0;
     const lclH = parcel.LCL_HGT;
@@ -1238,7 +1164,6 @@ function partialCAPE(sfc, profile, parcel, z1, z2) {
     return Math.max(0, Math.round(cape));
 }
 
-// Lapse parcel from p1 to p2 (trockenadiabatisch)
 function liftParcel(T, Td, p1, p2) {
     const lclH = lclHeight(T, Td);
     const z1 = pressureToAltitude(p1);
@@ -1248,11 +1173,10 @@ function liftParcel(T, Td, p1, p2) {
         return T - 9.8 * (z2 - z1) / 1000;
     } else {
         const T_LCL = T - 9.8 * (zLCL - z1) / 1000;
-        return T_LCL - 4.5 * (z2 - zLCL) / 1000;  // ~MALR
+        return T_LCL - 4.5 * (z2 - zLCL) / 1000;
     }
 }
 
-// DCAPE nach Gilmore & Wicker (1998), angepasst für diskrete Levels
 function computeDCAPE(profile, p700, p500) {
     if (!p700 || !p500) return 0;
     const dewDep = p700.T - p700.Td;
@@ -1264,11 +1188,9 @@ function computeDCAPE(profile, p700, p500) {
     return Math.max(0, Math.round((tempDiff / (p700.T + 273.15)) * 9.81 * 2500 * moistFactor));
 }
 
-// Bulk Shear zwischen Oberfläche und Zielhöhe
 function computeBulkShear(sfc, profile) {
     const sfcUV = toUV(sfc.ws10_ms, sfc.wd10);
     function bs(z_top) {
-        const top = getAtZ(profile, sfc, z_top);
         const topLevel = profile.filter(l => l.z >= z_top).sort((a,b) => a.z - b.z)[0];
         if (!topLevel) return 0;
         const topUV = toUV(topLevel.ws_ms, topLevel.wd);
@@ -1294,7 +1216,6 @@ function computeBulkShear(sfc, profile) {
     };
 }
 
-// Mittlere Windvektoren in Schichten
 function computeMeanWinds(sfc, profile) {
     function mw(z_top) {
         const levels = [{ z:10, ws_ms: sfc.ws10_ms, wd: sfc.wd10 },
@@ -1308,9 +1229,7 @@ function computeMeanWinds(sfc, profile) {
     return { MW_01km: mw(1000), MW_02km: mw(2000), MW_03km: mw(3000), MW_06km: mw(6000) };
 }
 
-// Bunkers Storm Motion (Bunkers et al. 2000) – echte U/V-Decomposition
 function computeBunkers(sfc, profile) {
-    // 0-6km Mittelwind (Bezugspunkt für Bunkers-Abweichung)
     const levels06 = [
         { z: 10,    u: toUV(sfc.ws10_ms, sfc.wd10).u,  v: toUV(sfc.ws10_ms, sfc.wd10).v },
         ...profile.filter(l => l.z <= 6000).map(l => ({ z: l.z, ...toUV(l.ws_ms, l.wd) })),
@@ -1318,7 +1237,6 @@ function computeBunkers(sfc, profile) {
     const mwU = levels06.reduce((s, l) => s + l.u, 0) / levels06.length;
     const mwV = levels06.reduce((s, l) => s + l.v, 0) / levels06.length;
 
-    // 0-6km Shear-Vektor
     const bot = toUV(sfc.ws10_ms, sfc.wd10);
     const top6 = profile.filter(l => l.z <= 6000).sort((a,b) => b.z - a.z)[0];
     const topUV = top6 ? toUV(top6.ws_ms, top6.wd) : bot;
@@ -1326,8 +1244,7 @@ function computeBunkers(sfc, profile) {
     const shV = topUV.v - bot.v;
     const shMag = Math.hypot(shU, shV) || 1;
 
-    // Rechts-devierender (RM) und Links-devierender (LM) Storm
-    const D = 7.5; // m/s Deviattion (Bunkers 2000)
+    const D = 7.5;
     const rm_u = mwU + D * (shV / shMag);
     const rm_v = mwV - D * (shU / shMag);
     const lm_u = mwU - D * (shV / shMag);
@@ -1349,16 +1266,13 @@ function computeBunkers(sfc, profile) {
     };
 }
 
-// SRH (Storm Relative Helicity) – mit Bunkers RM/LM Storm Motion
 function computeSRH(sfc, profile, bunkers) {
-    // Echte Bunkers-Stormvektoren verwenden
     const stormU_RM = bunkers.RM_u;
     const stormV_RM = bunkers.RM_v;
     const stormU_LM = bunkers.LM_u;
     const stormV_LM = bunkers.LM_v;
 
     function srhLayer(z_top, stormU, stormV) {
-        // Surface + alle Level bis z_top
         const sfcUV = toUV(sfc.ws10_ms, sfc.wd10);
         const levels = [
             { z: 10, u: sfcUV.u, v: sfcUV.v },
@@ -1369,7 +1283,6 @@ function computeSRH(sfc, profile, bunkers) {
         ];
         if (levels.length < 2) return 0;
 
-        // Helizitäts-Integral: H = Σ (V_sr × ΔV)  (Kreuzprodukt-Methode)
         let helicity = 0;
         for (let i = 0; i < levels.length - 1; i++) {
             const u1 = levels[i].u   - stormU;
@@ -1378,7 +1291,6 @@ function computeSRH(sfc, profile, bunkers) {
             const v2 = levels[i+1].v - stormV;
             helicity += u1 * v2 - u2 * v1;
         }
-        // Positiv für RM (zyklonal), negativ für LM
         return helicity;
     }
 
@@ -1391,14 +1303,12 @@ function computeSRH(sfc, profile, bunkers) {
     };
 }
 
-// Durchschnittliche RH in einer Höhenschicht
 function avgRH(profile, z1, z2) {
     const levels = profile.filter(l => l.z >= z1 && l.z <= z2);
     if (!levels.length) return 60;
     return Math.round(levels.reduce((s,l) => s + l.rh, 0) / levels.length);
 }
 
-// Höhe der maximalen Theta-E unterhalb z_max
 function maxThetaEHeight(profile, sfc, z_max) {
     const levels = [
         { z: 10, T: sfc.t2m, Td: sfc.d2m, p: 1013.25 },
@@ -1412,7 +1322,6 @@ function maxThetaEHeight(profile, sfc, z_max) {
     return maxZ;
 }
 
-// Höhe der minimalen Theta-E unterhalb z_max
 function minThetaEHeight(profile, sfc, z_max) {
     const levels = profile.filter(l => l.z <= z_max && l.z > 500);
     if (!levels.length) return z_max / 2;
@@ -1424,17 +1333,15 @@ function minThetaEHeight(profile, sfc, z_max) {
     return minZ;
 }
 
-// SWEAT-Index (Miller 1972)
 function computeSWEAT(p850, p500, srh1km, tt) {
     if (!p850 || !p500) return 0;
     const Td850 = p850.Td;
-    const ws850 = p850.ws_ms * 1.944;  // m/s → kts
+    const ws850 = p850.ws_ms * 1.944;
     const ws500 = p500.ws_ms * 1.944;
     if (tt < 49) return 0;
     return 12 * Td850 + 20 * (tt - 49) + 2 * ws850 + ws500 + 125 * (Math.sin((p500.wd - p850.wd) * Math.PI / 180) + 0.2);
 }
 
-// SCP nach Thompson et al. (2004)
 function computeSCP(muCape, shear06, srh3km, cin) {
     if (muCape < 100 || shear06 < 6 || srh3km < 40) return 0;
     const magCin   = -Math.min(0, cin);
@@ -1442,7 +1349,6 @@ function computeSCP(muCape, shear06, srh3km, cin) {
     return Math.max(0, (muCape/1000) * (srh3km/50) * Math.min(shear06/12, 1.5) * cinTerm);
 }
 
-// STP nach Thompson et al. (2003) – Europa-kalibriert (normCAPE=750)
 function computeSTP(sbCape, srh1km, shear06, lclH, cin) {
     if (sbCape < 80 || srh1km < 40 || shear06 < 6) return 0;
     let lclTerm;
@@ -1456,7 +1362,6 @@ function computeSTP(sbCape, srh1km, shear06, lclH, cin) {
     return Math.max(0, (sbCape/750) * (srh1km/150) * (shear06/20 >= 1.5 ? 1.5 : shear06/20) * lclTerm * cinTerm);
 }
 
-// SHIP (Significant Hail Parameter)
 function computeSHIP(MU, BS, p500, p700) {
     if (!p500 || !p700) return 0;
     if (MU.CAPE < 100)  return 0;
@@ -1465,43 +1370,37 @@ function computeSHIP(MU, BS, p500, p700) {
     return (MU.CAPE * muMr * lr * -p500.T * BS.BS_06km) / 42000000;
 }
 
-// DCP (Derecho Composite Parameter, Evans & Doswell 2001)
 function computeDCP(dcape, muCape, shear06, srh1km) {
     if (dcape < 100 || muCape < 100 || shear06 < 6) return 0;
     return (dcape/980) * (muCape/2000) * (shear06/20) * (srh1km/100);
 }
 
-// Wind Index (McCann 1994, vereinfacht)
-function computeWindIndex(muCape, dcape, shear06, frzLvl) {
-    if (dcape < 100 && muCape < 100) return 0;
-    const instab = Math.sqrt(2 * Math.max(muCape, dcape));
-    return Math.round(instab * shear06 / 1000);
-}
-
-// SHERBS3 / SHERBE (Sherburn & Parker 2014)
 function computeSHERBS3(lr36, shear06, srh3km, muCape) {
-    if (muCape >= 1000) return 0;   // nur für HSLC-Umgebungen
+    if (muCape >= 1000) return 0;
     return (lr36 / 9.0) * (shear06 / 27) * (srh3km / 150);
 }
-function computeSHERBE(lr36, shear06, srh3km, muCape) {
+
+// FIX 2: SHERBE verwendet jetzt maxLR_2km (maximale 2-km-Lapse-Rate 2–6 km AGL)
+// statt LR_36km (Sherburn & Parker 2014, SHERBE_v2; thundeR-Implementierung)
+function computeSHERBE(maxLR_2km, shear06, srh3km, muCape) {
     if (muCape >= 1000) return 0;
-    return (lr36 / 9.0) * (shear06 / 27) * (srh3km / 150) * (muCape < 500 ? 1.5 : 1.0);
+    return (maxLR_2km / 9.0) * (shear06 / 27) * (srh3km / 150) * (muCape < 500 ? 1.5 : 1.0);
 }
 
-// DEI (Dominant Supercell Index, Gropp & Davenport 2019)
-function computeDEI(muCape, scp, shear06) {
-    if (muCape < 100 || scp < 0.5) return 0;
-    return scp * Math.min(shear06 / 20, 1.5);
+// FIX 1: DEI nach Romanic et al. (2022): DEI = f(WMAXSHEAR, Cold_Pool_Strength)
+// Normierung: WMAXSHEAR/500 (EU-Klimatologie), CPS/30 (m/s → ~1000 J/kg DCAPE)
+// Vorherige Implementierung war SCP × min(shear/20, 1.5) — falsche Formel.
+function computeDEI(mlWmaxshear, coldPoolStrength) {
+    if (mlWmaxshear <= 0 || coldPoolStrength <= 0) return 0;
+    return (mlWmaxshear / 500) * (coldPoolStrength / 30);
 }
 
-// TIP (Tornadic Index Europa, Púčik 2015 – vereinfacht)
 function computeTIP(muCape, srh1km, shear06, lclH) {
     if (muCape < 80 || srh1km < 50 || shear06 < 12) return 0;
     const lclTerm = lclH < 1000 ? 1.0 : lclH < 2000 ? (2000 - lclH) / 1000 : 0;
     return (muCape/1000) * (srh1km/150) * (shear06/20) * lclTerm;
 }
 
-// Moisture Flux (Bodenfeuchtefluss 0-z km)
 function computeMoistureFlux(sfc, profile, z_top) {
     const levels = [
         { z: 10, ws_ms: sfc.ws10_ms, Td: sfc.d2m, p: 1013.25 },
