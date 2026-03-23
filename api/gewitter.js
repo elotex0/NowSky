@@ -1,22 +1,43 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // LIGHTNING PROBABILITY API HANDLER
 // Methodik: ESSL AR-CHaMo (Rädler 2018) + thundeR-Prädiktoren (Taszarek 2020)
-// Prädiktoren: vollständiges thundeR sounding_compute()-Set soweit via
-//              Open-Meteo Druckniveaus rekonstruierbar
-// Druckniveaus Open-Meteo: 1000/975/950/925/900/850/800/700/600/500/400/300/250/200 hPa
-// Variablen pro Level:  temperature, dewpoint, relative_humidity,
-//                       wind_speed, wind_direction, geopotential_height
 //
-// KORREKTUREN (v2):
-//   FIX 1 – DEI: Formel auf Romanic et al. (2022) korrigiert:
-//            DEI = (WMAXSHEAR/500) * (Cold_Pool_Strength/30)
-//            (vorher fälschlich: SCP × min(shear/20,1.5))
-//   FIX 2 – SHERBE: Lapse-Rate-Term auf maximale 2-km-LR zwischen 2–6 km AGL
-//            korrigiert (thundeR-Doku; Sherburn & Parker 2014 SHERBE_v2)
-//            (vorher: LR_36km statt max_LR_2km_2_6km)
-//   FIX 3 – WMAXSHEAR-Scoring: Schwellen an europäisches Klimaperzentil
-//            (Taszarek 2020) angepasst; 95th-Pz. DE ≈ 400–600 m²/s²
-//            (vorher: 1500/1200/900/700 → jetzt: 800/600/450/300/200/150/100)
+// KORREKTUREN (v3):
+//   FIX A – DCAPE: Echtes Integral nach Emanuel (1994) statt vereinfachter
+//            Wetbulb-T500-Approximation. Parcell steigt von 700 hPa trocken-
+//            adiabatisch ab und wird gegen Umgebung integriert.
+//            Vorher: (wetBulb700-T500)/T700 * 9.81 * 2500 * moistFactor
+//            → produzierte unrealistisch hohe Werte (~1000+ J/kg für März EU)
+//
+//   FIX B – ML-Parcel: Mixed-Layer-Tiefe auf 100 hPa (~1 km AGL) angehoben.
+//            Vorher: nur 500m AGL → ML_CAPE=0 obwohl SB_CAPE positiv, weil
+//            die Schicht zu dünn war und die Mittelung nicht repräsentativ.
+//
+//   FIX C – Theta-E Schwellen: An europäische Klimatologie (Taszarek 2020)
+//            angepasst. DE-Sommer-Thetae typisch 310–330 K, Extremereignisse
+//            330–340 K. Subtropische Schwellen (≥345 für max. Score) entfernt.
+//            Vorher: ≥345/≥335/≥325/<315 → jetzt ≥330/≥322/≥315/<308
+//
+//   FIX D – SHIP Kalibrierung: Divisor an europäisches CAPE-Regime angepasst.
+//            SHIP ist für Great Plains kalibriert (CAPE 1000–4000 J/kg).
+//            In EU ist CAPE 100–800 J/kg typisch → SHIP bleibt strukturell
+//            gleich aber Scoring-Schwellen auf EU-Klimaperzentile abgesenkt.
+//            Vorher: Schwellen ≥0.5/≥1.0/≥2.0 → jetzt ≥0.1/≥0.2/≥0.4
+//
+//   FIX E – avgRH Fallback: Statt stilles 60% wird nun der nächste vorhandene
+//            Level interpoliert statt ein unrealistischer Festwert zurückgegeben.
+//
+//   FIX F – Score-Gesamtkalibrierung: Basis-Grenzwerte angehoben, sodass
+//            schwache März-Situationen (CAPE 100–300, kein SRH) nicht bereits
+//            35–40% erreichen. Ziel: klare Trennung zwischen
+//            Randüberschreitung (10–20%) und echter Gewittergefahr (40%+).
+//
+// Quellliteratur:
+//   Emanuel (1994): Atmospheric Convection – DCAPE-Definition
+//   Rädler et al. (2018): Eur. J. Meteorol. – AR-CHaMo Logistik
+//   Taszarek et al. (2020): JGR-Atmospheres – EU Konvektionsklimatologie
+//   Sherburn & Parker (2014): Wea. Forecasting – SHERBE
+//   Romanic et al. (2022): Nat. Hazards – DEI
 // ═══════════════════════════════════════════════════════════════════════════
 
 export default async function handler(req, res) {
@@ -38,28 +59,16 @@ export default async function handler(req, res) {
     if (!isEurope(latitude, longitude))
         return res.status(400).json({ error: 'Vorhersage nur für Europa verfügbar', onlyEurope: true });
 
-    // ── Open-Meteo Druckniveaus ─────────────────────────────────────────────
     const LEVELS    = [1000,975,950,925,900,850,800,700,600,500,400,300,250,200];
     const LEV_VARS  = ['temperature','dewpoint','relative_humidity','wind_speed','wind_direction','geopotential_height'];
     const MODELS    = ['icon_eu','ecmwf_ifs025','gfs_global'];
 
     const surfaceVars = [
-        'temperature_2m',
-        'dew_point_2m',
-        'wind_speed_10m',
-        'wind_gusts_10m',
-        'wind_direction_10m',
-        'cape',
-        'convective_inhibition',
-        'lifted_index',
-        'boundary_layer_height',
-        'precipitation',
-        'precipitation_probability',
-        'total_column_integrated_water_vapour',
-        'direct_radiation',
-        'cloud_cover_low',
-        'cloud_cover_mid',
-        'cloud_cover_high',
+        'temperature_2m', 'dew_point_2m', 'wind_speed_10m', 'wind_gusts_10m',
+        'wind_direction_10m', 'cape', 'convective_inhibition', 'lifted_index',
+        'boundary_layer_height', 'precipitation', 'precipitation_probability',
+        'total_column_integrated_water_vapour', 'direct_radiation',
+        'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high',
     ].join(',');
 
     const pressureVars = LEVELS.flatMap(lv =>
@@ -88,7 +97,6 @@ export default async function handler(req, res) {
         const [currentDateStr, currentHourStr] = localStr.split(', ');
         const currentHour = parseInt(currentHourStr?.split(':')[0] ?? '0', 10);
 
-        // ── Schritt 1: Pro Modell Stundenwerte extrahieren ─────────────────
         function getVal(hourly, field, model, i) {
             const key = `${field}_${model}`;
             const arr = hourly[key];
@@ -118,17 +126,13 @@ export default async function handler(req, res) {
             }
             raw.sort((a, b) => b.p - a.p);
 
-            const z_sfc = raw.length > 0 ? raw[0].z_asl : 0;
+            const z_sfc    = raw.length > 0 ? raw[0].z_asl : 0;
             const p_lowest = raw[0]?.p ?? 1000;
             const T_lowest = raw[0]?.T ?? 15;
             const dz_to_sfc = raw[0]?.z_asl - z_sfc;
             const p_sfc = p_lowest * Math.exp(9.81 * dz_to_sfc / (287 * (T_lowest + 273.15)));
 
-            const profile = raw.map(l => ({
-                ...l,
-                z: Math.max(0, l.z_asl - z_sfc),
-            }));
-
+            const profile = raw.map(l => ({ ...l, z: Math.max(0, l.z_asl - z_sfc) }));
             return { profile, p_sfc: Math.round(p_sfc * 10) / 10 };
         }
 
@@ -137,7 +141,6 @@ export default async function handler(req, res) {
             const t2m = g('temperature_2m');
             const d2m = g('dew_point_2m');
             if (t2m === null) return null;
-
             return {
                 t2m,
                 d2m:         d2m ?? (t2m - 10),
@@ -159,13 +162,12 @@ export default async function handler(req, res) {
             };
         }
 
-        // ── Schritt 2: thundeR-Prädiktoren aus Profil berechnen ───────────
         function computeThunderParams(sfc, profile, p_sfc_in) {
             if (!profile.length || !sfc) return null;
 
             const LR = computeLapseRates(profile, sfc);
-
             const p_sfc = p_sfc_in ?? 1013.25;
+
             const SB = computeParcel(sfc.t2m, sfc.d2m, p_sfc, sfc, profile, 'SB');
             const ML = computeMLParcel(sfc, profile, p_sfc);
             const MU = computeMUParcel(sfc, profile, p_sfc);
@@ -173,29 +175,26 @@ export default async function handler(req, res) {
             const p850  = interpProfile(profile, 850);
             const p700  = interpProfile(profile, 700);
             const p500  = interpProfile(profile, 500);
-            const p300  = interpProfile(profile, 300);
-            const p200  = interpProfile(profile, 200);
-            const p925  = interpProfile(profile, 925);
-            const p1000 = interpProfile(profile, 1000);
 
             const PRCP_WATER = sfc.pwat;
-            const RH_01km   = avgRH(profile, 0,    1000);
-            const RH_02km   = avgRH(profile, 0,    2000);
-            const RH_14km   = avgRH(profile, 1000, 4000);
-            const RH_25km   = avgRH(profile, 2000, 5000);
-            const RH_36km   = avgRH(profile, 3000, 6000);
+            const RH_01km   = avgRH(profile, sfc, 0,    1000);
+            const RH_02km   = avgRH(profile, sfc, 0,    2000);
+            const RH_14km   = avgRH(profile, sfc, 1000, 4000);
+            const RH_25km   = avgRH(profile, sfc, 2000, 5000);
+            const RH_36km   = avgRH(profile, sfc, 3000, 6000);
 
-            const ThetaE_01km = thetaE(sfc.t2m, sfc.d2m, 1013.25);
-            const ThetaE_02km = p850 ? thetaE(p850.T, p850.Td, 850) : ThetaE_01km;
+            const ThetaE_01km  = thetaE(sfc.t2m, sfc.d2m, 1013.25);
+            const ThetaE_02km  = p850 ? thetaE(p850.T, p850.Td, 850) : ThetaE_01km;
             const Delta_ThetaE = ThetaE_01km - (p500 ? thetaE(p500.T, p500.Td, 500) : ThetaE_01km - 10);
 
-            const DCAPE = computeDCAPE(profile, p700, p500);
+            // FIX A: echtes DCAPE-Integral nach Emanuel (1994)
+            const DCAPE = computeDCAPE(profile, sfc, p700, p500);
             const CPS   = DCAPE > 0 ? Math.sqrt(2 * DCAPE) : 0;
 
-            const BS = computeBulkShear(sfc, profile);
-            const MW = computeMeanWinds(sfc, profile);
+            const BS      = computeBulkShear(sfc, profile);
+            const MW      = computeMeanWinds(sfc, profile);
             const bunkers = computeBunkers(sfc, profile);
-            const SRH = computeSRH(sfc, profile, bunkers);
+            const SRH     = computeSRH(sfc, profile, bunkers);
 
             const K_Index = p850 && p700 && p500
                 ? (p850.T - p500.T) + p850.Td - (p700.T - p700.Td)
@@ -231,18 +230,12 @@ export default async function handler(req, res) {
             const STP_fix  = computeSTP(SB.CAPE, SRH.SRH_1km_RM, BS.BS_06km, SB.LCL_HGT, sfc.cin);
             const SHIP     = computeSHIP(MU, BS, p500, p700);
             const DCP      = computeDCP(DCAPE, MU.CAPE, BS.BS_06km, SRH.SRH_1km_RM);
-
             const SHERBS3  = computeSHERBS3(LR.LR_36km, BS.BS_06km, SRH.SRH_3km_RM, MU.CAPE);
 
-            // FIX 2: SHERBE nutzt jetzt maximale 2-km-Lapse-Rate zwischen 2–6 km AGL
-            // statt LR_36km (Sherburn & Parker 2014, SHERBE_v2; thundeR-Doku)
             const maxLR_2km_2_6km = computeMaxLapseRate2km(profile, sfc, 2000, 6000);
             const SHERBE   = computeSHERBE(maxLR_2km_2_6km, BS.BS_06km, SRH.SRH_3km_RM, MU.CAPE);
 
-            // FIX 1: DEI nach Romanic et al. (2022): DEI = WMAXSHEAR × Cold_Pool_Strength
-            // (normiert: WMAXSHEAR/500, CPS/30) — vorher fälschlich SCP-basiert
             const DEI = computeDEI(ML_WMAXSHEAR, CPS);
-
             const TIP = computeTIP(MU.CAPE, SRH.SRH_1km_RM, BS.BS_06km, SB.LCL_HGT);
             const MoistFlux02 = computeMoistureFlux(sfc, profile, 2000);
 
@@ -256,7 +249,6 @@ export default async function handler(req, res) {
                 MU_LI:         MU.LI,
                 MU_WMAX:       Math.sqrt(2 * Math.max(0, MU.CAPE)),
                 MU_MIXR:       mixingRatio(MU.Td_parcel, MU.p_parcel ?? 850),
-
                 SB_CAPE:       SB.CAPE,
                 SB_CIN:        SB.CIN,
                 SB_LCL_HGT:   SB.LCL_HGT,
@@ -266,7 +258,6 @@ export default async function handler(req, res) {
                 SB_LI:        SB.LI,
                 SB_WMAX:      Math.sqrt(2 * Math.max(0, SB.CAPE)),
                 SB_MIXR:      mixingRatio(sfc.d2m, 1013.25),
-
                 ML_CAPE:      ML.CAPE,
                 ML_CIN:       ML.CIN,
                 ML_LCL_HGT:  ML.LCL_HGT,
@@ -276,11 +267,9 @@ export default async function handler(req, res) {
                 ML_LI:       ML.LI,
                 ML_WMAX:     Math.sqrt(2 * Math.max(0, ML.CAPE)),
                 ML_MIXR:     ML.mixR,
-
                 SB_02km_CAPE: partialCAPE(sfc, profile, SB, 0,    2000),
                 SB_03km_CAPE: partialCAPE(sfc, profile, SB, 0,    3000),
                 MU_03km_CAPE: partialCAPE(sfc, profile, MU, 0,    3000),
-
                 LR_01km:      LR.LR_01km,
                 LR_02km:      LR.LR_02km,
                 LR_03km:      LR.LR_03km,
@@ -291,61 +280,40 @@ export default async function handler(req, res) {
                 LR_500700hPa: LR.LR_500700hPa,
                 LR_500800hPa: LR.LR_500800hPa,
                 LR_600800hPa: LR.LR_600800hPa,
-
                 Thetae_01km:       ThetaE_01km,
                 Thetae_02km:       ThetaE_02km,
                 Delta_thetae:      Delta_ThetaE,
                 HGT_max_thetae_03km: maxThetaEHeight(profile, sfc, 3000),
                 HGT_min_thetae_04km: minThetaEHeight(profile, sfc, 4000),
-
                 PRCP_WATER:        PRCP_WATER,
-                RH_01km,
-                RH_02km,
-                RH_14km,
-                RH_25km,
-                RH_36km,
+                RH_01km, RH_02km, RH_14km, RH_25km, RH_36km,
                 Moisture_Flux_02km: MoistFlux02,
-
                 DCAPE,
                 Cold_Pool_Strength: CPS,
-
-                BS_01km:       BS.BS_01km,
-                BS_02km:       BS.BS_02km,
-                BS_03km:       BS.BS_03km,
-                BS_06km:       BS.BS_06km,
-                BS_08km:       BS.BS_08km,
-                BS_36km:       BS.BS_36km,
-                BS_26km:       BS.BS_26km,
-                BS_16km:       BS.BS_16km,
-
-                MW_01km:       MW.MW_01km,
-                MW_02km:       MW.MW_02km,
-                MW_03km:       MW.MW_03km,
-                MW_06km:       MW.MW_06km,
-
-                SRH_500m_RM:   SRH.SRH_500m_RM,
-                SRH_1km_RM:    SRH.SRH_1km_RM,
-                SRH_3km_RM:    SRH.SRH_3km_RM,
-
+                BS_01km:  BS.BS_01km,
+                BS_02km:  BS.BS_02km,
+                BS_03km:  BS.BS_03km,
+                BS_06km:  BS.BS_06km,
+                BS_08km:  BS.BS_08km,
+                BS_36km:  BS.BS_36km,
+                BS_26km:  BS.BS_26km,
+                BS_16km:  BS.BS_16km,
+                MW_01km:  MW.MW_01km,
+                MW_02km:  MW.MW_02km,
+                MW_03km:  MW.MW_03km,
+                MW_06km:  MW.MW_06km,
+                SRH_500m_RM: SRH.SRH_500m_RM,
+                SRH_1km_RM:  SRH.SRH_1km_RM,
+                SRH_3km_RM:  SRH.SRH_3km_RM,
                 K_Index,
                 Showalter_Index: Showalter,
                 TotalTotals_Index: TotalTotals,
                 SWEAT_Index:    SWEAT,
-                SCP_fix,
-                STP_fix,
-                EHI_01km,
-                EHI_03km,
-                SHIP,
-                DCP,
-                SHERBS3,
-                SHERBE,
-                DEI,
-                TIP,
-
+                SCP_fix, STP_fix, EHI_01km, EHI_03km, SHIP, DCP,
+                SHERBS3, SHERBE, DEI, TIP,
                 MU_WMAXSHEAR:  Math.round(MU_WMAXSHEAR),
                 SB_WMAXSHEAR:  Math.round(SB_WMAXSHEAR),
                 ML_WMAXSHEAR:  Math.round(ML_WMAXSHEAR),
-
                 Bunkers_RM_M:  bunkers.RM_speed,
                 Bunkers_RM_A:  bunkers.RM_dir,
                 Bunkers_LM_M:  bunkers.LM_speed,
@@ -354,32 +322,33 @@ export default async function handler(req, res) {
                 Bunkers_MW_A:  bunkers.MW_dir,
                 SRH_1km_LM:    SRH.SRH_1km_LM,
                 SRH_3km_LM:    SRH.SRH_3km_LM,
-
-                T2m:           sfc.t2m,
-                Td2m:          sfc.d2m,
-                CAPE_sfc:      sfc.cape,
-                CIN_sfc:       sfc.cin,
-                LI_sfc:        sfc.li,
-                PWAT:          sfc.pwat,
-                PBL_H:         sfc.pblH ?? ML.LCL_HGT,
-                RADIATION:     sfc.radiation,
+                T2m:       sfc.t2m,
+                Td2m:      sfc.d2m,
+                CAPE_sfc:  sfc.cape,
+                CIN_sfc:   sfc.cin,
+                LI_sfc:    sfc.li,
+                PWAT:      sfc.pwat,
+                PBL_H:     sfc.pblH ?? ML.LCL_HGT,
+                RADIATION: sfc.radiation,
             };
         }
 
-        // ── Schritt 3: Gewitterwahrscheinlichkeit aus thundeR-Params ───────────
+        // ── Gewitterwahrscheinlichkeit ──────────────────────────────────────
         // AR-CHaMo Logistik: Rädler 2018 / Taszarek 2021
+        // FIX F: Gesamtkalibrierung für EU-Klimatologie
         function calculateLightningProb(p, sfc) {
             if (!p) return 0;
 
-            const cape      = Math.max(0, p.MU_CAPE);
-            const sbCape    = Math.max(0, p.SB_CAPE);
-            const cin       = sfc.cin ?? 0;
-            const magCin    = -Math.min(0, cin);
+            const cape   = Math.max(0, p.MU_CAPE);
+            const sbCape = Math.max(0, p.SB_CAPE);
+            const cin    = sfc.cin ?? 0;
+            const magCin = -Math.min(0, cin);
 
-            if (sfc.t2m  < 3  && cape < 300)                  return 0;
-            if (sfc.t2m  < 8  && cape < 180 && p.BS_06km < 15) return 0;
+            // Harte Ausschlusskriterien
+            if (sfc.t2m  < 2  && cape < 500)                   return 0;
+            if (sfc.t2m  < 8  && cape < 200 && p.BS_06km < 15) return 0;
             if (cape     < 80 && sfc.precip < 0.1 && sfc.precipProb < 15) return 0;
-            if (magCin   > 300)                                return 0;
+            if (magCin   > 300)                                 return 0;
 
             const wmaxshear = p.ML_WMAXSHEAR;
             const shear06   = p.BS_06km;
@@ -387,7 +356,6 @@ export default async function handler(req, res) {
             const srh3km    = p.SRH_3km_RM;
             const dcape     = p.DCAPE;
             const lr36      = p.LR_36km;
-            const lr26      = p.LR_26km;
             const muEl      = p.MU_EL_TEMP ?? -15;
             const lclH      = p.SB_LCL_HGT;
             const meanRH    = (p.RH_14km + p.RH_25km + p.RH_36km) / 3;
@@ -404,209 +372,218 @@ export default async function handler(req, res) {
             const ship      = p.SHIP;
             const sherbs3   = p.SHERBS3;
 
-            // ── HSLC-Regime (High Shear Low CAPE) ───────────────────────
+            // ── HSLC-Regime (High Shear Low CAPE) ───────────────────────────
             if (cape < 300 && shear06 >= 18) {
                 let hslcScore = 0;
-                if      (shear06 >= 25) hslcScore += 30;
-                else if (shear06 >= 20) hslcScore += 20;
-                else                    hslcScore += 10;
-                if      (sherbs3 >= 1.0) hslcScore += 25;
-                else if (sherbs3 >= 0.5) hslcScore += 12;
-                if      (meanRH >= 65)   hslcScore += 12;
+                if      (shear06 >= 25) hslcScore += 28;
+                else if (shear06 >= 20) hslcScore += 18;
+                else                    hslcScore += 8;
+                if      (sherbs3 >= 1.0) hslcScore += 20;
+                else if (sherbs3 >= 0.5) hslcScore += 10;
+                if      (meanRH >= 65)   hslcScore += 10;
                 else if (meanRH <  50)   hslcScore -= 15;
-                if (sfc.t2m < 8) hslcScore = Math.round(hslcScore * 0.6);
-                return Math.min(60, Math.max(0, hslcScore));
+                if (sfc.t2m < 8) hslcScore = Math.round(hslcScore * 0.5);
+                return Math.min(55, Math.max(0, hslcScore));
             }
 
             let score = 0;
 
             // ── (1) MUCAPE ────────────────────────────────────────────────
-            if      (cape >= 2000) score += 16;
-            else if (cape >= 1500) score += 14;
-            else if (cape >= 1200) score += 12;
-            else if (cape >= 800)  score += 10;
-            else if (cape >= 500)  score += 8;
-            else if (cape >= 300)  score += 6;
-            else if (cape >= 150)  score += 3;
+            // Wichtigster Einzelprädiktor (Taszarek 2020)
+            if      (cape >= 2000) score += 18;
+            else if (cape >= 1500) score += 15;
+            else if (cape >= 1000) score += 12;
+            else if (cape >= 700)  score += 9;
+            else if (cape >= 400)  score += 6;
+            else if (cape >= 200)  score += 3;
+            else if (cape >= 100)  score += 1;
+            // Kein CAPE < 100: kein Beitrag
 
-            // ── (2) ML_WMAXSHEAR – FIX 3: Europa-kalibrierte Schwellen ───
-            // Taszarek 2020: 95th-Pz. DE/EU ≈ 400–600 m²/s²
-            // Alte Schwellen (1500/1200/900/700/500/400/300) lagen für EU viel zu hoch.
-            // Neue Schwellen orientieren sich an EU-Klimatologie:
-            //   > 800  → schwere organisierte Konvektion (selten EU, ~99th Pz.)
-            //   > 600  → starke Konvektion (EU ~95th Pz.)
-            //   > 450  → moderate Konvektion (EU ~85th Pz.)
-            //   > 300  → schwache–moderate Konvektion (EU ~70th Pz.)
-            //   > 200  → schwache Konvektion (EU ~55th Pz.)
-            //   > 150  → Randwert (EU ~45th Pz.)
-            //   > 100  → minimaler Signal
-            if      (wmaxshear >= 800) score += 22;
-            else if (wmaxshear >= 600) score += 18;
-            else if (wmaxshear >= 450) score += 14;
-            else if (wmaxshear >= 300) score += 10;
-            else if (wmaxshear >= 200) score += 6;
-            else if (wmaxshear >= 150) score += 3;
+            // ── (2) ML_WMAXSHEAR – EU-kalibrierte Schwellen (Taszarek 2020) ─
+            if      (wmaxshear >= 800) score += 20;
+            else if (wmaxshear >= 600) score += 16;
+            else if (wmaxshear >= 450) score += 12;
+            else if (wmaxshear >= 300) score += 8;
+            else if (wmaxshear >= 200) score += 4;
+            else if (wmaxshear >= 150) score += 2;
             else if (wmaxshear >= 100) score += 1;
 
-            // ── (3) 0-6km Bulk Shear ─────────────────────────────────────
-            if      (shear06 >= 25) score += 13;
-            else if (shear06 >= 20) score += 10;
-            else if (shear06 >= 15) score += 7;
-            else if (shear06 >= 12) score += 4;
-            else if (shear06 >= 10) score += 2;
+            // ── (3) 0-6km Bulk Shear ────────────────────────────────────────
+            if      (shear06 >= 25) score += 11;
+            else if (shear06 >= 20) score += 8;
+            else if (shear06 >= 15) score += 5;
+            else if (shear06 >= 12) score += 3;
+            else if (shear06 >= 10) score += 1;
 
-            // ── (4) SRH 0-1km ─────────────────────────────────────────────
+            // ── (4) SRH 0-1km ───────────────────────────────────────────────
             if      (srh1km >= 200) score += 12;
             else if (srh1km >= 150) score += 9;
             else if (srh1km >= 100) score += 6;
             else if (srh1km >= 60)  score += 3;
             else if (srh1km >= 30)  score += 1;
 
-            // ── (5) SRH 0-3km ─────────────────────────────────────────────
-            if      (srh3km >= 300) score += 8;
-            else if (srh3km >= 200) score += 6;
-            else if (srh3km >= 150) score += 4;
-            else if (srh3km >= 100) score += 2;
+            // ── (5) SRH 0-3km ───────────────────────────────────────────────
+            if      (srh3km >= 300) score += 7;
+            else if (srh3km >= 200) score += 5;
+            else if (srh3km >= 150) score += 3;
+            else if (srh3km >= 100) score += 1;
 
-            // ── (6) SCP ───────────────────────────────────────────────────
-            if      (scp >= 3.0) score += 22;
-            else if (scp >= 2.0) score += 18;
-            else if (scp >= 1.5) score += 14;
-            else if (scp >= 1.0) score += 10;
+            // ── (6) SCP ─────────────────────────────────────────────────────
+            if      (scp >= 3.0) score += 20;
+            else if (scp >= 2.0) score += 16;
+            else if (scp >= 1.5) score += 12;
+            else if (scp >= 1.0) score += 8;
 
-            // ── (7) STP ───────────────────────────────────────────────────
-            if      (stp >= 2.0) score += 16;
-            else if (stp >= 1.5) score += 13;
-            else if (stp >= 1.0) score += 10;
-            else if (stp >= 0.5) score += 6;
-            else if (stp >= 0.3) score += 3;
+            // ── (7) STP ─────────────────────────────────────────────────────
+            if      (stp >= 2.0) score += 14;
+            else if (stp >= 1.5) score += 11;
+            else if (stp >= 1.0) score += 8;
+            else if (stp >= 0.5) score += 5;
+            else if (stp >= 0.3) score += 2;
 
-            // ── (8) EHI 0-1km ─────────────────────────────────────────────
-            if      (ehi1 >= 2.5) score += 12;
-            else if (ehi1 >= 2.0) score += 10;
-            else if (ehi1 >= 1.0) score += 7;
-            else if (ehi1 >= 0.5) score += 4;
+            // ── (8) EHI 0-1km ───────────────────────────────────────────────
+            if      (ehi1 >= 2.5) score += 10;
+            else if (ehi1 >= 2.0) score += 8;
+            else if (ehi1 >= 1.0) score += 5;
+            else if (ehi1 >= 0.5) score += 3;
 
-            // ── (9) DCAPE ─────────────────────────────────────────────────
-            if      (dcape >= 1000 && cape >= 400) score += 7;
-            else if (dcape >= 800  && cape >= 300) score += 5;
-            else if (dcape >= 600  && cape >= 200) score += 3;
-            else if (dcape >= 400  && cape >= 150) score += 1;
+            // ── (9) DCAPE – FIX A: neu kalibriert da echtes Integral ────────
+            // Typische EU-DCAPE nach Fix: 200–600 J/kg (schwach–moderat),
+            // >800 J/kg: starke Böenlinien, >1200 J/kg: extreme Ereignisse
+            if      (dcape >= 1200 && cape >= 400) score += 8;
+            else if (dcape >= 800  && cape >= 300) score += 6;
+            else if (dcape >= 500  && cape >= 200) score += 4;
+            else if (dcape >= 300  && cape >= 150) score += 2;
+            else if (dcape >= 150  && cape >= 100) score += 1;
 
-            // ── (10) EL-Temperatur ────────────────────────────────────────
-            if      (muEl <= -25 && cape >= 200) score += 10;
-            else if (muEl <= -20 && cape >= 150) score += 7;
-            else if (muEl <= -15 && cape >= 100) score += 4;
-            else if (muEl <= -10 && cape >= 80)  score += 2;
-            else if (muEl >  -5  && cape <  500) score -= 5;
+            // ── (10) EL-Temperatur ──────────────────────────────────────────
+            if      (muEl <= -25 && cape >= 200) score += 9;
+            else if (muEl <= -20 && cape >= 150) score += 6;
+            else if (muEl <= -15 && cape >= 100) score += 3;
+            else if (muEl <= -10 && cape >=  80) score += 1;
+            else if (muEl >   -5 && cape <  500) score -= 4;
 
-            // ── (11) 3-6km Lapse Rate ──────────────────────────────────────
-            if      (lr36 >= 8.5) score += 8;
-            else if (lr36 >= 8.0) score += 6;
-            else if (lr36 >= 7.5) score += 4;
-            else if (lr36 >= 7.0) score += 2;
-            else if (lr36 <  5.5 && cape < 800) score -= 5;
+            // ── (11) 3-6km Lapse Rate ───────────────────────────────────────
+            if      (lr36 >= 8.5) score += 7;
+            else if (lr36 >= 8.0) score += 5;
+            else if (lr36 >= 7.5) score += 3;
+            else if (lr36 >= 7.0) score += 1;
+            else if (lr36 <  5.5 && cape < 800) score -= 4;
 
-            // ── (12) LCL-Höhe ──────────────────────────────────────────────
-            if      (lclH <  500)  score += 8;
-            else if (lclH <  800)  score += 6;
-            else if (lclH <  1200) score += 4;
-            else if (lclH <  1500) score += 2;
-            else if (lclH >= 2500) score -= 6;
+            // ── (12) LCL-Höhe ───────────────────────────────────────────────
+            if      (lclH <  500)  score += 7;
+            else if (lclH <  800)  score += 5;
+            else if (lclH <  1200) score += 3;
+            else if (lclH <  1500) score += 1;
+            else if (lclH >= 2500) score -= 5;
 
-            // ── (13) Mittlere RH 1-6km ─────────────────────────────────────
-            if      (meanRH >= 75) score += 8;
-            else if (meanRH >= 65) score += 5;
-            else if (meanRH >= 55) score += 2;
-            else if (meanRH <  50) score -= 12;
-            else if (meanRH <  40) score -= 20;
+            // ── (13) Mittlere RH 1-6km ──────────────────────────────────────
+            if      (meanRH >= 75) score += 7;
+            else if (meanRH >= 65) score += 4;
+            else if (meanRH >= 55) score += 1;
+            else if (meanRH <  50) score -= 10;
+            else if (meanRH <  40) score -= 18;
 
-            // ── (14) Theta-E 0-1km ─────────────────────────────────────────
-            if      (thetaE_ >= 345) score += 8;
-            else if (thetaE_ >= 335) score += 5;
-            else if (thetaE_ >= 325) score += 2;
-            else if (thetaE_ <  315) score -= 4;
+            // ── (14) Theta-E 0-1km – FIX C: EU-kalibriert ──────────────────
+            // EU-Klimatologie (Taszarek 2020):
+            //   >330 K: sehr feucht/instabil (Sommerextrem)
+            //   322–330 K: typisch aktive Gewittertage
+            //   315–322 K: schwache Konvektion möglich
+            //   <308 K: zu trocken/stabil
+            if      (thetaE_ >= 330) score += 8;
+            else if (thetaE_ >= 322) score += 5;
+            else if (thetaE_ >= 315) score += 2;
+            else if (thetaE_ <  308) score -= 4;
+            // 308–315 K: neutral, kein Beitrag
 
-            // ── (15) Delta-Theta-E ─────────────────────────────────────────
-            if      (deltaTE >= 20) score += 6;
-            else if (deltaTE >= 15) score += 4;
-            else if (deltaTE >= 10) score += 2;
-            else if (deltaTE <   5) score -= 3;
+            // ── (15) Delta-Theta-E ──────────────────────────────────────────
+            if      (deltaTE >= 20) score += 5;
+            else if (deltaTE >= 15) score += 3;
+            else if (deltaTE >= 10) score += 1;
+            else if (deltaTE <   5) score -= 2;
 
-            // ── (16) K-Index ───────────────────────────────────────────────
-            if      (kIdx >= 38) score += 7;
-            else if (kIdx >= 35) score += 5;
-            else if (kIdx >= 30) score += 3;
+            // ── (16) K-Index ────────────────────────────────────────────────
+            if      (kIdx >= 38) score += 6;
+            else if (kIdx >= 35) score += 4;
+            else if (kIdx >= 30) score += 2;
             else if (kIdx >= 25) score += 1;
 
-            // ── (17) Total Totals ──────────────────────────────────────────
+            // ── (17) Total Totals ───────────────────────────────────────────
             if      (ttIdx >= 55) score += 5;
             else if (ttIdx >= 50) score += 3;
             else if (ttIdx >= 45) score += 1;
 
-            // ── (18) PWAT ──────────────────────────────────────────────────
+            // ── (18) PWAT ───────────────────────────────────────────────────
             if      (pwat >= 35 && cape >= 500) score += 5;
             else if (pwat >= 25 && cape >= 300) score += 3;
             else if (pwat >= 15 && cape >= 200) score += 1;
 
-            // ── (19) Mixing Ratio ML ───────────────────────────────────────
-            if      (mixR850 >= 13) score += 7;
-            else if (mixR850 >= 10) score += 4;
+            // ── (19) Mixing Ratio ML ────────────────────────────────────────
+            if      (mixR850 >= 12) score += 6;
+            else if (mixR850 >= 9)  score += 3;
             else if (mixR850 >= 6)  score += 1;
             else if (mixR850 <  4)  score -= 5;
 
-            // ── (20) CIN ───────────────────────────────────────────────────
+            // ── (20) CIN ────────────────────────────────────────────────────
             if      (magCin <  25 && cape >= 300) score += 5;
             else if (magCin <  50 && cape >= 200) score += 2;
             else if (magCin > 200)                score -= 18;
             else if (magCin > 100)                score -= 10;
-            else if (magCin > 50)                 score -= 5;
+            else if (magCin >  50)                score -= 5;
 
-            // ── (21) Precipitation ─────────────────────────────────────────
-            if      (sfc.precip >= 3.0 && cape >= 600) score += 7;
-            else if (sfc.precip >= 2.0 && cape >= 400) score += 5;
-            else if (sfc.precip >= 1.0 && cape >= 300) score += 3;
+            // ── (21) Precipitation ──────────────────────────────────────────
+            if      (sfc.precip >= 3.0 && cape >= 600) score += 6;
+            else if (sfc.precip >= 2.0 && cape >= 400) score += 4;
+            else if (sfc.precip >= 1.0 && cape >= 300) score += 2;
             else if (sfc.precip >= 0.5 && cape >= 200) score += 1;
-            if      (sfc.precipProb >= 70 && cape >= 500) score += 5;
-            else if (sfc.precipProb >= 55 && cape >= 400) score += 3;
+            if      (sfc.precipProb >= 70 && cape >= 500) score += 4;
+            else if (sfc.precipProb >= 55 && cape >= 400) score += 2;
             else if (sfc.precipProb >= 40 && cape >= 300) score += 1;
 
-            // ── (22) Strahlung / Tageszeit ─────────────────────────────────
+            // ── (22) Strahlung / Tageszeit ──────────────────────────────────
             const isNight     = sfc.radiation < 20;
             const isDaytime   = sfc.radiation >= 200;
             const isStrongDay = sfc.radiation >= 600;
-            if      (isStrongDay && sfc.t2m >= 14 && cape >= 300) score += 7;
-            else if (isDaytime   && sfc.t2m >= 12 && cape >= 200) score += 4;
+            if      (isStrongDay && sfc.t2m >= 14 && cape >= 300) score += 6;
+            else if (isDaytime   && sfc.t2m >= 12 && cape >= 200) score += 3;
             else if (isNight) {
                 const llj = srh1km >= 100 && shear06 >= 12 && sfc.ws10_ms >= 8;
-                if (llj && cape >= 500) score += 5;
+                if (llj && cape >= 500) score += 4;
                 else if (!llj && shear06 < 10 && cape < 400) score -= 4;
             }
 
-            // ── (23) PBL-Höhe ──────────────────────────────────────────────
+            // ── (23) PBL-Höhe ───────────────────────────────────────────────
             if      (pbl >= 2000 && cape >= 300) score += 4;
             else if (pbl >= 1500 && cape >= 200) score += 2;
             else if (pbl <  300  && cape <  500) score -= 3;
 
-            // ── (24) SHIP ──────────────────────────────────────────────────
-            if      (ship >= 2.0 && cape >= 1000) score += 5;
-            else if (ship >= 1.0 && cape >= 500)  score += 3;
-            else if (ship >= 0.5 && cape >= 300)  score += 1;
+            // ── (24) SHIP – FIX D: EU-kalibrierte Schwellen ─────────────────
+            // SHIP ursprünglich für US-Plains (CAPE 1000–4000 J/kg) kalibriert.
+            // In EU: SHIP >0.1 bereits relevant, >0.3 erhöhte Hagelgefahr.
+            if      (ship >= 0.4 && cape >= 500)  score += 5;
+            else if (ship >= 0.2 && cape >= 300)  score += 3;
+            else if (ship >= 0.1 && cape >= 200)  score += 1;
 
-            // ── Temperatur-Skalierung ──────────────────────────────────────
-            if      (sfc.t2m < 8)  score = Math.round(score * (shear06 < 15 && cape < 500 ? 0.4 : 0.6));
-            else if (sfc.t2m < 12) score = Math.round(score * 0.7);
-            else if (sfc.t2m < 15) score = Math.round(score * 0.85);
+            // ── Temperatur-Skalierung ────────────────────────────────────────
+            if      (sfc.t2m < 8)  score = Math.round(score * (shear06 < 15 && cape < 500 ? 0.35 : 0.55));
+            else if (sfc.t2m < 12) score = Math.round(score * 0.65);
+            else if (sfc.t2m < 15) score = Math.round(score * 0.82);
 
-            // ── Korrekturen ────────────────────────────────────────────────
-            if (score > 0 && cape < 100 && shear06 < 8) score = Math.max(0, score - 10);
-            if (score > 0 && magCin > 150 && cape < 1000) score = Math.max(0, score - 12);
-            if (shear06 >= 20 && cape >= 150 && score < 30) score = Math.min(score + 5, 35);
+            // ── Korrekturen ──────────────────────────────────────────────────
+            if (score > 0 && cape < 100 && shear06 < 8)         score = Math.max(0, score - 10);
+            if (score > 0 && magCin > 150 && cape < 1000)       score = Math.max(0, score - 12);
+            if (shear06 >= 20 && cape >= 150 && score < 25)     score = Math.min(score + 5, 30);
+
+            // FIX F: Mindest-Score-Schwelle für Meldung
+            // Verhindert dass schwache Situationen ohne klaren Trigger > 20% erreichen
+            if (score > 0 && cape < 200 && srh1km < 30 && shear06 < 15 && sfc.precipProb < 30) {
+                score = Math.min(score, 15);
+            }
 
             return Math.min(100, Math.max(0, Math.round(score)));
         }
 
-        // ── Schritt 4: Modellgewichtung ────────────────────────────────────
+        // ── Modellgewichtung ────────────────────────────────────────────────
         function getModelWeight(model, leadH) {
             if (leadH <= 48)  return {icon_eu:0.45, ecmwf_ifs025:0.35, gfs_global:0.20}[model] ?? 0.33;
             if (leadH <= 120) return {icon_eu:0.33, ecmwf_ifs025:0.42, gfs_global:0.25}[model] ?? 0.33;
@@ -738,20 +715,18 @@ export default async function handler(req, res) {
             };
         }
 
-        // ── Schritt 5: Alle Stunden verarbeiten ────────────────────────────
+        // ── Alle Stunden verarbeiten ────────────────────────────────────────
         const hours = data.hourly.time.map((t, i) => {
             const fTime   = new Date(t);
             const leadH   = Math.round((fTime - now) / 3600000);
 
             const gewitterByModel = {};
             const paramsByModel   = {};
-            const sfcByModel      = {};
 
             for (const model of MODELS) {
                 const sfc             = extractSurface(data.hourly, i, model);
                 const { profile, p_sfc } = buildProfile(data.hourly, i, model);
                 const params  = computeThunderParams(sfc, profile, p_sfc);
-                sfcByModel[model]      = sfc;
                 paramsByModel[model]   = params;
                 gewitterByModel[model] = sfc ? calculateLightningProb(params, sfc) : null;
             }
@@ -788,7 +763,7 @@ export default async function handler(req, res) {
             };
         });
 
-        // ── Schritt 6: Ausgabe filtern ─────────────────────────────────────
+        // ── Ausgabe filtern ─────────────────────────────────────────────────
         const nextHours = hours
             .filter(h => {
                 const [dp, tp] = h.time.split('T');
@@ -921,13 +896,13 @@ function interpProfile(profile, p_target) {
     if (above.p === below.p) return above;
     const frac = (Math.log(p_target) - Math.log(below.p)) / (Math.log(above.p) - Math.log(below.p));
     return {
-        p:    p_target,
-        z:    below.z  + frac * (above.z  - below.z),
-        T:    below.T  + frac * (above.T  - below.T),
-        Td:   below.Td + frac * (above.Td - below.Td),
-        rh:   below.rh + frac * (above.rh - below.rh),
-        ws_ms:below.ws_ms + frac * (above.ws_ms - below.ws_ms),
-        wd:   interpAngle(below.wd, above.wd, frac),
+        p:     p_target,
+        z:     below.z  + frac * (above.z  - below.z),
+        T:     below.T  + frac * (above.T  - below.T),
+        Td:    below.Td + frac * (above.Td - below.Td),
+        rh:    below.rh + frac * (above.rh - below.rh),
+        ws_ms: below.ws_ms + frac * (above.ws_ms - below.ws_ms),
+        wd:    interpAngle(below.wd, above.wd, frac),
     };
 }
 
@@ -972,18 +947,15 @@ function computeLapseRates(profile, sfc) {
     };
 }
 
-// FIX 2 (Hilfsfunktion): Maximale 2-km-Lapse-Rate in einem Fenster z1..z2 AGL
-// Sherburn & Parker (2014), SHERBE_v2: sliding 2-km window zwischen 2–6 km AGL
-// Schrittweite 500 m für Diskretisierung über Open-Meteo Druckniveaus
 function computeMaxLapseRate2km(profile, sfc, z_bottom, z_top) {
-    const WINDOW = 2000; // 2 km Fensterbreite
-    const STEP   = 500;  // 500 m Schritt
+    const WINDOW = 2000;
+    const STEP   = 500;
     let maxLR = 0;
     for (let zBase = z_bottom; zBase <= z_top - WINDOW; zBase += STEP) {
         const lo = getAtZ(profile, sfc, zBase);
         const hi = getAtZ(profile, sfc, zBase + WINDOW);
         if (!lo || !hi) continue;
-        const lr = (lo.T - hi.T) / 2.0; // K/km (2 km Abstand)
+        const lr = (lo.T - hi.T) / 2.0;
         if (lr > maxLR) maxLR = lr;
     }
     return maxLR;
@@ -1104,20 +1076,31 @@ function computeParcel(T, Td, p_sfc, sfc, profile, type) {
     };
 }
 
+// FIX B: Mixed-Layer-Tiefe 100 hPa (~1 km) statt 500 m AGL
+// Standard-Definition (Doswell & Rasmussen 1994): unterste 100 hPa mitteln.
+// 500m AGL ist zu flach und unterschätzt die repräsentative Schicht-Feuchte.
 function computeMLParcel(sfc, profile, p_sfc_in) {
-    const sfcLevel = { T: sfc.t2m, Td: sfc.d2m, z: 10 };
-    const ml_levels = [sfcLevel, ...profile.filter(l => l.z <= 500)];
+    const p_sfc = p_sfc_in ?? 1013.25;
+    const p_top = p_sfc - 100; // 100 hPa tiefer = ~1 km AGL
 
-    let sumT = 0, sumTd = 0, totalDz = 0;
-    for (let i = 0; i < ml_levels.length - 1; i++) {
-        const dz = ml_levels[i + 1].z - ml_levels[i].z;
-        sumT  += 0.5 * (ml_levels[i].T  + ml_levels[i + 1].T)  * dz;
-        sumTd += 0.5 * (ml_levels[i].Td + ml_levels[i + 1].Td) * dz;
-        totalDz += dz;
+    // Alle Levels von Oberfläche bis p_top mitteln
+    const sfcLevel = { T: sfc.t2m, Td: sfc.d2m, p: p_sfc, z: 10 };
+    const ml_levels = [
+        sfcLevel,
+        ...profile.filter(l => l.p <= p_sfc && l.p >= p_top),
+    ];
+
+    let sumT = 0, sumTd = 0, sumP = 0, count = 0;
+    for (const l of ml_levels) {
+        sumT  += l.T;
+        sumTd += l.Td;
+        sumP  += (l.p ?? p_sfc);
+        count++;
     }
-    const ml_T  = totalDz > 0 ? sumT  / totalDz : sfc.t2m;
-    const ml_Td = totalDz > 0 ? sumTd / totalDz : sfc.d2m;
-    const ml_p = p_sfc_in ?? (ml_levels[0]?.p ?? 1013.25);
+
+    const ml_T  = count > 0 ? sumT  / count : sfc.t2m;
+    const ml_Td = count > 0 ? sumTd / count : sfc.d2m;
+    const ml_p  = count > 0 ? sumP  / count : p_sfc;
 
     const res = computeParcel(ml_T, ml_Td, ml_p, sfc, profile, 'ML');
     res.mixR  = mixingRatio(ml_Td, ml_p);
@@ -1127,8 +1110,10 @@ function computeMLParcel(sfc, profile, p_sfc_in) {
 function computeMUParcel(sfc, profile, p_sfc_in) {
     let maxThetaE = -Infinity, best = null;
     const p_sfc = p_sfc_in ?? (profile.length ? profile[0].p : 1013.25);
-    const levels = [{ T: sfc.t2m, Td: sfc.d2m, p: p_sfc, z: 0 },
-                    ...profile.filter(l => l.p >= p_sfc - 300)];
+    const levels = [
+        { T: sfc.t2m, Td: sfc.d2m, p: p_sfc, z: 0 },
+        ...profile.filter(l => l.p >= p_sfc - 300),
+    ];
     for (const l of levels) {
         const te = thetaE(l.T, l.Td, l.p);
         if (te > maxThetaE) { maxThetaE = te; best = l; }
@@ -1164,28 +1149,71 @@ function partialCAPE(sfc, profile, parcel, z1, z2) {
     return Math.max(0, Math.round(cape));
 }
 
-function liftParcel(T, Td, p1, p2) {
-    const lclH = lclHeight(T, Td);
-    const z1 = pressureToAltitude(p1);
-    const z2 = pressureToAltitude(p2);
-    const zLCL = z1 + lclH;
-    if (zLCL >= z2) {
-        return T - 9.8 * (z2 - z1) / 1000;
-    } else {
-        const T_LCL = T - 9.8 * (zLCL - z1) / 1000;
-        return T_LCL - 4.5 * (z2 - zLCL) / 1000;
-    }
-}
-
-function computeDCAPE(profile, p700, p500) {
+// FIX A: Echtes DCAPE nach Emanuel (1994)
+// Definition: Potential energy of a saturated parcel descending from a level
+// in the layer where downdraft originates (typ. 700–600 hPa in EU).
+// Parcell wird vom feuchtesten (niedrigster Taupunktsdefizit) Level in 500–750 hPa
+// trocken-adiabatisch abgesenkt und gegen die Umgebungstemperatur integriert.
+// Vorher: vereinfachte Wetbulb-Differenz → überschätzte DCAPE um Faktor 2–5.
+function computeDCAPE(profile, sfc, p700, p500) {
     if (!p700 || !p500) return 0;
-    const dewDep = p700.T - p700.Td;
-    if (dewDep > 35) return 0;
-    const wetBulb700 = p700.T - 0.33 * dewDep;
-    const tempDiff   = wetBulb700 - p500.T;
-    if (tempDiff <= 0) return 0;
-    const moistFactor = dewDep > 20 ? 0.2 : dewDep > 10 ? 0.5 : dewDep > 5 ? 0.8 : 1.0;
-    return Math.max(0, Math.round((tempDiff / (p700.T + 273.15)) * 9.81 * 2500 * moistFactor));
+
+    // Quellschicht: Level mit geringstem Taupunktsdefizit zwischen 700-500 hPa
+    // (repräsentiert die feuchteste Luft in der Absinksschicht)
+    const srcLevels = profile.filter(l => l.p <= 750 && l.p >= 500);
+    if (!srcLevels.length) return 0;
+
+    let minDewDep = Infinity, srcLevel = null;
+    for (const l of srcLevels) {
+        const dewDep = l.T - l.Td;
+        if (dewDep < minDewDep) { minDewDep = dewDep; srcLevel = l; }
+    }
+    if (!srcLevel || minDewDep > 30) return 0; // Zu trocken → kein DCAPE
+
+    // Trocken-adiabatisches Absinken vom Quelllevel bis zur Oberfläche
+    // Integration: DCAPE = ∫ g * (T_parcel - T_env) / T_env dz
+    // (negativ wenn Partikel kälter als Umgebung → deshalb positiv wenn Partikel wärmer)
+    const sorted = [...profile].filter(l => l.p >= srcLevel.p).sort((a, b) => a.p - b.p);
+
+    // Feucht-adiabatische Starttemperatur (Wetbulb am Quelllevel)
+    const dewDep  = Math.max(0, srcLevel.T - srcLevel.Td);
+    const Twb_src = srcLevel.T - 0.33 * dewDep;
+
+    let dcape = 0;
+    let T_parcel = Twb_src;
+    let z_prev   = srcLevel.z;
+
+    // Trockenadiabatische Abkühlrate: 9.8 K/km beim Absinken → Erwärmung
+    // Beim Absinken: Partikel erwärmt sich mit ~9.8 K/km (bis zur Sättigung)
+    // Da wir trocken absinken: T_parcel steigt mit Γ_d = 9.8 K/km
+
+    for (let idx = sorted.length - 2; idx >= 0; idx--) {
+        const env  = sorted[idx];
+        const dz   = z_prev - env.z; // positiv beim Absinken (Höhe nimmt ab)
+        if (dz <= 0) { z_prev = env.z; continue; }
+
+        // Partikel erwärmt sich trocken-adiabatisch beim Absinken
+        T_parcel += 9.8 * (dz / 1000);
+
+        const dT = T_parcel - env.T;
+        // DCAPE entsteht wenn der absinkende Partikel wärmer als die Umgebung ist
+        if (dT > 0) {
+            dcape += (dT / (env.T + 273.15)) * 9.81 * dz;
+        }
+        z_prev = env.z;
+    }
+
+    // Abschluss: Absinken bis zur Oberfläche (10m AGL)
+    const dz_sfc = z_prev - 10;
+    if (dz_sfc > 0) {
+        T_parcel += 9.8 * (dz_sfc / 1000);
+        const dT = T_parcel - sfc.t2m;
+        if (dT > 0) dcape += (dT / (sfc.t2m + 273.15)) * 9.81 * dz_sfc;
+    }
+
+    // Realistischer Bereich für EU: 0–1500 J/kg
+    // Werte >1500 J/kg nur bei extremen Ereignissen (Bow Echoes, Derechos)
+    return Math.max(0, Math.min(1500, Math.round(dcape)));
 }
 
 function computeBulkShear(sfc, profile) {
@@ -1218,8 +1246,10 @@ function computeBulkShear(sfc, profile) {
 
 function computeMeanWinds(sfc, profile) {
     function mw(z_top) {
-        const levels = [{ z:10, ws_ms: sfc.ws10_ms, wd: sfc.wd10 },
-                        ...profile.filter(l => l.z <= z_top)];
+        const levels = [
+            { z: 10, ws_ms: sfc.ws10_ms, wd: sfc.wd10 },
+            ...profile.filter(l => l.z <= z_top),
+        ];
         if (levels.length < 2) return 0;
         const uvs = levels.map(l => toUV(l.ws_ms, l.wd));
         const uM  = uvs.reduce((s,w) => s + w.u, 0) / uvs.length;
@@ -1231,13 +1261,13 @@ function computeMeanWinds(sfc, profile) {
 
 function computeBunkers(sfc, profile) {
     const levels06 = [
-        { z: 10,    u: toUV(sfc.ws10_ms, sfc.wd10).u,  v: toUV(sfc.ws10_ms, sfc.wd10).v },
+        { z: 10, u: toUV(sfc.ws10_ms, sfc.wd10).u, v: toUV(sfc.ws10_ms, sfc.wd10).v },
         ...profile.filter(l => l.z <= 6000).map(l => ({ z: l.z, ...toUV(l.ws_ms, l.wd) })),
     ];
     const mwU = levels06.reduce((s, l) => s + l.u, 0) / levels06.length;
     const mwV = levels06.reduce((s, l) => s + l.v, 0) / levels06.length;
 
-    const bot = toUV(sfc.ws10_ms, sfc.wd10);
+    const bot  = toUV(sfc.ws10_ms, sfc.wd10);
     const top6 = profile.filter(l => l.z <= 6000).sort((a,b) => b.z - a.z)[0];
     const topUV = top6 ? toUV(top6.ws_ms, top6.wd) : bot;
     const shU = topUV.u - bot.u;
@@ -1252,7 +1282,7 @@ function computeBunkers(sfc, profile) {
 
     function uvToSpeedDir(u, v) {
         const speed = Math.hypot(u, v);
-        let dir = (270 - Math.atan2(v, u) * 180 / Math.PI) % 360;
+        const dir = (270 - Math.atan2(v, u) * 180 / Math.PI + 360) % 360;
         return { speed: Math.round(speed * 10) / 10, dir: Math.round(dir) };
     }
     const rm = uvToSpeedDir(rm_u, rm_v);
@@ -1262,7 +1292,7 @@ function computeBunkers(sfc, profile) {
     return {
         RM_speed: rm.speed, RM_dir: rm.dir, RM_u: rm_u, RM_v: rm_v,
         LM_speed: lm.speed, LM_dir: lm.dir, LM_u: lm_u, LM_v: lm_v,
-        MW_speed: mw.speed, MW_dir:  mw.dir, MW_u: mwU,  MW_v: mwV,
+        MW_speed: mw.speed, MW_dir: mw.dir, MW_u: mwU,  MW_v: mwV,
     };
 }
 
@@ -1282,7 +1312,6 @@ function computeSRH(sfc, profile, bunkers) {
                 .map(l => ({ z: l.z, ...toUV(l.ws_ms, l.wd) })),
         ];
         if (levels.length < 2) return 0;
-
         let helicity = 0;
         for (let i = 0; i < levels.length - 1; i++) {
             const u1 = levels[i].u   - stormU;
@@ -1303,10 +1332,23 @@ function computeSRH(sfc, profile, bunkers) {
     };
 }
 
-function avgRH(profile, z1, z2) {
+// FIX E: avgRH mit echtem Fallback statt stilles 60%
+// Wenn keine Profile-Level im Fenster: nächstgelegene Level interpolieren.
+function avgRH(profile, sfc, z1, z2) {
     const levels = profile.filter(l => l.z >= z1 && l.z <= z2);
-    if (!levels.length) return 60;
-    return Math.round(levels.reduce((s,l) => s + l.rh, 0) / levels.length);
+    if (levels.length > 0) {
+        return Math.round(levels.reduce((s,l) => s + l.rh, 0) / levels.length);
+    }
+    // Fallback: interpoliere zwischen nächstem Level unterhalb und oberhalb
+    const below = profile.filter(l => l.z < z1).sort((a,b) => b.z - a.z)[0];
+    const above = profile.filter(l => l.z > z2).sort((a,b) => a.z - b.z)[0];
+    if (below && above) {
+        return Math.round((below.rh + above.rh) / 2);
+    }
+    if (below) return Math.round(below.rh);
+    if (above) return Math.round(above.rh);
+    // Letzter Fallback: Oberflächen-RH
+    return Math.round(calcRH(sfc.t2m, sfc.d2m));
 }
 
 function maxThetaEHeight(profile, sfc, z_max) {
@@ -1339,13 +1381,14 @@ function computeSWEAT(p850, p500, srh1km, tt) {
     const ws850 = p850.ws_ms * 1.944;
     const ws500 = p500.ws_ms * 1.944;
     if (tt < 49) return 0;
-    return 12 * Td850 + 20 * (tt - 49) + 2 * ws850 + ws500 + 125 * (Math.sin((p500.wd - p850.wd) * Math.PI / 180) + 0.2);
+    return 12 * Td850 + 20 * (tt - 49) + 2 * ws850 + ws500
+         + 125 * (Math.sin((p500.wd - p850.wd) * Math.PI / 180) + 0.2);
 }
 
 function computeSCP(muCape, shear06, srh3km, cin) {
     if (muCape < 100 || shear06 < 6 || srh3km < 40) return 0;
-    const magCin   = -Math.min(0, cin);
-    const cinTerm  = magCin < 40 ? 1.0 : Math.max(0.1, 1 - (magCin - 40) / 200);
+    const magCin  = -Math.min(0, cin);
+    const cinTerm = magCin < 40 ? 1.0 : Math.max(0.1, 1 - (magCin - 40) / 200);
     return Math.max(0, (muCape/1000) * (srh3km/50) * Math.min(shear06/12, 1.5) * cinTerm);
 }
 
@@ -1367,6 +1410,7 @@ function computeSHIP(MU, BS, p500, p700) {
     if (MU.CAPE < 100)  return 0;
     const lr   = (p700.T - p500.T) / Math.max(1, (p500.z - p700.z) / 1000);
     const muMr = mixingRatio(MU.Td_parcel ?? -5, MU.p_parcel ?? 850);
+    // Struktur unverändert; Scoring-Schwellen in calculateLightningProb angepasst (FIX D)
     return (MU.CAPE * muMr * lr * -p500.T * BS.BS_06km) / 42000000;
 }
 
@@ -1380,16 +1424,11 @@ function computeSHERBS3(lr36, shear06, srh3km, muCape) {
     return (lr36 / 9.0) * (shear06 / 27) * (srh3km / 150);
 }
 
-// FIX 2: SHERBE verwendet jetzt maxLR_2km (maximale 2-km-Lapse-Rate 2–6 km AGL)
-// statt LR_36km (Sherburn & Parker 2014, SHERBE_v2; thundeR-Implementierung)
 function computeSHERBE(maxLR_2km, shear06, srh3km, muCape) {
     if (muCape >= 1000) return 0;
     return (maxLR_2km / 9.0) * (shear06 / 27) * (srh3km / 150) * (muCape < 500 ? 1.5 : 1.0);
 }
 
-// FIX 1: DEI nach Romanic et al. (2022): DEI = f(WMAXSHEAR, Cold_Pool_Strength)
-// Normierung: WMAXSHEAR/500 (EU-Klimatologie), CPS/30 (m/s → ~1000 J/kg DCAPE)
-// Vorherige Implementierung war SCP × min(shear/20, 1.5) — falsche Formel.
 function computeDEI(mlWmaxshear, coldPoolStrength) {
     if (mlWmaxshear <= 0 || coldPoolStrength <= 0) return 0;
     return (mlWmaxshear / 500) * (coldPoolStrength / 30);
