@@ -188,7 +188,7 @@ export default async function handler(req, res) {
             const Delta_ThetaE = ThetaE_01km - (p500 ? thetaE(p500.T, p500.Td, 500) : ThetaE_01km - 10);
 
             // FIX A: echtes DCAPE-Integral nach Emanuel (1994)
-            const DCAPE = computeDCAPE(profile, sfc, p700, p500);
+            const DCAPE = computeDCAPE(profile, sfc);
             const CPS   = DCAPE > 0 ? Math.sqrt(2 * DCAPE) : 0;
 
             const BS      = computeBulkShear(sfc, profile);
@@ -1155,65 +1155,82 @@ function partialCAPE(sfc, profile, parcel, z1, z2) {
 // Parcell wird vom feuchtesten (niedrigster Taupunktsdefizit) Level in 500–750 hPa
 // trocken-adiabatisch abgesenkt und gegen die Umgebungstemperatur integriert.
 // Vorher: vereinfachte Wetbulb-Differenz → überschätzte DCAPE um Faktor 2–5.
-function computeDCAPE(profile, sfc, p700, p500) {
-    if (!p700 || !p500) return 0;
-
-    // Quellschicht: Level mit geringstem Taupunktsdefizit zwischen 700-500 hPa
-    // (repräsentiert die feuchteste Luft in der Absinksschicht)
-    const srcLevels = profile.filter(l => l.p <= 750 && l.p >= 500);
-    if (!srcLevels.length) return 0;
-
-    let minDewDep = Infinity, srcLevel = null;
-    for (const l of srcLevels) {
-        const dewDep = l.T - l.Td;
-        if (dewDep < minDewDep) { minDewDep = dewDep; srcLevel = l; }
+function computeDCAPE(profile, sfc) {
+    // Downdraft-Parzel startet am Level mit minimalem Theta-E zwischen 500-700 hPa
+    // (Trockenster, negativst-auftriebsstärkster Bereich im Profil)
+    
+    const candidates = profile.filter(l => l.p >= 500 && l.p <= 700);
+    if (!candidates.length) return 0;
+    
+    // Finde das Level mit minimalem Theta-E (trockenste Luft = stärkster Downdraft)
+    let minTE = Infinity, startLevel = null;
+    for (const l of candidates) {
+        const te = thetaE(l.T, l.Td, l.p);
+        if (te < minTE) { minTE = te; startLevel = l; }
     }
-    if (!srcLevel || minDewDep > 30) return 0; // Zu trocken → kein DCAPE
-
-    // Trocken-adiabatisches Absinken vom Quelllevel bis zur Oberfläche
-    // Integration: DCAPE = ∫ g * (T_parcel - T_env) / T_env dz
-    // (negativ wenn Partikel kälter als Umgebung → deshalb positiv wenn Partikel wärmer)
-    const sorted = [...profile].filter(l => l.p >= srcLevel.p).sort((a, b) => a.p - b.p);
-
-    // Feucht-adiabatische Starttemperatur (Wetbulb am Quelllevel)
-    const dewDep  = Math.max(0, srcLevel.T - srcLevel.Td);
-    const Twb_src = srcLevel.T - 0.33 * dewDep;
-
+    if (!startLevel) return 0;
+    
+    // Taupunkts-Depression am Startlevel
+    const dewDep = startLevel.T - startLevel.Td;
+    if (dewDep > 40) return 0; // Zu trocken — kein relevanter Downdraft
+    
+    // Virtuelles Kühlungsterm: Feuchtkugeltemperatur als Parzeltemperatur
+    const wetBulbStart = startLevel.T - 0.33 * dewDep;
+    
+    // Sortiere Profil von Startlevel bis Boden
+    const sortedDown = [...profile]
+        .filter(l => l.z <= startLevel.z)
+        .sort((a, b) => b.z - a.z); // Von oben nach unten
+    
+    if (sortedDown.length < 2) return 0;
+    
     let dcape = 0;
-    let T_parcel = Twb_src;
-    let z_prev   = srcLevel.z;
-
-    // Trockenadiabatische Abkühlrate: 9.8 K/km beim Absinken → Erwärmung
-    // Beim Absinken: Partikel erwärmt sich mit ~9.8 K/km (bis zur Sättigung)
-    // Da wir trocken absinken: T_parcel steigt mit Γ_d = 9.8 K/km
-
-    for (let idx = sorted.length - 2; idx >= 0; idx--) {
-        const env  = sorted[idx];
-        const dz   = z_prev - env.z; // positiv beim Absinken (Höhe nimmt ab)
-        if (dz <= 0) { z_prev = env.z; continue; }
-
-        // Partikel erwärmt sich trocken-adiabatisch beim Absinken
-        T_parcel += 9.8 * (dz / 1000);
-
-        const dT = T_parcel - env.T;
-        // DCAPE entsteht wenn der absinkende Partikel wärmer als die Umgebung ist
-        if (dT > 0) {
-            dcape += (dT / (env.T + 273.15)) * 9.81 * dz;
+    
+    // Parzel kühlt moist-adiabatisch (4.5 K/km) von Startlevel an
+    for (let i = 0; i < sortedDown.length - 1; i++) {
+        const env   = sortedDown[i];
+        const lower = sortedDown[i + 1];
+        const dz    = env.z - lower.z; // positiv (von oben nach unten)
+        if (dz <= 0) continue;
+        
+        // Parzeltemperatur am aktuellen Level:
+        // Starttemperatur = Feuchtkugel am Startlevel, dann moist-adiabatisch (4.5 K/km)
+        const z_from_start = startLevel.z - env.z;
+        const T_parcel = wetBulbStart - 4.5 * (z_from_start / 1000);
+        
+        // Virtuelle Temperaturen (vereinfacht: Tv ≈ T(1 + 0.608*q))
+        const e_env    = 6.112 * Math.exp(17.67 * env.Td   / (env.Td   + 243.5));
+        const e_parcel = 6.112 * Math.exp(17.67 * T_parcel / (T_parcel + 243.5));
+        const q_env    = 0.622 * e_env    / (env.p    - e_env);
+        const q_parcel = 0.622 * e_parcel / (env.p    - e_parcel);
+        
+        const Tv_env    = (env.T    + 273.15) * (1 + 0.608 * q_env);
+        const Tv_parcel = (T_parcel + 273.15) * (1 + 0.608 * q_parcel);
+        
+        // DCAPE-Integral: nur wenn Parzel kälter als Umgebung (negativer Auftrieb)
+        const dT_v = Tv_parcel - Tv_env;
+        if (dT_v < 0) {
+            dcape += Math.abs(dT_v / Tv_env) * 9.81 * dz;
         }
-        z_prev = env.z;
     }
-
-    // Abschluss: Absinken bis zur Oberfläche (10m AGL)
-    const dz_sfc = z_prev - 10;
-    if (dz_sfc > 0) {
-        T_parcel += 9.8 * (dz_sfc / 1000);
-        const dT = T_parcel - sfc.t2m;
-        if (dT > 0) dcape += (dT / (sfc.t2m + 273.15)) * 9.81 * dz_sfc;
+    
+    // Bodenlevel: Parzel bis z=0 extrapolieren
+    if (sortedDown.length > 0) {
+        const lastEnv = sortedDown[sortedDown.length - 1];
+        const sfcDz   = lastEnv.z; // Restweg bis Boden
+        if (sfcDz > 0) {
+            const z_from_start = startLevel.z - lastEnv.z;
+            const T_parcel_sfc = wetBulbStart - 4.5 * (z_from_start / 1000);
+            const Tv_env_sfc   = (sfc.t2m + 273.15);
+            const Tv_parcel_sfc = (T_parcel_sfc + 273.15);
+            const dT_v = Tv_parcel_sfc - Tv_env_sfc;
+            if (dT_v < 0) {
+                dcape += Math.abs(dT_v / Tv_env_sfc) * 9.81 * sfcDz;
+            }
+        }
     }
-
-    // Realistischer Bereich für EU: 0–1500 J/kg
-    // Werte >1500 J/kg nur bei extremen Ereignissen (Bow Echoes, Derechos)
-    return Math.max(0, Math.min(1500, Math.round(dcape)));
+    
+    return Math.max(0, Math.round(dcape));
 }
 
 function computeBulkShear(sfc, profile) {
