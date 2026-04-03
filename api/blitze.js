@@ -23,7 +23,7 @@ export default async function handler(req, res) {
       hour: "2-digit", minute: "2-digit"
     }) + " Uhr";
 
-  const dateFmt = (d) => d.toISOString().split("T")[0]; // YYYY-MM-DD
+  const dateFmt = (d) => d.toISOString().split("T")[0];
 
   const haversine = (lat1, lon1, lat2, lon2) => {
     const R = 6371;
@@ -36,15 +36,14 @@ export default async function handler(req, res) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
-  // Engere Bounding Box Deutschland – schließt AT/CH/PL/CZ weitgehend aus
   const inGermany = (p) =>
     p.lat >= 47.4 && p.lat <= 55.05 &&
     p.lon >=  6.0 && p.lon <= 15.05;
 
   const countPoints = (points) => ({
-    standort: points.filter(p => haversine(latNum, lonNum, p.lat, p.lon) <= radiusKm).length,
-    deutschland: points.filter(inGermany).length,
-    europa: points.length,
+    standort:     points.filter(p => haversine(latNum, lonNum, p.lat, p.lon) <= radiusKm).length,
+    deutschland:  points.filter(inGermany).length,
+    europa:       points.length,
   });
 
   try {
@@ -54,15 +53,14 @@ export default async function handler(req, res) {
       signal: AbortSignal.timeout(10000),
     });
     if (!liveRes.ok) throw new Error(`HTTP ${liveRes.status} von live-endpoint`);
-    const liveData  = await liveRes.json();
+    const liveData   = await liveRes.json();
     const liveCounts = countPoints(liveData.points ?? []);
 
     // ── Archiv: letzte 7 Tage ─────────────────────────────────────────
-    // Datum von gestern rückwärts 7 Tage
     const today = new Date();
     const archiveDates = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(today);
-      d.setDate(today.getDate() - 1 - i); // gestern, vorgestern, ...
+      d.setDate(today.getDate() - 1 - i);
       return dateFmt(d);
     });
 
@@ -73,10 +71,11 @@ export default async function handler(req, res) {
           headers: { "User-Agent": "lightning-api" },
           signal: AbortSignal.timeout(10000),
         });
-        if (!r.ok) return null; // Tag existiert nicht → überspringen
+        if (!r.ok) return null;
         const d = await r.json();
         const counts = countPoints(d.points ?? []);
-        return { datum: dateStr, ...counts };
+        // fetched_at vom letzten verfügbaren Archivtag merken
+        return { datum: dateStr, fetched_at: d.fetched_at ?? null, ...counts };
       })
     );
 
@@ -84,36 +83,38 @@ export default async function handler(req, res) {
       .map(r => r.status === "fulfilled" ? r.value : null)
       .filter(Boolean);
 
-    // Summe über alle Archivtage
+    // fetched_at des neuesten Archivtags (erster Eintrag = gestern)
+    const archivFetchedAt = archiveTage[0]?.fetched_at ?? null;
+
     const archivSumme = archiveTage.reduce(
       (acc, t) => ({
-        standort:     acc.standort     + t.standort,
-        deutschland:  acc.deutschland  + t.deutschland,
-        europa:       acc.europa       + t.europa,
+        standort:    acc.standort    + t.standort,
+        deutschland: acc.deutschland + t.deutschland,
+        europa:      acc.europa      + t.europa,
       }),
       { standort: 0, deutschland: 0, europa: 0 }
     );
 
     return res.status(200).json({
-      // ── Aktuell ──
       aktuell: {
+        aktualisiert: liveData.fetched_at ? fmtDE(liveData.fetched_at) : null,
         period: {
           von: fmtDE(liveData.period_start),
           bis: fmtDE(liveData.period_end),
         },
-        standort: { lat: latNum, lon: lonNum, radius_km: radiusKm, blitze: liveCounts.standort },
+        standort:    { lat: latNum, lon: lonNum, radius_km: radiusKm, blitze: liveCounts.standort },
         deutschland: { blitze: liveCounts.deutschland },
         europa:      { blitze: liveCounts.europa },
       },
-      // ── Archiv letzte 7 Tage ──
       archiv_7_tage: {
+        aktualisiert: archivFetchedAt ? fmtDE(archivFetchedAt) : null,
         summe: {
           standort:    { blitze: archivSumme.standort },
           deutschland: { blitze: archivSumme.deutschland },
           europa:      { blitze: archivSumme.europa },
         },
         tage: archiveTage.map(t => ({
-          datum: t.datum,
+          datum:       t.datum,
           standort:    t.standort,
           deutschland: t.deutschland,
           europa:      t.europa,
