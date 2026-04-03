@@ -1,5 +1,6 @@
 // api/lightning.js
 // Abruf: /api/lightning?lat=48.5&lon=8.4&radius=100
+// radius optional, Standard: 50 km
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -35,38 +36,30 @@ export default async function handler(req, res) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
-  const fetchWithDetail = async (url) => {
-    try {
-      const r = await fetch(url, {
-        headers: { "User-Agent": "lightning-api" },
-        signal: AbortSignal.timeout(10000), // 10s Timeout
-      });
-      if (!r.ok) {
-        throw new Error(`HTTP ${r.status} ${r.statusText} von ${url}`);
-      }
-      return await r.json();
-    } catch (err) {
-      throw new Error(`Fetch fehlgeschlagen (${url}): ${err.message}`);
-    }
-  };
+  // Bounding Box Deutschland
+  const inGermany = (p) =>
+    p.lat >= 47.2 && p.lat <= 55.1 &&
+    p.lon >=  5.8 && p.lon <= 15.1;
 
   try {
-    const [europeData, germanyData] = await Promise.all([
-      fetchWithDetail("https://ukwx.duckdns.org/lightning/europe"),
-      fetchWithDetail("https://ukwx.duckdns.org/lightning/germany"),
-    ]);
+    const r = await fetch("https://ukwx.duckdns.org/lightning/europe", {
+      headers: { "User-Agent": "lightning-api" },
+      signal: AbortSignal.timeout(10000),
+    });
 
-    const europePoints  = europeData.points  ?? [];
-    const germanyPoints = germanyData.points ?? [];
+    if (!r.ok) throw new Error(`HTTP ${r.status} von upstream`);
 
-    const punktCount = europePoints.filter(
-      (p) => haversine(latNum, lonNum, p.lat, p.lon) <= radiusKm
-    ).length;
+    const data = await r.json();
+    const points = data.points ?? [];
+
+    const punktCount     = points.filter(p => haversine(latNum, lonNum, p.lat, p.lon) <= radiusKm).length;
+    const germanyCount   = points.filter(inGermany).length;
+    const europeCount    = points.length;
 
     return res.status(200).json({
       period: {
-        von: fmtDE(europeData.period_start),
-        bis: fmtDE(europeData.period_end),
+        von: fmtDE(data.period_start),
+        bis: fmtDE(data.period_end),
       },
       punkt: {
         lat: latNum,
@@ -75,17 +68,14 @@ export default async function handler(req, res) {
         blitze: punktCount,
       },
       deutschland: {
-        blitze: germanyPoints.length,
+        blitze: germanyCount,
       },
       europa: {
-        blitze: europePoints.length,
+        blitze: europeCount,
       },
     });
 
   } catch (err) {
-    return res.status(502).json({
-      error: err.message,
-      hinweis: "Prüfe ob ukwx.duckdns.org von Vercel aus erreichbar ist"
-    });
+    return res.status(502).json({ error: err.message });
   }
 }
