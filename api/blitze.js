@@ -58,7 +58,7 @@ export default async function handler(req, res) {
 
     // ── Archiv: letzte 7 Tage ─────────────────────────────────────────
     const today = new Date();
-    const archiveDates = Array.from({ length: 7 }, (_, i) => {
+    const archiveDates = Array.from({ length: 8 }, (_, i) => {
       const d = new Date(today);
       d.setDate(today.getDate() - 1 - i);
       return dateFmt(d);
