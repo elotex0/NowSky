@@ -40,8 +40,8 @@ export default async function handler(req, res) {
 
   try {
     const [europeRes, germanyRes] = await Promise.all([
-      fetch("http://ukwx.duckdns.org/lightning/europe"),
-      fetch("http://ukwx.duckdns.org/lightning/germany"),
+      fetch("https://ukwx.duckdns.org/lightning/europe"),
+      fetch("https://ukwx.duckdns.org/lightning/germany"),
     ]);
 
     if (!europeRes.ok || !germanyRes.ok) {
