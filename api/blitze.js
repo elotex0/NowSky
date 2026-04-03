@@ -14,7 +14,7 @@ export default async function handler(req, res) {
 
   const latNum   = parseFloat(lat);
   const lonNum   = parseFloat(lon);
-  const radiusKm = parseFloat(radius ?? 25);
+  const radiusKm = parseFloat(radius ?? 5);
 
   const fmtDE = (isoStr) =>
     new Date(isoStr).toLocaleString("de-DE", {
