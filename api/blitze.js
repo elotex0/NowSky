@@ -14,7 +14,7 @@ export default async function handler(req, res) {
 
   const latNum   = parseFloat(lat);
   const lonNum   = parseFloat(lon);
-  const radiusKm = parseFloat(radius ?? 5);
+  const radiusKm = parseFloat(radius ?? 25);
 
   const fmtDE = (isoStr) =>
     new Date(isoStr).toLocaleString("de-DE", {
@@ -36,9 +36,10 @@ export default async function handler(req, res) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
+  // Engere Bounding Box Deutschland – schließt AT/CH/PL/CZ weitgehend aus
   const inGermany = (p) =>
-    p.lat >= 47.2 && p.lat <= 55.1 &&
-    p.lon >=  5.8 && p.lon <= 15.1;
+    p.lat >= 47.4 && p.lat <= 55.05 &&
+    p.lon >=  6.0 && p.lon <= 15.05;
 
   const countPoints = (points) => ({
     standort: points.filter(p => haversine(latNum, lonNum, p.lat, p.lon) <= radiusKm).length,
