@@ -1,6 +1,5 @@
 // api/lightning.js
 // Abruf: /api/lightning?lat=48.5&lon=8.4&radius=100
-// radius ist optional, Standard: 50 km
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -14,11 +13,10 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "lat und lon sind erforderlich" });
   }
 
-  const latNum    = parseFloat(lat);
-  const lonNum    = parseFloat(lon);
-  const radiusKm  = parseFloat(radius ?? 50);
+  const latNum   = parseFloat(lat);
+  const lonNum   = parseFloat(lon);
+  const radiusKm = parseFloat(radius ?? 50);
 
-  // Zeit auf Deutsch formatieren
   const fmtDE = (isoStr) =>
     new Date(isoStr).toLocaleString("de-DE", {
       timeZone: "Europe/Berlin",
@@ -26,7 +24,6 @@ export default async function handler(req, res) {
       hour: "2-digit", minute: "2-digit"
     }) + " Uhr";
 
-  // Haversine-Distanz in km
   const haversine = (lat1, lon1, lat2, lon2) => {
     const R = 6371;
     const toRad = (d) => (d * Math.PI) / 180;
@@ -38,25 +35,30 @@ export default async function handler(req, res) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
-  try {
-    const [europeRes, germanyRes] = await Promise.all([
-      fetch("https://ukwx.duckdns.org/lightning/europe"),
-      fetch("https://ukwx.duckdns.org/lightning/germany"),
-    ]);
-
-    if (!europeRes.ok || !germanyRes.ok) {
-      return res.status(502).json({ error: "Upstream nicht erreichbar" });
+  const fetchWithDetail = async (url) => {
+    try {
+      const r = await fetch(url, {
+        headers: { "User-Agent": "lightning-api" },
+        signal: AbortSignal.timeout(10000), // 10s Timeout
+      });
+      if (!r.ok) {
+        throw new Error(`HTTP ${r.status} ${r.statusText} von ${url}`);
+      }
+      return await r.json();
+    } catch (err) {
+      throw new Error(`Fetch fehlgeschlagen (${url}): ${err.message}`);
     }
+  };
 
+  try {
     const [europeData, germanyData] = await Promise.all([
-      europeRes.json(),
-      germanyRes.json(),
+      fetchWithDetail("https://ukwx.duckdns.org/lightning/europe"),
+      fetchWithDetail("https://ukwx.duckdns.org/lightning/germany"),
     ]);
 
     const europePoints  = europeData.points  ?? [];
     const germanyPoints = germanyData.points ?? [];
 
-    // Punkt-Radius: aus Europa-Daten filtern
     const punktCount = europePoints.filter(
       (p) => haversine(latNum, lonNum, p.lat, p.lon) <= radiusKm
     ).length;
@@ -81,6 +83,9 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(502).json({
+      error: err.message,
+      hinweis: "Prüfe ob ukwx.duckdns.org von Vercel aus erreichbar ist"
+    });
   }
 }
