@@ -111,7 +111,7 @@ export default async function handler(req, res) {
           deutschland: { blitze: archivSumme.deutschland },
           europa:      { blitze: archivSumme.europa },
         },
-        tage: archivTage.map(t => ({
+        tage: archiveTage.map(t => ({
           datum: t.datum,
           standort:    t.standort,
           deutschland: t.deutschland,
