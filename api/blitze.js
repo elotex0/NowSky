@@ -16,7 +16,7 @@ export default async function handler(req, res) {
 
   const latNum   = parseFloat(lat);
   const lonNum   = parseFloat(lon);
-  const radiusKm = parseFloat(radius ?? 50);
+  const radiusKm = parseFloat(radius ?? 25);
 
   const fmtDE = (isoStr) =>
     new Date(isoStr).toLocaleString("de-DE", {
@@ -61,7 +61,7 @@ export default async function handler(req, res) {
         von: fmtDE(data.period_start),
         bis: fmtDE(data.period_end),
       },
-      punkt: {
+      standort: {
         lat: latNum,
         lon: lonNum,
         radius_km: radiusKm,
