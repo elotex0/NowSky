@@ -49,6 +49,8 @@ export default async function handler(req, res) {
       .map((m) => ({
         meldungId: m.meldungId,
         zeit: toBerlinTime(m.timestamp),
+        category": m.category,
+        auspraegung":m.auspraegung,
         place: m.place,
         lat: m.lat,
         lon: m.lon,
