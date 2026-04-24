@@ -21,11 +21,12 @@ export default async function handler(req, res) {
     }
 
     const dwdData = await dwdRes.json();
+    const jetzt = Date.now();
 
     // =====================
     // 2️⃣ Zeitstempel → Europe/Berlin
     // =====================
-    const toberlinTime = (ts) => {
+    const toBerlinTime = (ts) => {
       if (!ts) return null;
       return new Intl.DateTimeFormat("de-DE", {
         timeZone: "Europe/Berlin",
@@ -40,45 +41,27 @@ export default async function handler(req, res) {
     };
 
     // =====================
-    // 3️⃣ Optionaler Filter: ?category=WIND
+    // 3️⃣ Filtern: nur Meldungen bis jetzt, neueste zuerst
     // =====================
-    const { category, limit } = req.query;
-
-    let meldungen = dwdData.meldungen ?? [];
-
-    if (category) {
-      meldungen = meldungen.filter(
-        (m) => m.category?.toUpperCase() === category.toUpperCase()
-      );
-    }
-
-    // Optional: Anzahl begrenzen (Standard: alle)
-    const maxItems = limit ? parseInt(limit, 10) : meldungen.length;
-    meldungen = meldungen.slice(0, maxItems);
+    const meldungen = (dwdData.meldungen ?? [])
+      .filter((m) => m.timestamp <= jetzt)
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .map((m) => ({
+        meldungId: m.meldungId,
+        zeit: toBerlinTime(m.timestamp),
+        place: m.place,
+        lat: m.lat,
+        lon: m.lon,
+        ...(m.imageUrl ? { imageUrl: m.imageUrl } : {})
+      }));
 
     // =====================
-    // 4️⃣ Meldungen aufbereiten (Zeitstempel als Berlin-Zeit ergänzen)
-    // =====================
-    const meldungenMitZeit = meldungen.map((m) => ({
-      ...m,
-      timestamp_berlin: toberlinTime(m.timestamp)
-    }));
-
-    // =====================
-    // 5️⃣ Response bauen
+    // 4️⃣ Response
     // =====================
     res.status(200).json({
-      meta: {
-        start: dwdData.start,
-        start_berlin: toberlinTime(dwdData.start),
-        end: dwdData.end,
-        end_berlin: toberlinTime(dwdData.end),
-        windowsSizeHours: dwdData.windowsSizeHours,
-        total: meldungenMitZeit.length,
-        fetched_at_berlin: toberlinTime(Date.now())
-      },
-      highestSeverities: dwdData.highestSeverities ?? [],
-      meldungen: meldungenMitZeit
+      abgerufen_um: toBerlinTime(jetzt),
+      anzahl: meldungen.length,
+      meldungen
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
