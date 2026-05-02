@@ -94,6 +94,61 @@ export default async function handler(req, res) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
+  // Himmelsrichtung aus Bearing (von Ort zur Zelle → Zelle liegt X von Ort)
+  const bearingToDirection = (brng) => {
+    // brng = bearing vom Ort zur Zelle
+    // Zelle liegt also in diese Richtung VOM Ort aus gesehen
+    const dirs = [
+      [22.5,  "nördlich"],
+      [67.5,  "nordöstlich"],
+      [112.5, "östlich"],
+      [157.5, "südöstlich"],
+      [202.5, "südlich"],
+      [247.5, "südwestlich"],
+      [292.5, "westlich"],
+      [337.5, "nordwestlich"],
+      [360,   "nördlich"],
+    ];
+    for (const [limit, label] of dirs) if (brng < limit) return label;
+    return "nördlich";
+  };
+
+  // Nächsten Ort zum Punkt finden + Richtung + Distanz
+  const findNearestPlace = (lat, lon, geojson, maxKm = 30) => {
+    if (!geojson?.features) return null;
+    let best = null;
+    for (const f of geojson.features) {
+      const name = f.properties?.name || f.properties?.NAME ||
+                   f.properties?.GEN  || f.properties?.name_de || null;
+      if (!name) continue;
+      const geom = f.geometry;
+      const getCentroid = (coords) => {
+        let sumLon = 0, sumLat = 0;
+        for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
+        return { lat: sumLat / coords.length, lon: sumLon / coords.length };
+      };
+      let centroid = null;
+      if (geom.type === "Polygon")           centroid = getCentroid(geom.coordinates[0]);
+      else if (geom.type === "MultiPolygon") centroid = getCentroid(geom.coordinates[0][0]);
+      if (!centroid) continue;
+      const dist = haversine(lat, lon, centroid.lat, centroid.lon);
+      if (dist <= maxKm && (!best || dist < best.dist)) {
+        best = { name, dist, lat: centroid.lat, lon: centroid.lon };
+      }
+    }
+    if (!best) return null;
+    const distKm   = Math.round(best.dist * 10) / 10;
+    const brng     = bearing(best.lat, best.lon, lat, lon); // von Ort → Zelle
+    const dir      = bearingToDirection(brng);
+    if (distKm < 1.5) return { text: `über ${best.name}`, name: best.name, dist_km: distKm };
+    return {
+      text:    `${distKm} km ${dir} von ${best.name}`,
+      name:    best.name,
+      dist_km: distKm,
+      direction: dir,
+    };
+  };
+
   // Gibt alle Ortsnamen zurück deren Zentroid innerhalb von radiusKm um (lat/lon) liegt
   const findPlacesNearPoint = (lat, lon, geojson, radiusKm = 5) => {
     if (!geojson?.features) return [];
@@ -312,12 +367,16 @@ export default async function handler(req, res) {
       orte.sort((a, b) => (a.minutes_until ?? 0) - (b.minutes_until ?? 0));
     }
 
+    // ── Aktuelle Position der Zelle beschreiben ───────────────────────────
+    const position = (lat && lon && geojson) ? findNearestPlace(lat, lon, geojson) : null;
+
     return {
       dateStr,
       timeStr,
       cell_id:                identifier,
       latitude:               lat,
       longitude:              lon,
+      position,
       cell_speed,
       cell_based_vil_density: vil_density,
       dbz_max:                max_dbz,
