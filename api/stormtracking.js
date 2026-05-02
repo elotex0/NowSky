@@ -80,42 +80,44 @@ export default async function handler(req, res) {
     return { lat: toDeg(lat2), lon: toDeg(lon2) };
   };
 
-  // Ray-casting: Punkt in Polygon? (GeoJSON: coords = [[lon, lat], ...])
-  const pointInPolygon = (lat, lon, coords) => {
-    let inside = false;
-    for (let i = 0, j = coords.length - 1; i < coords.length; j = i++) {
-      const xi = coords[i][0], yi = coords[i][1]; // lon, lat
-      const xj = coords[j][0], yj = coords[j][1];
-      if (((yi > lat) !== (yj > lat)) &&
-          (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  };
 
-  const findPlaceName = (lat, lon, geojson) => {
-    if (!geojson?.features) return null;
+  // Gibt alle Ortsnamen zurück deren Zentroid innerhalb von radiusKm um (lat/lon) liegt
+  const findPlacesNearPoint = (lat, lon, geojson, radiusKm = 2) => {
+    if (!geojson?.features) return [];
+    const results = [];
     for (const f of geojson.features) {
       const name = f.properties?.name || f.properties?.NAME ||
                    f.properties?.GEN  || f.properties?.name_de || null;
       if (!name) continue;
       const geom = f.geometry;
+
+      // Centroid des Features berechnen (einfacher Mittelwert der ersten Ring-Koordinaten)
+      const getCentroid = (coords) => {
+        let sumLon = 0, sumLat = 0;
+        for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
+        return { lat: sumLat / coords.length, lon: sumLon / coords.length };
+      };
+
+      let centroid = null;
       if (geom.type === "Polygon") {
-        if (pointInPolygon(lat, lon, geom.coordinates[0])) return name;
+        centroid = getCentroid(geom.coordinates[0]);
       } else if (geom.type === "MultiPolygon") {
-        for (const poly of geom.coordinates) {
-          if (pointInPolygon(lat, lon, poly[0])) return name;
-        }
+        centroid = getCentroid(geom.coordinates[0][0]);
       }
+      if (!centroid) continue;
+
+      const dist = haversine(lat, lon, centroid.lat, centroid.lon);
+      if (dist <= radiusKm) results.push({ name, dist });
     }
-    return null;
+    // Nächste zuerst
+    results.sort((a, b) => a.dist - b.dist);
+    return results.map(r => r.name);
   };
 
   // ── GeoJSON von Dateisystem laden ─────────────────────────────────────
   const loadGeoJson = () => {
     try {
-      const filePath = path.join(process.cwd(), "public", "deutschland.geojson");
+      const filePath = path.join(process.cwd(), "pages", "deutschland.geojson");
       return JSON.parse(fs.readFileSync(filePath, "utf-8"));
     } catch (e) {
       console.error("GeoJSON laden fehlgeschlagen:", e.message);
@@ -219,28 +221,37 @@ export default async function handler(req, res) {
       perp_point2_lat = p2.lat;
       perp_point2_lon = p2.lon;
 
-      // Ortsnamen entlang der Zugbahn
+      // Ortsnamen: je 2km Radius um perp_point1 und perp_point2
       if (geojson) {
-        const waypoints = [
-          { lat, lon, time: ref_time },
-          ...allForecasts.map(f => ({ lat: f.lat, lon: f.lon, time: f.forecast_time })),
-        ];
-
         const seenNames = new Set();
         const refDate   = new Date(ref_time);
 
-        for (const wp of waypoints) {
-          if (!wp.lat || !wp.lon) continue;
-          const name = findPlaceName(wp.lat, wp.lon, geojson);
-          if (!name || seenNames.has(name)) continue;
-          seenNames.add(name);
+        const perpPoints = [
+          { lat: p1.lat, lon: p1.lon, time: null },
+          { lat: p2.lat, lon: p2.lon, time: null },
+        ];
 
-          let arrival_time  = null;
-          let minutes_until = null;
+        // Dazu noch die Forecast-Wegpunkte – Zeitpunkt bestimmt arrival_time
+        // Für die Perp-Points selbst haben wir keine eigene Zeit, wir nehmen
+        // den nächstgelegenen Forecast-Punkt als Näherung
+        for (const pp of perpPoints) {
+          // Nächstgelegener Forecast-Zeitpunkt zu diesem Perp-Punkt
+          let closestTime = ref_time;
+          let minDist = Infinity;
+          for (const fc of allForecasts) {
+            const d = Math.sqrt((fc.lat - pp.lat) ** 2 + (fc.lon - pp.lon) ** 2);
+            if (d < minDist) { minDist = d; closestTime = fc.forecast_time; }
+          }
 
-          if (wp.time) {
+          const names = findPlacesNearPoint(pp.lat, pp.lon, geojson, 2);
+          for (const name of names) {
+            if (seenNames.has(name)) continue;
+            seenNames.add(name);
+
+            let arrival_time  = null;
+            let minutes_until = null;
             try {
-              const wpDate  = new Date(wp.time);
+              const wpDate  = new Date(closestTime);
               minutes_until = Math.round((wpDate - refDate) / 60000);
               arrival_time  = wpDate.toLocaleTimeString("de-DE", {
                 hour:     "2-digit",
@@ -248,9 +259,9 @@ export default async function handler(req, res) {
                 timeZone: "Europe/Berlin",
               });
             } catch (_) {}
-          }
 
-          orte.push({ name, arrival_time, minutes_until });
+            orte.push({ name, arrival_time, minutes_until });
+          }
         }
       }
     }
