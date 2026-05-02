@@ -117,7 +117,7 @@ export default async function handler(req, res) {
   // ── GeoJSON von Dateisystem laden ─────────────────────────────────────
   const loadGeoJson = () => {
     try {
-      const filePath = path.join(process.cwd(), "pages", "deutschland.geojson");
+      const filePath = path.join(process.cwd(), "deutschland.geojson");
       return JSON.parse(fs.readFileSync(filePath, "utf-8"));
     } catch (e) {
       console.error("GeoJSON laden fehlgeschlagen:", e.message);
