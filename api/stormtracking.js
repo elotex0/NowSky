@@ -158,7 +158,7 @@ export default async function handler(req, res) {
     // metadata
     const meta       = block(inner, "metadata") ?? "";
     const identifier = text(meta, "identifier") ?? attr(featureTag, "identifier") ?? "0";
-    const ref_time   = text(meta, "reference_time") ?? refTime ?? "";
+    const ref_time   = (text(meta, "reference_time") ?? refTime ?? "").trim();
 
     const dtMatch = ref_time.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})/);
     const dateStr = dtMatch ? `${dtMatch[1]}${dtMatch[2]}${dtMatch[3]}` : "";
@@ -305,8 +305,13 @@ export default async function handler(req, res) {
       Promise.resolve(loadGeoJson()),
     ]);
 
-    const reference_time = xml.match(/<reference_time[^>]*>([^<]+)<\/reference_time>/)?.[1] ?? null;
-    const creation_date  = xml.match(/<creation-date[^>]*>([^<]+)<\/creation-date>/)?.[1]  ?? null;
+    // reference_time: erst als Text-Element, dann als cells-Attribut, dann als head-Attribut
+    const reference_time =
+      xml.match(/<reference_time[^>]*>([^<]+)<\/reference_time>/)?.[1]?.trim() ??
+      xml.match(/<cells[^>]+reference_time="([^"]+)"/)?.[1]?.trim() ??
+      null;
+
+    const creation_date  = xml.match(/<creation-date[^>]*>([^<]+)<\/creation-date>/)?.[1]?.trim() ?? null;
 
     const featureMatches = xml.match(/<feature[\s\S]*?<\/feature>/g) ?? [];
     const cells = featureMatches.map((f) => parseFeature(f, geojson, reference_time));
