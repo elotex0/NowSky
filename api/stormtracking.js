@@ -232,37 +232,80 @@ export default async function handler(req, res) {
       perp_point2_lon = p2.lon;
     }
 
-    // ── Orte entlang der gesamten Zugbahn (Zentroid + alle Forecasts) ───
+    // ── Orte entlang der gesamten Zugbahn – mit Interpolation ───────────
     if (lat && lon && geojson) {
       const seenNames = new Set();
       const refDate   = new Date(ref_time);
+      const nowMs     = Date.now();
 
-      // Aktueller Zentroid + alle Forecast-Punkte
-      const searchPoints = [
-        { lat, lon, forecast_time: ref_time },
-        ...allForecasts,
+      // Alle Track-Punkte als Zeitstrahl: Zentroid → FC1 → FC2 → ...
+      const trackPoints = [
+        { lat, lon, ms: refDate.getTime() },
+        ...allForecasts
+          .filter(f => f.forecast_time)
+          .map(f => ({ lat: f.lat, lon: f.lon, ms: new Date(f.forecast_time).getTime() })),
       ];
 
-      for (const sp of searchPoints) {
-        const names = findPlacesNearPoint(sp.lat, sp.lon, geojson, 5); // 5 km Radius
-        for (const name of names) {
-          if (seenNames.has(name)) continue;
-          seenNames.add(name);
+      // Jeden Ort auf den kürzesten Abstand zur Zugbahn projizieren → interpolierte Zeit
+      for (const f of geojson.features) {
+        const name = f.properties?.name || f.properties?.NAME ||
+                     f.properties?.GEN  || f.properties?.name_de || null;
+        if (!name || seenNames.has(name)) continue;
 
-          let arrival_time  = null;
-          let minutes_until = null;
-          try {
-            const wpDate  = new Date(sp.forecast_time);
-            minutes_until = Math.round((wpDate - refDate) / 60000);
-            arrival_time  = wpDate.toLocaleTimeString("de-DE", {
-              hour:     "2-digit",
-              minute:   "2-digit",
-              timeZone: "Europe/Berlin",
-            });
-          } catch (_) {}
+        const geom = f.geometry;
+        const getCentroid = (coords) => {
+          let sumLon = 0, sumLat = 0;
+          for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
+          return { lat: sumLat / coords.length, lon: sumLon / coords.length };
+        };
+        let centroid = null;
+        if (geom.type === "Polygon")           centroid = getCentroid(geom.coordinates[0]);
+        else if (geom.type === "MultiPolygon") centroid = getCentroid(geom.coordinates[0][0]);
+        if (!centroid) continue;
 
-          orte.push({ name, arrival_time, minutes_until });
+        // Finde den nächsten Punkt auf der Zugbahn (segmentweise projiziert)
+        let bestDist = Infinity;
+        let bestMs   = null;
+
+        for (let i = 0; i < trackPoints.length; i++) {
+          const p = trackPoints[i];
+
+          if (i < trackPoints.length - 1) {
+            const q  = trackPoints[i + 1];
+            const ax = q.lat - p.lat, ay = q.lon - p.lon;
+            const bx = centroid.lat - p.lat, by = centroid.lon - p.lon;
+            const t  = Math.max(0, Math.min(1, (bx * ax + by * ay) / (ax * ax + ay * ay)));
+            const projLat = p.lat + t * ax;
+            const projLon = p.lon + t * ay;
+            const dProj   = haversine(centroid.lat, centroid.lon, projLat, projLon);
+            if (dProj <= 5 && dProj < bestDist) {
+              bestDist = dProj;
+              bestMs   = p.ms + t * (q.ms - p.ms);
+            }
+          }
+
+          // Letzten Punkt auch direkt prüfen
+          const d = haversine(centroid.lat, centroid.lon, p.lat, p.lon);
+          if (d <= 5 && d < bestDist) {
+            bestDist = d;
+            bestMs   = p.ms;
+          }
         }
+
+        if (bestMs === null) continue;
+
+        // Orte deren Ankunft > 2 min in der Vergangenheit liegt → überspringen
+        if (bestMs < nowMs - 2 * 60 * 1000) continue;
+
+        seenNames.add(name);
+        const minutes_until = Math.round((bestMs - refDate.getTime()) / 60000);
+        const arrival_time  = new Date(bestMs).toLocaleTimeString("de-DE", {
+          hour:     "2-digit",
+          minute:   "2-digit",
+          timeZone: "Europe/Berlin",
+        });
+
+        orte.push({ name, arrival_time, minutes_until });
       }
 
       // Nach Ankunftszeit sortieren
