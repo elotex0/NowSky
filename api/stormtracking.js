@@ -1,6 +1,10 @@
 // api/konrad3d.js
 import fs   from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -80,7 +84,6 @@ export default async function handler(req, res) {
     return { lat: toDeg(lat2), lon: toDeg(lon2) };
   };
 
-
   // Haversine-Distanz in km
   const haversine = (lat1, lon1, lat2, lon2) => {
     const R    = 6371;
@@ -101,7 +104,6 @@ export default async function handler(req, res) {
       if (!name) continue;
       const geom = f.geometry;
 
-      // Centroid des Features berechnen (einfacher Mittelwert der ersten Ring-Koordinaten)
       const getCentroid = (coords) => {
         let sumLon = 0, sumLat = 0;
         for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
@@ -119,15 +121,14 @@ export default async function handler(req, res) {
       const dist = haversine(lat, lon, centroid.lat, centroid.lon);
       if (dist <= radiusKm) results.push({ name, dist });
     }
-    // Nächste zuerst
     results.sort((a, b) => a.dist - b.dist);
     return results.map(r => r.name);
   };
 
-  // ── GeoJSON von Dateisystem laden ─────────────────────────────────────
+  // ── GeoJSON laden (relativ zur aktuellen Datei → Hauptordner) ─────────
   const loadGeoJson = () => {
     try {
-      const filePath = path.join(process.cwd(), "deutschland.geojson");
+      const filePath = path.join(__dirname, "../deutschland.geojson");
       return JSON.parse(fs.readFileSync(filePath, "utf-8"));
     } catch (e) {
       console.error("GeoJSON laden fehlgeschlagen:", e.message);
@@ -159,7 +160,6 @@ export default async function handler(req, res) {
     const identifier = text(meta, "identifier") ?? attr(featureTag, "identifier") ?? "0";
     const ref_time   = text(meta, "reference_time") ?? refTime ?? "";
 
-    // dateStr / timeStr aus reference_time (ISO 8601: 2026-05-02T13:05:00Z)
     const dtMatch = ref_time.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})/);
     const dateStr = dtMatch ? `${dtMatch[1]}${dtMatch[2]}${dtMatch[3]}` : "";
     const timeStr = dtMatch ? `${dtMatch[4]}${dtMatch[5]}` : "";
@@ -185,14 +185,14 @@ export default async function handler(req, res) {
     const heavy_rain_pot = num(intens, "heavy_rain_potential");
 
     // lightning
-    const light        = block(inner, "lightning") ?? "";
+    const light          = block(inner, "lightning") ?? "";
     const lightning_rate = int(light, "lightning_rate") ?? 0;
 
     // tracking
     const track      = block(inner, "tracking") ?? "";
     const cell_speed = num(track, "cell_speed");
 
-    // forecast – alle Punkte sammeln, ersten für forecast_lat/lon
+    // forecast
     const forecastBlock     = block(inner, "forecast") ?? "";
     const centroidForecasts = block(forecastBlock, "centroid_forecasts") ?? "";
     const cfBlocks          = allBlocks(centroidForecasts, "centroid_forecast");
@@ -231,21 +231,16 @@ export default async function handler(req, res) {
       perp_point2_lat = p2.lat;
       perp_point2_lon = p2.lon;
 
-      // Ortsnamen: je 2km Radius um perp_point1 und perp_point2
       if (geojson) {
         const seenNames = new Set();
         const refDate   = new Date(ref_time);
 
         const perpPoints = [
-          { lat: p1.lat, lon: p1.lon, time: null },
-          { lat: p2.lat, lon: p2.lon, time: null },
+          { lat: p1.lat, lon: p1.lon },
+          { lat: p2.lat, lon: p2.lon },
         ];
 
-        // Dazu noch die Forecast-Wegpunkte – Zeitpunkt bestimmt arrival_time
-        // Für die Perp-Points selbst haben wir keine eigene Zeit, wir nehmen
-        // den nächstgelegenen Forecast-Punkt als Näherung
         for (const pp of perpPoints) {
-          // Nächstgelegener Forecast-Zeitpunkt zu diesem Perp-Punkt
           let closestTime = ref_time;
           let minDist = Infinity;
           for (const fc of allForecasts) {
@@ -279,18 +274,18 @@ export default async function handler(req, res) {
     return {
       dateStr,
       timeStr,
-      cell_id:               identifier,
-      latitude:              lat,
-      longitude:             lon,
+      cell_id:                identifier,
+      latitude:               lat,
+      longitude:              lon,
       cell_speed,
       cell_based_vil_density: vil_density,
-      dbz_max:               max_dbz,
+      dbz_max:                max_dbz,
       lightning_rate,
-      wind_gust:             max_wind_gust,
-      heavy_rain_rate:       heavy_rain_pot,
+      wind_gust:              max_wind_gust,
+      heavy_rain_rate:        heavy_rain_pot,
       severity,
-      forecast_latitude:     forecast_lat,
-      forecast_longitude:    forecast_lon,
+      forecast_latitude:      forecast_lat,
+      forecast_longitude:     forecast_lon,
       perp_point1_lat,
       perp_point1_lon,
       perp_point2_lat,
