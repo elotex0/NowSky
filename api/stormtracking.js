@@ -95,7 +95,7 @@ export default async function handler(req, res) {
   };
 
   // Gibt alle Ortsnamen zurück deren Zentroid innerhalb von radiusKm um (lat/lon) liegt
-  const findPlacesNearPoint = (lat, lon, geojson, radiusKm = 2) => {
+  const findPlacesNearPoint = (lat, lon, geojson, radiusKm = 5) => {
     if (!geojson?.features) return [];
     const results = [];
     for (const f of geojson.features) {
@@ -230,45 +230,43 @@ export default async function handler(req, res) {
       perp_point1_lon = p1.lon;
       perp_point2_lat = p2.lat;
       perp_point2_lon = p2.lon;
+    }
 
-      if (geojson) {
-        const seenNames = new Set();
-        const refDate   = new Date(ref_time);
+    // ── Orte entlang der gesamten Zugbahn (Zentroid + alle Forecasts) ───
+    if (lat && lon && geojson) {
+      const seenNames = new Set();
+      const refDate   = new Date(ref_time);
 
-        const perpPoints = [
-          { lat: p1.lat, lon: p1.lon },
-          { lat: p2.lat, lon: p2.lon },
-        ];
+      // Aktueller Zentroid + alle Forecast-Punkte
+      const searchPoints = [
+        { lat, lon, forecast_time: ref_time },
+        ...allForecasts,
+      ];
 
-        for (const pp of perpPoints) {
-          let closestTime = ref_time;
-          let minDist = Infinity;
-          for (const fc of allForecasts) {
-            const d = Math.sqrt((fc.lat - pp.lat) ** 2 + (fc.lon - pp.lon) ** 2);
-            if (d < minDist) { minDist = d; closestTime = fc.forecast_time; }
-          }
+      for (const sp of searchPoints) {
+        const names = findPlacesNearPoint(sp.lat, sp.lon, geojson, 5); // 5 km Radius
+        for (const name of names) {
+          if (seenNames.has(name)) continue;
+          seenNames.add(name);
 
-          const names = findPlacesNearPoint(pp.lat, pp.lon, geojson, 2);
-          for (const name of names) {
-            if (seenNames.has(name)) continue;
-            seenNames.add(name);
+          let arrival_time  = null;
+          let minutes_until = null;
+          try {
+            const wpDate  = new Date(sp.forecast_time);
+            minutes_until = Math.round((wpDate - refDate) / 60000);
+            arrival_time  = wpDate.toLocaleTimeString("de-DE", {
+              hour:     "2-digit",
+              minute:   "2-digit",
+              timeZone: "Europe/Berlin",
+            });
+          } catch (_) {}
 
-            let arrival_time  = null;
-            let minutes_until = null;
-            try {
-              const wpDate  = new Date(closestTime);
-              minutes_until = Math.round((wpDate - refDate) / 60000);
-              arrival_time  = wpDate.toLocaleTimeString("de-DE", {
-                hour:     "2-digit",
-                minute:   "2-digit",
-                timeZone: "Europe/Berlin",
-              });
-            } catch (_) {}
-
-            orte.push({ name, arrival_time, minutes_until });
-          }
+          orte.push({ name, arrival_time, minutes_until });
         }
       }
+
+      // Nach Ankunftszeit sortieren
+      orte.sort((a, b) => (a.minutes_until ?? 0) - (b.minutes_until ?? 0));
     }
 
     return {
