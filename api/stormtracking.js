@@ -81,6 +81,16 @@ export default async function handler(req, res) {
   };
 
 
+  // Haversine-Distanz in km
+  const haversine = (lat1, lon1, lat2, lon2) => {
+    const R    = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a    = Math.sin(dLat / 2) ** 2 +
+                 Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
   // Gibt alle Ortsnamen zurück deren Zentroid innerhalb von radiusKm um (lat/lon) liegt
   const findPlacesNearPoint = (lat, lon, geojson, radiusKm = 2) => {
     if (!geojson?.features) return [];
