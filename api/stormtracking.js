@@ -160,7 +160,7 @@ export default async function handler(req, res) {
     const identifier = text(meta, "identifier") ?? attr(featureTag, "identifier") ?? "0";
     const ref_time   = (text(meta, "reference_time") ?? refTime ?? "").trim();
 
-    const dtMatch = ref_time.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})/);
+    const dtMatch = ref_time.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):?(\d{2})/);
     const dateStr = dtMatch ? `${dtMatch[1]}${dtMatch[2]}${dtMatch[3]}` : "";
     const timeStr = dtMatch ? `${dtMatch[4]}${dtMatch[5]}` : "";
 
