@@ -343,20 +343,37 @@ export default async function handler(req, res) {
     const hail_flag              = int(inner, "hail_flag");
 
     let hail_cm = null;
-    if (hail_flag !== null && hail_flag >= 1) {
-      if (hail_flag >= 3 && echo_top_large_hail !== null && echo_bottom_large_hail !== null) {
-        const thickness = (echo_top_large_hail - echo_bottom_large_hail) / 1000;
-        hail_cm = Math.round((2.0 + thickness * 0.8 + area_large_hail * 0.05) * 10) / 10;
-      } else if (hail_flag >= 2 && echo_top_hail !== null && echo_bottom_hail !== null) {
-        const thickness = (echo_top_hail - echo_bottom_hail) / 1000;
-        hail_cm = Math.round((1.0 + thickness * 0.4 + area_hail * 0.02) * 10) / 10;
-      } else {
-        hail_cm = Math.round((0.5 + area_hail * 0.01) * 10) / 10;
-      }
-      if (hail_flag === 1) hail_cm = Math.min(hail_cm, 1.9);
-      if (hail_flag === 2) hail_cm = Math.min(hail_cm, 3.9);
-      if (hail_flag === 3) hail_cm = Math.max(hail_cm, 2.0);
+
+  if (hail_flag !== null && hail_flag >= 1) {
+
+    if (hail_flag === 1) {
+      const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
+        ? (echo_top_hail - echo_bottom_hail) / 1000
+        : 0;
+      hail_cm = 0.5 + thickness * 0.1 + area_hail * 0.001;
+      hail_cm = Math.min(hail_cm, 1.9);
+
+    } else if (hail_flag === 2) {
+      const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
+        ? (echo_top_hail - echo_bottom_hail) / 1000
+        : 0;
+      hail_cm = 1.0 + thickness * 0.2 + area_hail * 0.003;
+      hail_cm = Math.max(hail_cm, 1.0);
+      hail_cm = Math.min(hail_cm, 3.9);
+
+    } else if (hail_flag === 3) {
+      const thickness = (echo_top_large_hail !== null && echo_bottom_large_hail !== null)
+        ? (echo_top_large_hail - echo_bottom_large_hail) / 1000
+        : (echo_top_hail !== null && echo_bottom_hail !== null)
+          ? (echo_top_hail - echo_bottom_hail) / 1000
+          : 0;
+      const area = area_large_hail > 0 ? area_large_hail : area_hail;
+      hail_cm = 2.0 + thickness * 0.3 + area * 0.005;
+      hail_cm = Math.max(hail_cm, 2.0);
     }
+
+    hail_cm = Math.round(hail_cm * 10) / 10;
+  }
 
     const track      = block(inner, "tracking") ?? "";
     const cell_speed = num(track, "cell_speed");
