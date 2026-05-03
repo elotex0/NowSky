@@ -12,7 +12,6 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ── Dateiname berechnen (5-Min-Raster + Offset) ──────────────────────
   const buildFilename = (offsetMin) => {
     const t   = new Date(Date.now() - offsetMin * 60 * 1000);
     const pad = (n) => String(n).padStart(2, "0");
@@ -24,7 +23,6 @@ export default async function handler(req, res) {
     return `KONRAD3D_${yyyy}${mm}${dd}T${hh}${min}00`;
   };
 
-  // ── XML-Hilfsfunktionen ───────────────────────────────────────────────
   const text = (xml, tag) => {
     const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
     return m ? m[1].trim() : null;
@@ -56,7 +54,6 @@ export default async function handler(req, res) {
   };
   const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
 
-  // ── Geo-Hilfsfunktionen ───────────────────────────────────────────────
   const toRad = (d) => d * Math.PI / 180;
   const toDeg = (r) => r * 180 / Math.PI;
 
@@ -84,7 +81,6 @@ export default async function handler(req, res) {
     return { lat: toDeg(lat2), lon: toDeg(lon2) };
   };
 
-  // Haversine-Distanz in km
   const haversine = (lat1, lon1, lat2, lon2) => {
     const R    = 6371;
     const dLat = toRad(lat2 - lat1);
@@ -94,10 +90,7 @@ export default async function handler(req, res) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   };
 
-  // Himmelsrichtung aus Bearing (von Ort zur Zelle → Zelle liegt X von Ort)
   const bearingToDirection = (brng) => {
-    // brng = bearing vom Ort zur Zelle
-    // Zelle liegt also in diese Richtung VOM Ort aus gesehen
     const dirs = [
       [22.5,  "nördlich"],
       [67.5,  "nordöstlich"],
@@ -113,7 +106,6 @@ export default async function handler(req, res) {
     return "nördlich";
   };
 
-  // Nächsten Ort zum Punkt finden + Richtung + Distanz
   const findNearestPlace = (lat, lon, geojson, maxKm = 30) => {
     if (!geojson?.features) return null;
     let best = null;
@@ -137,20 +129,14 @@ export default async function handler(req, res) {
       }
     }
     if (!best) return null;
-    const distKm   = Math.round(best.dist * 10) / 10;
-    const brng     = bearing(best.lat, best.lon, lat, lon); // von Ort → Zelle
-    const dir      = bearingToDirection(brng);
+    const distKm = Math.round(best.dist * 10) / 10;
+    const brng   = bearing(best.lat, best.lon, lat, lon);
+    const dir    = bearingToDirection(brng);
     if (distKm < 1.5) return { text: `über ${best.name}`, name: best.name, dist_km: distKm };
-    return {
-      text:    `${distKm} km ${dir} von ${best.name}`,
-      name:    best.name,
-      dist_km: distKm,
-      direction: dir,
-    };
+    return { text: `${distKm} km ${dir} von ${best.name}`, name: best.name, dist_km: distKm, direction: dir };
   };
 
-  // Gibt alle Ortsnamen zurück deren Zentroid innerhalb von radiusKm um (lat/lon) liegt
-  const findPlacesNearPoint = (lat, lon, geojson, radiusKm = 5) => {
+  const findPlacesNearPoint = (lat, lon, geojson, radiusKm = 8) => {
     if (!geojson?.features) return [];
     const results = [];
     for (const f of geojson.features) {
@@ -158,21 +144,15 @@ export default async function handler(req, res) {
                    f.properties?.GEN  || f.properties?.name_de || null;
       if (!name) continue;
       const geom = f.geometry;
-
       const getCentroid = (coords) => {
         let sumLon = 0, sumLat = 0;
         for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
         return { lat: sumLat / coords.length, lon: sumLon / coords.length };
       };
-
       let centroid = null;
-      if (geom.type === "Polygon") {
-        centroid = getCentroid(geom.coordinates[0]);
-      } else if (geom.type === "MultiPolygon") {
-        centroid = getCentroid(geom.coordinates[0][0]);
-      }
+      if (geom.type === "Polygon")           centroid = getCentroid(geom.coordinates[0]);
+      else if (geom.type === "MultiPolygon") centroid = getCentroid(geom.coordinates[0][0]);
       if (!centroid) continue;
-
       const dist = haversine(lat, lon, centroid.lat, centroid.lon);
       if (dist <= radiusKm) results.push({ name, dist });
     }
@@ -180,7 +160,6 @@ export default async function handler(req, res) {
     return results.map(r => r.name);
   };
 
-  // ── GeoJSON laden (relativ zur aktuellen Datei → Hauptordner) ─────────
   const loadGeoJson = () => {
     try {
       const filePath = path.join(__dirname, "../deutschland.geojson");
@@ -191,7 +170,6 @@ export default async function handler(req, res) {
     }
   };
 
-  // ── DWD-XML abrufen ───────────────────────────────────────────────────
   const fetchXml = async () => {
     for (const offset of [5, 10, 15, 20]) {
       const filename = buildFilename(offset);
@@ -205,12 +183,10 @@ export default async function handler(req, res) {
     throw new Error("Keine aktuelle KONRAD3D-Datei verfügbar");
   };
 
-  // ── Feature parsen ────────────────────────────────────────────────────
   const parseFeature = (featureFull, geojson, refTime) => {
     const featureTag = featureFull.match(/<feature([^>]*)>/)?.[0] ?? "";
     const inner      = block(featureFull, "feature") ?? featureFull;
 
-    // metadata
     const meta       = block(inner, "metadata") ?? "";
     const identifier = text(meta, "identifier") ?? attr(featureTag, "identifier") ?? "0";
     const ref_time   = (text(meta, "reference_time") ?? refTime ?? "").trim();
@@ -219,7 +195,6 @@ export default async function handler(req, res) {
     const dateStr = dtMatch ? `${dtMatch[1]}${dtMatch[2]}${dtMatch[3]}` : "";
     const timeStr = dtMatch ? `${dtMatch[4]}${dtMatch[5]}` : "";
 
-    // geometry
     const geo              = block(inner, "geometry") ?? "";
     const covered_area     = num(geo, "covered_area");
     const area_growth_rate = num(geo, "area_growth_rate");
@@ -231,7 +206,6 @@ export default async function handler(req, res) {
     const lat        = num(geodetic, "latitude");
     const lon        = num(geodetic, "longitude");
 
-    // intensity
     const intens         = block(inner, "intensity") ?? "";
     const severity       = int(intens, "severity") ?? 0;
     const vil_density    = num(intens, "cell_based_VIL_density");
@@ -239,11 +213,9 @@ export default async function handler(req, res) {
     const max_wind_gust  = num(intens, "maximum_estimated_wind_gust");
     const heavy_rain_pot = num(intens, "heavy_rain_potential");
 
-    // lightning
     const light          = block(inner, "lightning") ?? "";
     const lightning_rate = int(light, "lightning_rate") ?? 0;
 
-    // ── Hymec / Hagel ─────────────────────────────────────────────────────
     const hymec                  = block(inner, "hymec") ?? "";
     const area_hail              = num(hymec, "area_hail")              ?? 0;
     const area_large_hail        = num(hymec, "area_large_hail")        ?? 0;
@@ -269,11 +241,9 @@ export default async function handler(req, res) {
       if (hail_flag === 3) hail_cm = Math.max(hail_cm, 2.0);
     }
 
-    // tracking
     const track      = block(inner, "tracking") ?? "";
     const cell_speed = num(track, "cell_speed");
 
-    // forecast
     const forecastBlock     = block(inner, "forecast") ?? "";
     const centroidForecasts = block(forecastBlock, "centroid_forecasts") ?? "";
     const cfBlocks          = allBlocks(centroidForecasts, "centroid_forecast");
@@ -291,7 +261,6 @@ export default async function handler(req, res) {
       if (fLat && fLon) allForecasts.push({ forecast_time, lat: fLat, lon: fLon });
     }
 
-    // ── Richtungsvektor & Senkrechte ──
     let lat3 = null, lon3 = null;
     let perp_point1_lat = null, perp_point1_lon = null;
     let perp_point2_lat = null, perp_point2_lon = null;
@@ -313,13 +282,14 @@ export default async function handler(req, res) {
       perp_point2_lon = p2.lon;
     }
 
-    // ── Orte entlang der gesamten Zugbahn – mit Interpolation ───────────
+    // ── Orte entlang der Zugbahn ──────────────────────────────────────────
+    const TRACK_RADIUS_KM = 8;
+
     if (lat && lon && geojson) {
       const seenNames = new Set();
       const refDate   = new Date(ref_time);
       const nowMs     = Date.now();
 
-      // Alle Track-Punkte als Zeitstrahl: Zentroid → FC1 → FC2 → ...
       const trackPoints = [
         { lat, lon, ms: refDate.getTime() },
         ...allForecasts
@@ -327,73 +297,70 @@ export default async function handler(req, res) {
           .map(f => ({ lat: f.lat, lon: f.lon, ms: new Date(f.forecast_time).getTime() })),
       ];
 
-      // Jeden Ort auf den kürzesten Abstand zur Zugbahn projizieren → interpolierte Zeit
-      for (const f of geojson.features) {
-        const name = f.properties?.name || f.properties?.NAME ||
-                     f.properties?.GEN  || f.properties?.name_de || null;
-        if (!name || seenNames.has(name)) continue;
+      // Hilfsfunktion: Ort zu orte[] hinzufügen
+      const addOrt = (name, ms) => {
+        if (seenNames.has(name)) return;
+        if (ms < nowMs - 2 * 60 * 1000) return;
+        seenNames.add(name);
+        const minutes_until = Math.round((ms - refDate.getTime()) / 60000);
+        const arrival_time  = new Date(ms).toLocaleTimeString("de-DE", {
+          hour:     "2-digit",
+          minute:   "2-digit",
+          timeZone: "Europe/Berlin",
+        });
+        orte.push({ name, arrival_time, minutes_until });
+      };
 
+      // Schritt 1: Für jeden Trackpunkt direkt alle Orte im Radius erfassen
+      for (const p of trackPoints) {
+        const nearbyNames = findPlacesNearPoint(p.lat, p.lon, geojson, TRACK_RADIUS_KM);
+        for (const name of nearbyNames) {
+          addOrt(name, p.ms);
+        }
+      }
+
+      // Schritt 2: Segment-Interpolation für Orte zwischen zwei Trackpunkten
+      const getCentroidFromFeature = (f) => {
         const geom = f.geometry;
         const getCentroid = (coords) => {
           let sumLon = 0, sumLat = 0;
           for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
           return { lat: sumLat / coords.length, lon: sumLon / coords.length };
         };
-        let centroid = null;
-        if (geom.type === "Polygon")           centroid = getCentroid(geom.coordinates[0]);
-        else if (geom.type === "MultiPolygon") centroid = getCentroid(geom.coordinates[0][0]);
-        if (!centroid) continue;
+        if (geom.type === "Polygon")           return getCentroid(geom.coordinates[0]);
+        if (geom.type === "MultiPolygon")      return getCentroid(geom.coordinates[0][0]);
+        return null;
+      };
 
-        // Finde den nächsten Punkt auf der Zugbahn (segmentweise projiziert)
-        let bestDist = Infinity;
-        let bestMs   = null;
+      for (let i = 0; i < trackPoints.length - 1; i++) {
+        const p  = trackPoints[i];
+        const q  = trackPoints[i + 1];
+        const ax = q.lat - p.lat, ay = q.lon - p.lon;
 
-        for (let i = 0; i < trackPoints.length; i++) {
-          const p = trackPoints[i];
+        for (const f of geojson.features) {
+          const name = f.properties?.name || f.properties?.NAME ||
+                       f.properties?.GEN  || f.properties?.name_de || null;
+          if (!name || seenNames.has(name)) continue;
 
-          if (i < trackPoints.length - 1) {
-            const q  = trackPoints[i + 1];
-            const ax = q.lat - p.lat, ay = q.lon - p.lon;
-            const bx = centroid.lat - p.lat, by = centroid.lon - p.lon;
-            const t  = Math.max(0, Math.min(1, (bx * ax + by * ay) / (ax * ax + ay * ay)));
-            const projLat = p.lat + t * ax;
-            const projLon = p.lon + t * ay;
-            const dProj   = haversine(centroid.lat, centroid.lon, projLat, projLon);
-            if (dProj <= 5 && dProj < bestDist) {
-              bestDist = dProj;
-              bestMs   = p.ms + t * (q.ms - p.ms);
-            }
-          }
+          const centroid = getCentroidFromFeature(f);
+          if (!centroid) continue;
 
-          // Letzten Punkt auch direkt prüfen
-          const d = haversine(centroid.lat, centroid.lon, p.lat, p.lon);
-          if (d <= 5 && d < bestDist) {
-            bestDist = d;
-            bestMs   = p.ms;
+          const bx = centroid.lat - p.lat, by = centroid.lon - p.lon;
+          const t  = Math.max(0, Math.min(1, (bx * ax + by * ay) / (ax * ax + ay * ay)));
+          const projLat = p.lat + t * ax;
+          const projLon = p.lon + t * ay;
+          const dProj   = haversine(centroid.lat, centroid.lon, projLat, projLon);
+
+          if (dProj <= TRACK_RADIUS_KM) {
+            const ms = p.ms + t * (q.ms - p.ms);
+            addOrt(name, ms);
           }
         }
-
-        if (bestMs === null) continue;
-
-        // Orte deren Ankunft > 2 min in der Vergangenheit liegt → überspringen
-        if (bestMs < nowMs - 2 * 60 * 1000) continue;
-
-        seenNames.add(name);
-        const minutes_until = Math.round((bestMs - refDate.getTime()) / 60000);
-        const arrival_time  = new Date(bestMs).toLocaleTimeString("de-DE", {
-          hour:     "2-digit",
-          minute:   "2-digit",
-          timeZone: "Europe/Berlin",
-        });
-
-        orte.push({ name, arrival_time, minutes_until });
       }
 
-      // Nach Ankunftszeit sortieren
       orte.sort((a, b) => (a.minutes_until ?? 0) - (b.minutes_until ?? 0));
     }
 
-    // ── Aktuelle Position der Zelle beschreiben ───────────────────────────
     const position = (lat && lon && geojson) ? findNearestPlace(lat, lon, geojson) : null;
 
     return {
@@ -438,20 +405,18 @@ export default async function handler(req, res) {
     };
   };
 
-  // ── Hauptlogik ────────────────────────────────────────────────────────
   try {
     const [{ xml, filename }, geojson] = await Promise.all([
       fetchXml(),
       Promise.resolve(loadGeoJson()),
     ]);
 
-    // reference_time: erst als Text-Element, dann als cells-Attribut, dann als head-Attribut
     const reference_time =
       xml.match(/<reference_time[^>]*>([^<]+)<\/reference_time>/)?.[1]?.trim() ??
       xml.match(/<cells[^>]+reference_time="([^"]+)"/)?.[1]?.trim() ??
       null;
 
-    const creation_date  = xml.match(/<creation-date[^>]*>([^<]+)<\/creation-date>/)?.[1]?.trim() ?? null;
+    const creation_date = xml.match(/<creation-date[^>]*>([^<]+)<\/creation-date>/)?.[1]?.trim() ?? null;
 
     const featureMatches = xml.match(/<feature[\s\S]*?<\/feature>/g) ?? [];
     const cells = featureMatches.map((f) => parseFeature(f, geojson, reference_time));
