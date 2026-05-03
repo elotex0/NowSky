@@ -281,7 +281,6 @@ export default async function handler(req, res) {
       perp_point2_lat = p2.lat;
       perp_point2_lon = p2.lon;
     }
-
     // ── Orte entlang der Zugbahn ──────────────────────────────────────────
     const TRACK_RADIUS_KM = 8;
 
@@ -297,63 +296,40 @@ export default async function handler(req, res) {
           .map(f => ({ lat: f.lat, lon: f.lon, ms: new Date(f.forecast_time).getTime() })),
       ];
 
-      // Hilfsfunktion: Ort zu orte[] hinzufügen
-      const addOrt = (name, ms) => {
-        if (seenNames.has(name)) return;
-        if (ms < nowMs - 2 * 60 * 1000) return;
-        seenNames.add(name);
-        const minutes_until = Math.round((ms - refDate.getTime()) / 60000);
-        const arrival_time  = new Date(ms).toLocaleTimeString("de-DE", {
-          hour:     "2-digit",
-          minute:   "2-digit",
-          timeZone: "Europe/Berlin",
-        });
-        orte.push({ name, arrival_time, minutes_until });
-      };
-
-      // Schritt 1: Für jeden Trackpunkt direkt alle Orte im Radius erfassen
-      for (const p of trackPoints) {
-        const nearbyNames = findPlacesNearPoint(p.lat, p.lon, geojson, TRACK_RADIUS_KM);
-        for (const name of nearbyNames) {
-          addOrt(name, p.ms);
-        }
-      }
-
-      // Schritt 2: Segment-Interpolation für Orte zwischen zwei Trackpunkten
-      const getCentroidFromFeature = (f) => {
+      // Einmalig alle Feature-Centroids vorberechnen
+      const featureCentroids = [];
+      for (const f of geojson.features) {
+        const name = f.properties?.name || f.properties?.NAME ||
+                     f.properties?.GEN  || f.properties?.name_de || null;
+        if (!name) continue;
         const geom = f.geometry;
         const getCentroid = (coords) => {
           let sumLon = 0, sumLat = 0;
           for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
           return { lat: sumLat / coords.length, lon: sumLon / coords.length };
         };
-        if (geom.type === "Polygon")           return getCentroid(geom.coordinates[0]);
-        if (geom.type === "MultiPolygon")      return getCentroid(geom.coordinates[0][0]);
-        return null;
-      };
+        let centroid = null;
+        if (geom.type === "Polygon")      centroid = getCentroid(geom.coordinates[0]);
+        else if (geom.type === "MultiPolygon") centroid = getCentroid(geom.coordinates[0][0]);
+        if (!centroid) continue;
+        featureCentroids.push({ name, lat: centroid.lat, lon: centroid.lon });
+      }
 
-      for (let i = 0; i < trackPoints.length - 1; i++) {
-        const p  = trackPoints[i];
-        const q  = trackPoints[i + 1];
-        const ax = q.lat - p.lat, ay = q.lon - p.lon;
-
-        for (const f of geojson.features) {
-          const name = f.properties?.name || f.properties?.NAME ||
-                       f.properties?.GEN  || f.properties?.name_de || null;
-          if (!name || seenNames.has(name)) continue;
-
-          const centroid = getCentroidFromFeature(f);
-          if (!centroid) continue;
-
-          const bx = centroid.lat - p.lat, by = centroid.lon - p.lon;
-          const t  = Math.max(0, Math.min(1, (bx * ax + by * ay) / (ax * ax + ay * ay)));
-          const projLat = p.lat + t * ax;
-          const projLon = p.lon + t * ay;
-          const dProj   = haversine(centroid.lat, centroid.lon, projLat, projLon);
-
-          if (dProj <= TRACK_RADIUS_KM) {
-            const ms = p.ms + t * (q.ms - p.ms);
-            addOrt(name, ms);
+      // Für jeden Trackpunkt: alle Orte im Radius direkt prüfen
+      for (const p of trackPoints) {
+        if (p.ms < nowMs - 2 * 60 * 1000) continue;
+        for (const fc of featureCentroids) {
+          if (seenNames.has(fc.name)) continue;
+          const d = haversine(p.lat, p.lon, fc.lat, fc.lon);
+          if (d <= TRACK_RADIUS_KM) {
+            seenNames.add(fc.name);
+            const minutes_until = Math.round((p.ms - refDate.getTime()) / 60000);
+            const arrival_time  = new Date(p.ms).toLocaleTimeString("de-DE", {
+              hour:     "2-digit",
+              minute:   "2-digit",
+              timeZone: "Europe/Berlin",
+            });
+            orte.push({ name: fc.name, arrival_time, minutes_until });
           }
         }
       }
