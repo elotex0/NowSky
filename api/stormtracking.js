@@ -402,7 +402,7 @@ export default async function handler(req, res) {
       latitude:      f.lat,
       longitude:     f.lon,
       minutes_from_ref: f.forecast_time
-        ? Math.round((new Date(f.forecast_time) - new Date(reference_time ?? ref_time)) / 60000)
+        ? Math.round((new Date(f.forecast_time) - new Date(ref_time)) / 60000)
         : null,
     })),
   };
