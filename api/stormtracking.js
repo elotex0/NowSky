@@ -136,30 +136,6 @@ export default async function handler(req, res) {
     return { text: `${distKm} km ${dir} von ${best.name}`, name: best.name, dist_km: distKm, direction: dir };
   };
 
-  const findPlacesNearPoint = (lat, lon, geojson, radiusKm = 8) => {
-    if (!geojson?.features) return [];
-    const results = [];
-    for (const f of geojson.features) {
-      const name = f.properties?.name || f.properties?.NAME ||
-                   f.properties?.GEN  || f.properties?.name_de || null;
-      if (!name) continue;
-      const geom = f.geometry;
-      const getCentroid = (coords) => {
-        let sumLon = 0, sumLat = 0;
-        for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
-        return { lat: sumLat / coords.length, lon: sumLon / coords.length };
-      };
-      let centroid = null;
-      if (geom.type === "Polygon")           centroid = getCentroid(geom.coordinates[0]);
-      else if (geom.type === "MultiPolygon") centroid = getCentroid(geom.coordinates[0][0]);
-      if (!centroid) continue;
-      const dist = haversine(lat, lon, centroid.lat, centroid.lon);
-      if (dist <= radiusKm) results.push({ name, dist });
-    }
-    results.sort((a, b) => a.dist - b.dist);
-    return results.map(r => r.name);
-  };
-
   const loadGeoJson = () => {
     try {
       const filePath = path.join(__dirname, "../deutschland.geojson");
@@ -282,8 +258,8 @@ export default async function handler(req, res) {
       perp_point2_lon = p2.lon;
     }
 
-    // ── Orte entlang der Zugbahn (Rechteck) ──────────────────────────────
-    const TRACK_WIDTH_KM = 8; // halbe Breite links/rechts der Zugbahn
+    // ── Orte entlang der Zugbahn ──────────────────────────────────────────
+    const TRACK_WIDTH_KM = 8;
 
     if (lat && lon && geojson) {
       const seenNames = new Set();
@@ -316,61 +292,58 @@ export default async function handler(req, res) {
         featureCentroids.push({ name, lat: centroid.lat, lon: centroid.lon });
       }
 
-      // Prüft ob Punkt (pLat/pLon) im Rechteck eines Segments liegt
-      // Rechteck: entlang Segment-Richtung, ±TRACK_WIDTH_KM senkrecht
       const isInSegmentRect = (pLat, pLon, aLat, aLon, bLat, bLon) => {
-        // Segment-Vektor
         const segLen = haversine(aLat, aLon, bLat, bLon);
         if (segLen === 0) return haversine(pLat, pLon, aLat, aLon) <= TRACK_WIDTH_KM;
-
-        // Lokale Koordinaten: entlang (along) und quer (across) zum Segment
-        const brngAB   = bearing(aLat, aLon, bLat, bLon);
-        const brngAP   = bearing(aLat, aLon, pLat, pLon);
-        const distAP   = haversine(aLat, aLon, pLat, pLon);
+        const brngAB    = bearing(aLat, aLon, bLat, bLon);
+        const brngAP    = bearing(aLat, aLon, pLat, pLon);
+        const distAP    = haversine(aLat, aLon, pLat, pLon);
         const angleDiff = (brngAP - brngAB + 360) % 360;
         const angleRad  = angleDiff * Math.PI / 180;
-
-        const along  = distAP * Math.cos(angleRad); // Projektion auf Segment
-        const across = distAP * Math.sin(angleRad); // senkrecht zum Segment
-
-        // Im Rechteck: 0 ≤ along ≤ segLen, |across| ≤ TRACK_WIDTH_KM
+        const along     = distAP * Math.cos(angleRad);
+        const across    = distAP * Math.sin(angleRad);
         return along >= 0 && along <= segLen && Math.abs(across) <= TRACK_WIDTH_KM;
       };
 
-      // Für jedes Segment: Ankunftszeit per Projektion interpolieren
-      for (const fc of featureCentroids) {
-        let bestMs = null;
+      const addOrt = (name, ms) => {
+        if (seenNames.has(name)) return;
+        if (ms < nowMs - 2 * 60 * 1000) return;
+        seenNames.add(name);
+        const minutes_until = Math.round((ms - refDate.getTime()) / 60000);
+        const arrival_time  = new Date(ms).toLocaleTimeString("de-DE", {
+          hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin",
+        });
+        orte.push({ name, arrival_time, minutes_until });
+      };
 
+      // Schritt 1: Radius um JEDEN Trackpunkt (inkl. aktuellem Zellenpunkt lat/lon)
+      for (const p of trackPoints) {
+        for (const fc of featureCentroids) {
+          if (haversine(p.lat, p.lon, fc.lat, fc.lon) <= TRACK_WIDTH_KM) {
+            addOrt(fc.name, p.ms);
+          }
+        }
+      }
+
+      // Schritt 2: Rechteck zwischen den Segmenten (Orte zwischen den Punkten)
+      for (const fc of featureCentroids) {
+        if (seenNames.has(fc.name)) continue;
         for (let i = 0; i < trackPoints.length - 1; i++) {
           const p = trackPoints[i];
           const q = trackPoints[i + 1];
           if (q.ms < nowMs - 2 * 60 * 1000) continue;
-
           if (isInSegmentRect(fc.lat, fc.lon, p.lat, p.lon, q.lat, q.lon)) {
-            // Interpoliere Ankunftszeit anhand der Projektion
-            const brngAB  = bearing(p.lat, p.lon, q.lat, q.lon);
-            const brngAP  = bearing(p.lat, p.lon, fc.lat, fc.lon);
-            const distAP  = haversine(p.lat, p.lon, fc.lat, fc.lon);
-            const segLen  = haversine(p.lat, p.lon, q.lat, q.lon);
-            const angle   = ((brngAP - brngAB + 360) % 360) * Math.PI / 180;
-            const along   = Math.max(0, Math.min(segLen, distAP * Math.cos(angle)));
-            const t       = along / segLen;
-            bestMs = p.ms + t * (q.ms - p.ms);
+            const brngAB = bearing(p.lat, p.lon, q.lat, q.lon);
+            const brngAP = bearing(p.lat, p.lon, fc.lat, fc.lon);
+            const distAP = haversine(p.lat, p.lon, fc.lat, fc.lon);
+            const segLen = haversine(p.lat, p.lon, q.lat, q.lon);
+            const angle  = ((brngAP - brngAB + 360) % 360) * Math.PI / 180;
+            const along  = Math.max(0, Math.min(segLen, distAP * Math.cos(angle)));
+            const t      = along / segLen;
+            addOrt(fc.name, p.ms + t * (q.ms - p.ms));
             break;
           }
         }
-
-        if (bestMs === null) continue;
-        if (seenNames.has(fc.name)) continue;
-        seenNames.add(fc.name);
-
-        const minutes_until = Math.round((bestMs - refDate.getTime()) / 60000);
-        const arrival_time  = new Date(bestMs).toLocaleTimeString("de-DE", {
-          hour:     "2-digit",
-          minute:   "2-digit",
-          timeZone: "Europe/Berlin",
-        });
-        orte.push({ name: fc.name, arrival_time, minutes_until });
       }
 
       orte.sort((a, b) => (a.minutes_until ?? 0) - (b.minutes_until ?? 0));
