@@ -243,6 +243,32 @@ export default async function handler(req, res) {
     const light          = block(inner, "lightning") ?? "";
     const lightning_rate = int(light, "lightning_rate") ?? 0;
 
+    // ── Hymec / Hagel ─────────────────────────────────────────────────────
+    const hymec                  = block(inner, "hymec") ?? "";
+    const area_hail              = num(hymec, "area_hail")              ?? 0;
+    const area_large_hail        = num(hymec, "area_large_hail")        ?? 0;
+    const echo_top_hail          = noFill(num(hymec, "echo_top_hail"));
+    const echo_top_large_hail    = noFill(num(hymec, "echo_top_large_hail"));
+    const echo_bottom_hail       = noFill(num(hymec, "echo_bottom_hail"));
+    const echo_bottom_large_hail = noFill(num(hymec, "echo_bottom_large_hail"));
+    const hail_flag              = int(inner, "hail_flag");
+
+    let hail_cm = null;
+    if (hail_flag !== null && hail_flag >= 1) {
+      if (hail_flag >= 3 && echo_top_large_hail !== null && echo_bottom_large_hail !== null) {
+        const thickness = (echo_top_large_hail - echo_bottom_large_hail) / 1000;
+        hail_cm = Math.round((2.0 + thickness * 0.8 + area_large_hail * 0.05) * 10) / 10;
+      } else if (hail_flag >= 2 && echo_top_hail !== null && echo_bottom_hail !== null) {
+        const thickness = (echo_top_hail - echo_bottom_hail) / 1000;
+        hail_cm = Math.round((1.0 + thickness * 0.4 + area_hail * 0.02) * 10) / 10;
+      } else {
+        hail_cm = Math.round((0.5 + area_hail * 0.01) * 10) / 10;
+      }
+      if (hail_flag === 1) hail_cm = Math.min(hail_cm, 1.9);
+      if (hail_flag === 2) hail_cm = Math.min(hail_cm, 3.9);
+      if (hail_flag === 3) hail_cm = Math.max(hail_cm, 2.0);
+    }
+
     // tracking
     const track      = block(inner, "tracking") ?? "";
     const cell_speed = num(track, "cell_speed");
@@ -380,6 +406,8 @@ export default async function handler(req, res) {
       cell_speed,
       cell_based_vil_density: vil_density,
       dbz_max:                max_dbz,
+      hail_flag,
+      hail_cm,
       lightning_rate,
       wind_gust:              max_wind_gust,
       heavy_rain_rate:        heavy_rain_pot,
