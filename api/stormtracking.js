@@ -2,6 +2,7 @@
 import fs   from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import * as turf from "@turf/turf";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -12,6 +13,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ── XML-Hilfsfunktionen ────────────────────────────────────────────────
   const buildFilename = (offsetMin) => {
     const t   = new Date(Date.now() - offsetMin * 60 * 1000);
     const pad = (n) => String(n).padStart(2, "0");
@@ -54,6 +56,7 @@ export default async function handler(req, res) {
   };
   const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
 
+  // ── Geo-Hilfsfunktionen (für bearing/destPoint, die weiterhin gebraucht werden) ──
   const toRad = (d) => d * Math.PI / 180;
   const toDeg = (r) => r * 180 / Math.PI;
 
@@ -159,6 +162,144 @@ export default async function handler(req, res) {
     throw new Error("Keine aktuelle KONRAD3D-Datei verfügbar");
   };
 
+  // ── getCityName: Name aus GeoJSON-Properties ──────────────────────────
+  const getCityName = (properties) =>
+    properties?.name || properties?.NAME || properties?.GEN ||
+    properties?.name_de || properties?.NAMELSAD || null;
+
+  // ── Turf-basierte Ortserkennung entlang des Forecast-Tracks ──────────
+  /**
+   * Erzeugt einen Buffer-Polygon entlang des gesamten Tracks (aktuell + alle
+   * Forecast-Punkte), prüft dann per turf.booleanIntersects / booleanPointInPolygon,
+   * welche Features des GeoJSON darin liegen – exakt wie der Web-Worker.
+   *
+   * Gibt eine sortierte Liste von { name, arrival_time, minutes_until } zurück.
+   */
+  const findOrteAlongTrack = (trackPoints, geojson, ref_time) => {
+    if (!geojson?.features || trackPoints.length === 0) return [];
+
+    const BUFFER_KM = 2.5;
+    const nowMs     = Date.now();
+    const refMs     = new Date(ref_time).getTime();
+
+    // ── 1. Track als Turf-MultiLineString (lon/lat!) ──────────────────
+    // Wir brauchen mindestens 2 Punkte für eine Linie.
+    // Falls nur ein Punkt: kleinen Kreis-Buffer erzeugen.
+    let trackBuffer;
+    if (trackPoints.length === 1) {
+      trackBuffer = turf.buffer(
+        turf.point([trackPoints[0].lon, trackPoints[0].lat]),
+        BUFFER_KM,
+        { units: "kilometers" }
+      );
+    } else {
+      // MultiLineString aus aufeinanderfolgenden Segmenten
+      const lines = [];
+      for (let i = 0; i < trackPoints.length - 1; i++) {
+        lines.push([
+          [trackPoints[i].lon,     trackPoints[i].lat],
+          [trackPoints[i + 1].lon, trackPoints[i + 1].lat],
+        ]);
+      }
+      const multiLine = turf.multiLineString(lines);
+      trackBuffer = turf.buffer(multiLine, BUFFER_KM, { units: "kilometers" });
+    }
+
+    const bufferBbox = turf.bbox(trackBuffer);
+
+    // ── 2. BBox-Quick-Check, dann exakter Intersect-Test ─────────────
+    const orte   = [];
+    const seen   = new Set();
+
+    for (const f of geojson.features) {
+      const name = getCityName(f.properties);
+      if (!name || seen.has(name)) continue;
+
+      // Schneller BBox-Vorfilter (wie im Worker)
+      const featBbox = turf.bbox(f);
+      if (
+        featBbox[2] < bufferBbox[0] ||
+        featBbox[0] > bufferBbox[2] ||
+        featBbox[3] < bufferBbox[1] ||
+        featBbox[1] > bufferBbox[3]
+      ) continue;
+
+      // Exakter Test
+      let isAffected = false;
+      if (f.geometry.type === "Point") {
+        isAffected = turf.booleanPointInPolygon(
+          turf.point(f.geometry.coordinates),
+          trackBuffer
+        );
+      } else {
+        isAffected = turf.booleanIntersects(f, trackBuffer);
+      }
+      if (!isAffected) continue;
+
+      // ── 3. Ankunftszeit interpolieren ─────────────────────────────
+      // Suche den nächstliegenden Trackpunkt → Arrival-Zeit
+      let bestMs   = trackPoints[0].ms;
+      let bestDist = Infinity;
+
+      // Centroid des Features für die Distanzmessung
+      let centroidCoord;
+      try {
+        const c = turf.centroid(f);
+        centroidCoord = c.geometry.coordinates; // [lon, lat]
+      } catch {
+        // Fallback: Feature-BBox-Mitte
+        centroidCoord = [
+          (featBbox[0] + featBbox[2]) / 2,
+          (featBbox[1] + featBbox[3]) / 2,
+        ];
+      }
+
+      // Interpolation entlang der Segmente (wie im Worker-Ansatz, aber mit ms)
+      for (let i = 0; i < trackPoints.length - 1; i++) {
+        const p = trackPoints[i];
+        const q = trackPoints[i + 1];
+        // Skip bereits vergangene Segmente (> 2 min Toleranz)
+        if (q.ms < nowMs - 2 * 60 * 1000) continue;
+
+        const segLen = haversine(p.lat, p.lon, q.lat, q.lon);
+        if (segLen === 0) {
+          const d = haversine(centroidCoord[1], centroidCoord[0], p.lat, p.lon);
+          if (d < bestDist) { bestDist = d; bestMs = p.ms; }
+          continue;
+        }
+        const brngAB  = bearing(p.lat, p.lon, q.lat, q.lon);
+        const brngAP  = bearing(p.lat, p.lon, centroidCoord[1], centroidCoord[0]);
+        const distAP  = haversine(p.lat, p.lon, centroidCoord[1], centroidCoord[0]);
+        const angle   = ((brngAP - brngAB + 360) % 360) * Math.PI / 180;
+        const along   = Math.max(0, Math.min(segLen, distAP * Math.cos(angle)));
+        const t       = along / segLen;
+        const interpMs = p.ms + t * (q.ms - p.ms);
+        // "Senkrechter" Abstand (Abstand von der Linie)
+        const across  = Math.abs(distAP * Math.sin(angle));
+        if (across < bestDist) { bestDist = across; bestMs = interpMs; }
+      }
+
+      // Letzten Punkt ebenfalls prüfen
+      const last = trackPoints[trackPoints.length - 1];
+      const dLast = haversine(centroidCoord[1], centroidCoord[0], last.lat, last.lon);
+      if (dLast < bestDist) { bestMs = last.ms; }
+
+      // Bereits vergangene Ankünfte überspringen (> 2 min)
+      if (bestMs < nowMs - 2 * 60 * 1000) continue;
+
+      seen.add(name);
+      const minutes_until = Math.round((bestMs - refMs) / 60000);
+      const arrival_time  = new Date(bestMs).toLocaleTimeString("de-DE", {
+        hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin",
+      });
+      orte.push({ name, arrival_time, minutes_until });
+    }
+
+    orte.sort((a, b) => (a.minutes_until ?? 0) - (b.minutes_until ?? 0));
+    return orte;
+  };
+
+  // ── Feature parsen ────────────────────────────────────────────────────
   const parseFeature = (featureFull, geojson, refTime) => {
     const featureTag = featureFull.match(/<feature([^>]*)>/)?.[0] ?? "";
     const inner      = block(featureFull, "feature") ?? featureFull;
@@ -240,7 +381,6 @@ export default async function handler(req, res) {
     let lat3 = null, lon3 = null;
     let perp_point1_lat = null, perp_point1_lon = null;
     let perp_point2_lat = null, perp_point2_lon = null;
-    let orte = [];
 
     if (lat && lon && forecast_lat && forecast_lon) {
       const dLat = forecast_lat - lat;
@@ -258,96 +398,24 @@ export default async function handler(req, res) {
       perp_point2_lon = p2.lon;
     }
 
-    // ── Orte entlang der Zugbahn ──────────────────────────────────────────
-    const TRACK_WIDTH_KM = 8;
+    // ── Turf-basierte Ortserkennung ────────────────────────────────────
+    // TrackPoints: aktueller Zellpunkt + alle Forecast-Punkte (mit Zeitstempel)
+    const refMs = new Date(ref_time).getTime();
+    const trackPoints = [];
 
-    if (lat && lon && geojson) {
-      const seenNames = new Set();
-      const refDate   = new Date(ref_time);
-      const nowMs     = Date.now();
-
-      const trackPoints = [
-        { lat, lon, ms: refDate.getTime() },
-        ...allForecasts
-          .filter(f => f.forecast_time)
-          .map(f => ({ lat: f.lat, lon: f.lon, ms: new Date(f.forecast_time).getTime() })),
-      ];
-
-      // Einmalig alle Feature-Centroids vorberechnen
-      const featureCentroids = [];
-      for (const f of geojson.features) {
-        const name = f.properties?.name || f.properties?.NAME ||
-                     f.properties?.GEN  || f.properties?.name_de || null;
-        if (!name) continue;
-        const geom = f.geometry;
-        const getCentroid = (coords) => {
-          let sumLon = 0, sumLat = 0;
-          for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
-          return { lat: sumLat / coords.length, lon: sumLon / coords.length };
-        };
-        let centroid = null;
-        if (geom.type === "Polygon")           centroid = getCentroid(geom.coordinates[0]);
-        else if (geom.type === "MultiPolygon") centroid = getCentroid(geom.coordinates[0][0]);
-        if (!centroid) continue;
-        featureCentroids.push({ name, lat: centroid.lat, lon: centroid.lon });
-      }
-
-      const isInSegmentRect = (pLat, pLon, aLat, aLon, bLat, bLon) => {
-        const segLen = haversine(aLat, aLon, bLat, bLon);
-        if (segLen === 0) return haversine(pLat, pLon, aLat, aLon) <= TRACK_WIDTH_KM;
-        const brngAB    = bearing(aLat, aLon, bLat, bLon);
-        const brngAP    = bearing(aLat, aLon, pLat, pLon);
-        const distAP    = haversine(aLat, aLon, pLat, pLon);
-        const angleDiff = (brngAP - brngAB + 360) % 360;
-        const angleRad  = angleDiff * Math.PI / 180;
-        const along     = distAP * Math.cos(angleRad);
-        const across    = distAP * Math.sin(angleRad);
-        return along >= 0 && along <= segLen && Math.abs(across) <= TRACK_WIDTH_KM;
-      };
-
-      const addOrt = (name, ms) => {
-        if (seenNames.has(name)) return;
-        if (ms < nowMs - 2 * 60 * 1000) return;
-        seenNames.add(name);
-        const minutes_until = Math.round((ms - refDate.getTime()) / 60000);
-        const arrival_time  = new Date(ms).toLocaleTimeString("de-DE", {
-          hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin",
-        });
-        orte.push({ name, arrival_time, minutes_until });
-      };
-
-      // Schritt 1: Radius um JEDEN Trackpunkt (inkl. aktuellem Zellenpunkt lat/lon)
-      for (const p of trackPoints) {
-        for (const fc of featureCentroids) {
-          if (haversine(p.lat, p.lon, fc.lat, fc.lon) <= TRACK_WIDTH_KM) {
-            addOrt(fc.name, p.ms);
-          }
-        }
-      }
-
-      // Schritt 2: Rechteck zwischen den Segmenten (Orte zwischen den Punkten)
-      for (const fc of featureCentroids) {
-        if (seenNames.has(fc.name)) continue;
-        for (let i = 0; i < trackPoints.length - 1; i++) {
-          const p = trackPoints[i];
-          const q = trackPoints[i + 1];
-          if (q.ms < nowMs - 2 * 60 * 1000) continue;
-          if (isInSegmentRect(fc.lat, fc.lon, p.lat, p.lon, q.lat, q.lon)) {
-            const brngAB = bearing(p.lat, p.lon, q.lat, q.lon);
-            const brngAP = bearing(p.lat, p.lon, fc.lat, fc.lon);
-            const distAP = haversine(p.lat, p.lon, fc.lat, fc.lon);
-            const segLen = haversine(p.lat, p.lon, q.lat, q.lon);
-            const angle  = ((brngAP - brngAB + 360) % 360) * Math.PI / 180;
-            const along  = Math.max(0, Math.min(segLen, distAP * Math.cos(angle)));
-            const t      = along / segLen;
-            addOrt(fc.name, p.ms + t * (q.ms - p.ms));
-            break;
-          }
-        }
-      }
-
-      orte.sort((a, b) => (a.minutes_until ?? 0) - (b.minutes_until ?? 0));
+    if (lat && lon) {
+      trackPoints.push({ lat, lon, ms: refMs });
     }
+
+    for (const f of allForecasts) {
+      if (!f.forecast_time) continue;
+      const ms = new Date(f.forecast_time).getTime();
+      if (!isNaN(ms)) trackPoints.push({ lat: f.lat, lon: f.lon, ms });
+    }
+
+    const orte = (trackPoints.length > 0 && geojson)
+      ? findOrteAlongTrack(trackPoints, geojson, ref_time)
+      : [];
 
     const position = (lat && lon && geojson) ? findNearestPlace(lat, lon, geojson) : null;
 
@@ -393,6 +461,7 @@ export default async function handler(req, res) {
     };
   };
 
+  // ── Handler ───────────────────────────────────────────────────────────
   try {
     const [{ xml, filename }, geojson] = await Promise.all([
       fetchXml(),
