@@ -56,7 +56,7 @@ export default async function handler(req, res) {
   };
   const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
 
-  // ── Geo-Hilfsfunktionen (für bearing/destPoint, die weiterhin gebraucht werden) ──
+  // ── Geo-Hilfsfunktionen ───────────────────────────────────────────────
   const toRad = (d) => d * Math.PI / 180;
   const toDeg = (r) => r * 180 / Math.PI;
 
@@ -162,19 +162,12 @@ export default async function handler(req, res) {
     throw new Error("Keine aktuelle KONRAD3D-Datei verfügbar");
   };
 
-  // ── getCityName: Name aus GeoJSON-Properties ──────────────────────────
+  // ── getCityName ───────────────────────────────────────────────────────
   const getCityName = (properties) =>
     properties?.name || properties?.NAME || properties?.GEN ||
     properties?.name_de || properties?.NAMELSAD || null;
 
   // ── Turf-basierte Ortserkennung entlang des Forecast-Tracks ──────────
-  /**
-   * Erzeugt einen Buffer-Polygon entlang des gesamten Tracks (aktuell + alle
-   * Forecast-Punkte), prüft dann per turf.booleanIntersects / booleanPointInPolygon,
-   * welche Features des GeoJSON darin liegen – exakt wie der Web-Worker.
-   *
-   * Gibt eine sortierte Liste von { name, arrival_time, minutes_until } zurück.
-   */
   const findOrteAlongTrack = (trackPoints, geojson, ref_time) => {
     if (!geojson?.features || trackPoints.length === 0) return [];
 
@@ -182,9 +175,6 @@ export default async function handler(req, res) {
     const nowMs     = Date.now();
     const refMs     = new Date(ref_time).getTime();
 
-    // ── 1. Track als Turf-MultiLineString (lon/lat!) ──────────────────
-    // Wir brauchen mindestens 2 Punkte für eine Linie.
-    // Falls nur ein Punkt: kleinen Kreis-Buffer erzeugen.
     let trackBuffer;
     if (trackPoints.length === 1) {
       trackBuffer = turf.buffer(
@@ -193,7 +183,6 @@ export default async function handler(req, res) {
         { units: "kilometers" }
       );
     } else {
-      // MultiLineString aus aufeinanderfolgenden Segmenten
       const lines = [];
       for (let i = 0; i < trackPoints.length - 1; i++) {
         lines.push([
@@ -206,16 +195,13 @@ export default async function handler(req, res) {
     }
 
     const bufferBbox = turf.bbox(trackBuffer);
-
-    // ── 2. BBox-Quick-Check, dann exakter Intersect-Test ─────────────
-    const orte   = [];
-    const seen   = new Set();
+    const orte       = [];
+    const seen       = new Set();
 
     for (const f of geojson.features) {
       const name = getCityName(f.properties);
       if (!name || seen.has(name)) continue;
 
-      // Schneller BBox-Vorfilter (wie im Worker)
       const featBbox = turf.bbox(f);
       if (
         featBbox[2] < bufferBbox[0] ||
@@ -224,7 +210,6 @@ export default async function handler(req, res) {
         featBbox[1] > bufferBbox[3]
       ) continue;
 
-      // Exakter Test
       let isAffected = false;
       if (f.geometry.type === "Point") {
         isAffected = turf.booleanPointInPolygon(
@@ -236,29 +221,23 @@ export default async function handler(req, res) {
       }
       if (!isAffected) continue;
 
-      // ── 3. Ankunftszeit interpolieren ─────────────────────────────
-      // Suche den nächstliegenden Trackpunkt → Arrival-Zeit
       let bestMs   = trackPoints[0].ms;
       let bestDist = Infinity;
 
-      // Centroid des Features für die Distanzmessung
       let centroidCoord;
       try {
         const c = turf.centroid(f);
-        centroidCoord = c.geometry.coordinates; // [lon, lat]
+        centroidCoord = c.geometry.coordinates;
       } catch {
-        // Fallback: Feature-BBox-Mitte
         centroidCoord = [
           (featBbox[0] + featBbox[2]) / 2,
           (featBbox[1] + featBbox[3]) / 2,
         ];
       }
 
-      // Interpolation entlang der Segmente (wie im Worker-Ansatz, aber mit ms)
       for (let i = 0; i < trackPoints.length - 1; i++) {
         const p = trackPoints[i];
         const q = trackPoints[i + 1];
-        // Skip bereits vergangene Segmente (> 2 min Toleranz)
         if (q.ms < nowMs - 2 * 60 * 1000) continue;
 
         const segLen = haversine(p.lat, p.lon, q.lat, q.lon);
@@ -267,24 +246,21 @@ export default async function handler(req, res) {
           if (d < bestDist) { bestDist = d; bestMs = p.ms; }
           continue;
         }
-        const brngAB  = bearing(p.lat, p.lon, q.lat, q.lon);
-        const brngAP  = bearing(p.lat, p.lon, centroidCoord[1], centroidCoord[0]);
-        const distAP  = haversine(p.lat, p.lon, centroidCoord[1], centroidCoord[0]);
-        const angle   = ((brngAP - brngAB + 360) % 360) * Math.PI / 180;
-        const along   = Math.max(0, Math.min(segLen, distAP * Math.cos(angle)));
-        const t       = along / segLen;
+        const brngAB   = bearing(p.lat, p.lon, q.lat, q.lon);
+        const brngAP   = bearing(p.lat, p.lon, centroidCoord[1], centroidCoord[0]);
+        const distAP   = haversine(p.lat, p.lon, centroidCoord[1], centroidCoord[0]);
+        const angle    = ((brngAP - brngAB + 360) % 360) * Math.PI / 180;
+        const along    = Math.max(0, Math.min(segLen, distAP * Math.cos(angle)));
+        const t        = along / segLen;
         const interpMs = p.ms + t * (q.ms - p.ms);
-        // "Senkrechter" Abstand (Abstand von der Linie)
-        const across  = Math.abs(distAP * Math.sin(angle));
+        const across   = Math.abs(distAP * Math.sin(angle));
         if (across < bestDist) { bestDist = across; bestMs = interpMs; }
       }
 
-      // Letzten Punkt ebenfalls prüfen
-      const last = trackPoints[trackPoints.length - 1];
+      const last  = trackPoints[trackPoints.length - 1];
       const dLast = haversine(centroidCoord[1], centroidCoord[0], last.lat, last.lon);
       if (dLast < bestDist) { bestMs = last.ms; }
 
-      // Bereits vergangene Ankünfte überspringen (> 2 min)
       if (bestMs < nowMs - 2 * 60 * 1000) continue;
 
       seen.add(name);
@@ -342,42 +318,69 @@ export default async function handler(req, res) {
     const echo_bottom_large_hail = noFill(num(hymec, "echo_bottom_large_hail"));
     const hail_flag              = int(inner, "hail_flag");
 
+    // ── Hagelberechnung ───────────────────────────────────────────────
     let hail_cm = null;
 
-  if (hail_flag !== null && hail_flag >= 1) {
-
-    if (hail_flag === 1) {
-      const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
-        ? (echo_top_hail - echo_bottom_hail) / 1000
-        : 0;
-      hail_cm = 0.5 + thickness * 0.1 + area_hail * 0.001;
-      hail_cm = Math.min(hail_cm, 1.9);
-
-    } else if (hail_flag === 2) {
-      const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
-        ? (echo_top_hail - echo_bottom_hail) / 1000
-        : 0;
-      hail_cm = 1.0 + thickness * 0.2 + area_hail * 0.003;
-      hail_cm = Math.max(hail_cm, 1.0);
-      hail_cm = Math.min(hail_cm, 3.9);
-
-    } else if (hail_flag === 3) {
-      const thickness = (echo_top_large_hail !== null && echo_bottom_large_hail !== null)
-        ? (echo_top_large_hail - echo_bottom_large_hail) / 1000
-        : (echo_top_hail !== null && echo_bottom_hail !== null)
+    if (hail_flag !== null && hail_flag >= 1) {
+      if (hail_flag === 1) {
+        const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
           ? (echo_top_hail - echo_bottom_hail) / 1000
           : 0;
-      const area = area_large_hail > 0 ? area_large_hail : area_hail;
-      hail_cm = 2.0 + thickness * 0.3 + area * 0.005;
-      hail_cm = Math.max(hail_cm, 2.0);
+        hail_cm = 0.5 + thickness * 0.1 + area_hail * 0.001;
+        hail_cm = Math.min(hail_cm, 1.9);
+
+      } else if (hail_flag === 2) {
+        const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
+          ? (echo_top_hail - echo_bottom_hail) / 1000
+          : 0;
+        hail_cm = 1.0 + thickness * 0.2 + area_hail * 0.003;
+        hail_cm = Math.max(hail_cm, 1.0);
+        hail_cm = Math.min(hail_cm, 3.9);
+
+      } else if (hail_flag === 3) {
+        const thickness = (echo_top_large_hail !== null && echo_bottom_large_hail !== null)
+          ? (echo_top_large_hail - echo_bottom_large_hail) / 1000
+          : (echo_top_hail !== null && echo_bottom_hail !== null)
+            ? (echo_top_hail - echo_bottom_hail) / 1000
+            : 0;
+        const area = area_large_hail > 0 ? area_large_hail : area_hail;
+        hail_cm = 2.0 + thickness * 0.3 + area * 0.005;
+        hail_cm = Math.max(hail_cm, 2.0);
+      }
+
+      hail_cm = Math.round(hail_cm * 10) / 10;
     }
 
-    hail_cm = Math.round(hail_cm * 10) / 10;
-  }
+    // ── Tracking ──────────────────────────────────────────────────────
+    const trackBlock = block(inner, "tracking") ?? "";
+    const cell_speed = num(trackBlock, "cell_speed");
 
-    const track      = block(inner, "tracking") ?? "";
-    const cell_speed = num(track, "cell_speed");
+    // severity_trend & mass_trend: erst im tracking-Block, dann direkt in inner
+    const severity_trend = num(trackBlock, "severity_trend") ?? num(inner, "severity_trend");
+    const mass_trend     = num(trackBlock, "mass_trend")     ?? num(inner, "mass_trend");
 
+    // ── Zellenentwicklung (radar-style) ───────────────────────────────
+    let development = null;
+    if (area_growth_rate !== null || severity_trend !== null || mass_trend !== null) {
+      let pos = 0, neg = 0;
+      if (severity_trend !== null) {
+        if (severity_trend >  0.5) pos++;
+        else if (severity_trend < -0.5) neg++;
+      }
+      if (area_growth_rate !== null) {
+        if (area_growth_rate >  0.5) pos++;
+        else if (area_growth_rate < -0.5) neg++;
+      }
+      if (mass_trend !== null) {
+        if (mass_trend >  0.5) pos++;
+        else if (mass_trend < -0.5) neg++;
+      }
+      if      (pos >= 2) development = { status: "wachsend",       color: "red"    };
+      else if (neg >= 2) development = { status: "schrumpfend",    color: "green"  };
+      else               development = { status: "gleichbleibend", color: "orange" };
+    }
+
+    // ── Forecast-Punkte ───────────────────────────────────────────────
     const forecastBlock     = block(inner, "forecast") ?? "";
     const centroidForecasts = block(forecastBlock, "centroid_forecasts") ?? "";
     const cfBlocks          = allBlocks(centroidForecasts, "centroid_forecast");
@@ -415,15 +418,11 @@ export default async function handler(req, res) {
       perp_point2_lon = p2.lon;
     }
 
-    // ── Turf-basierte Ortserkennung ────────────────────────────────────
-    // TrackPoints: aktueller Zellpunkt + alle Forecast-Punkte (mit Zeitstempel)
-    const refMs = new Date(ref_time).getTime();
+    // ── Turf-basierte Ortserkennung ───────────────────────────────────
+    const refMs      = new Date(ref_time).getTime();
     const trackPoints = [];
 
-    if (lat && lon) {
-      trackPoints.push({ lat, lon, ms: refMs });
-    }
-
+    if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
     for (const f of allForecasts) {
       if (!f.forecast_time) continue;
       const ms = new Date(f.forecast_time).getTime();
@@ -452,6 +451,10 @@ export default async function handler(req, res) {
       wind_gust:              max_wind_gust,
       heavy_rain_rate:        heavy_rain_pot,
       severity,
+      severity_trend,
+      mass_trend,
+      area_growth_rate,
+      development,
       forecast_latitude:      forecast_lat,
       forecast_longitude:     forecast_lon,
       perp_point1_lat,
@@ -463,7 +466,6 @@ export default async function handler(req, res) {
       echo_top_msl,
       echo_bottom_msl,
       covered_area,
-      area_growth_rate,
       orte,
       centroid_forecasts: allForecasts
         .map(f => ({
