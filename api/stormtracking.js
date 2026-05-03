@@ -397,16 +397,18 @@ export default async function handler(req, res) {
       covered_area,
       area_growth_rate,
       orte,
-      centroid_forecasts: allForecasts.map(f => ({
-      forecast_time: f.forecast_time,
-      latitude:      f.lat,
-      longitude:     f.lon,
-      minutes_from_ref: f.forecast_time
-        ? Math.round((new Date(f.forecast_time) - new Date(ref_time)) / 60000)
-        : null,
-    })),
+      centroid_forecasts: allForecasts
+        .map(f => ({
+          forecast_time:    f.forecast_time,
+          latitude:         f.lat,
+          longitude:        f.lon,
+          minutes_from_ref: f.forecast_time
+            ? Math.round((new Date(f.forecast_time) - new Date(ref_time)) / 60000)
+            : null,
+        }))
+        .filter(f => f.minutes_from_ref !== null && f.minutes_from_ref % 10 === 0),
+    };
   };
-};
 
   // ── Hauptlogik ────────────────────────────────────────────────────────
   try {
