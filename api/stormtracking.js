@@ -211,14 +211,31 @@ export default async function handler(req, res) {
       ) continue;
 
       let isAffected = false;
+
       if (f.geometry.type === "Point") {
-        isAffected = turf.booleanPointInPolygon(
-          turf.point(f.geometry.coordinates),
-          trackBuffer
-        );
+        const pt = turf.point(f.geometry.coordinates);
+
+        // 👉 Ortstyp bestimmen
+        const place = f.properties?.place;
+
+        // 👉 Radius festlegen
+        let radiusKm = 1.0; // Default
+
+        if (place === "village") radiusKm = 1.5;
+        else if (place === "town") radiusKm = 2.0;
+        else if (place === "city") radiusKm = 3.0;
+
+        // 👉 Kreis um den Punkt
+        const bufferedPoint = turf.buffer(pt, radiusKm, { units: "kilometers" });
+
+        // 👉 Schnitt prüfen statt Punkt-in-Polygon
+        isAffected = turf.booleanIntersects(bufferedPoint, trackBuffer);
+
       } else {
+        // Flächen bleiben unverändert
         isAffected = turf.booleanIntersects(f, trackBuffer);
       }
+
       if (!isAffected) continue;
 
       let bestMs   = trackPoints[0].ms;
