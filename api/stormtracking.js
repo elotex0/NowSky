@@ -354,7 +354,6 @@ export default async function handler(req, res) {
     if (!geojson?.features || trackPoints.length === 0) return [];
 
     const BUFFER_KM = 2.5;
-    const nowMs     = Date.now();
     const refMs     = new Date(ref_time).getTime();
 
     let trackBuffer;
@@ -426,7 +425,6 @@ export default async function handler(req, res) {
       for (let i = 0; i < trackPoints.length - 1; i++) {
         const p = trackPoints[i];
         const q = trackPoints[i + 1];
-        if (q.ms < nowMs - 2 * 60 * 1000) continue;
 
         const segLen = haversine(p.lat, p.lon, q.lat, q.lon);
         if (segLen === 0) {
@@ -448,8 +446,6 @@ export default async function handler(req, res) {
       const last  = trackPoints[trackPoints.length - 1];
       const dLast = haversine(centroidCoord[1], centroidCoord[0], last.lat, last.lon);
       if (dLast < bestDist) { bestMs = last.ms; }
-
-      if (bestMs < nowMs - 2 * 60 * 1000) continue;
 
       seen.add(name);
       const minutes_until = Math.round((bestMs - refMs) / 60000);
