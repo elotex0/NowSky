@@ -96,7 +96,7 @@ export default async function handler(req, res) {
       },
       {
         dateStr: "20260505", timeStr: "1530", event_id: 3,
-        latitude: 51.312500, longitude: 12.437500,
+        latitude: 51.322500, longitude: 12.457500,
         intensity: 2, mesocyclone_top: 5.200000, mesocyclone_base: 1.400000,
         max_dbz: 47.3, base_speed: 6.210000,
       },
