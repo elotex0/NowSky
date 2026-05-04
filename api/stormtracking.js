@@ -90,7 +90,7 @@ export default async function handler(req, res) {
     const TEST_MESO_CELLS = [
       {
         dateStr: "20260505", timeStr: "1530", event_id: 1,
-        latitude: 53.286025, longitude: 6.941067,
+        latitude: 53.289025, longitude: 6.941067,
         intensity: 1, mesocyclone_top: 3.637998, mesocyclone_base: 2.519183,
         max_dbz: 59.7, base_speed: 8.619404,
       },
