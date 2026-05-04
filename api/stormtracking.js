@@ -89,13 +89,9 @@ export default async function handler(req, res) {
   if (req.url?.includes("test=meso") || req.query?.test === "meso") {
     try {
       const meso_cells = await fetchMesoCells();
-      return res.status(200).json({
-        test: "mesocyclones",
-        count: meso_cells.length,
-        meso_cells,
-      });
+      return res.status(200).json({ meso_cells });
     } catch (err) {
-      return res.status(502).json({ test: "mesocyclones", error: err.message });
+      return res.status(502).json({ error: err.message });
     }
   }
 
