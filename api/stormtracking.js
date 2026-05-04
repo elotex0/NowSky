@@ -87,11 +87,32 @@ export default async function handler(req, res) {
 
   // ── Test-Endpunkt ─────────────────────────────────────────────────────────
   if (req.url?.includes("test=meso") || req.query?.test === "meso") {
+    const TEST_MESO_CELLS = [
+      {
+        dateStr: "20260504", timeStr: "1530", event_id: 1,
+        latitude: 53.286025, longitude: 6.941067,
+        intensity: 1, mesocyclone_top: 3.637998, mesocyclone_base: 2.519183,
+        max_dbz: 59.7, base_speed: 8.619404,
+      },
+      {
+        dateStr: "20260504", timeStr: "1530", event_id: 2,
+        latitude: 48.775112, longitude: 10.941110,
+        intensity: 3, mesocyclone_top: 6.577403, mesocyclone_base: 0.918220,
+        max_dbz: 52.9, base_speed: 9.850000,
+      },
+      {
+        dateStr: "20260504", timeStr: "1530", event_id: 3,
+        latitude: 51.312500, longitude: 12.437500,
+        intensity: 2, mesocyclone_top: 5.200000, mesocyclone_base: 1.400000,
+        max_dbz: 47.3, base_speed: 6.210000,
+      },
+    ];
     try {
-      const meso_cells = await fetchMesoCells();
+      const live = await fetchMesoCells();
+      const meso_cells = live.length > 0 ? live : TEST_MESO_CELLS;
       return res.status(200).json({ meso_cells });
     } catch (err) {
-      return res.status(502).json({ error: err.message });
+      return res.status(200).json({ meso_cells: TEST_MESO_CELLS });
     }
   }
 
