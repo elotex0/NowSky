@@ -7,11 +7,97 @@ import * as turf from "@turf/turf";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
+// ── Mesozyklonen-Parser ───────────────────────────────────────────────────────
+const parseMesoCells = (xml) => {
+  const text = (xml, tag) => {
+    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
+    return m ? m[1].trim() : null;
+  };
+  const num = (xml, tag) => {
+    const v = text(xml, tag);
+    return v !== null && v !== "" && !isNaN(v) ? parseFloat(v) : null;
+  };
+
+  // Referenzzeit aus dem Root-Element oder dem ersten Event
+  const refTimeMatch =
+    xml.match(/<time[^>]*time-coordinate="UTC"[^>]*>([^<]+)<\/time>/) ||
+    xml.match(/<time[^>]*>([^<]+)<\/time>/);
+  const refTime = refTimeMatch ? refTimeMatch[1].trim() : null;
+
+  const dtMatch = refTime?.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):?(\d{2})/);
+  const dateStr = dtMatch ? `${dtMatch[1]}${dtMatch[2]}${dtMatch[3]}` : "";
+  const timeStr = dtMatch ? `${dtMatch[4]}${dtMatch[5]}`             : "";
+
+  // Alle <event>-Blöcke
+  const eventRe = /<event\b([^>]*)>([\s\S]*?)<\/event>/g;
+  const cells   = [];
+  let m;
+
+  while ((m = eventRe.exec(xml)) !== null) {
+    const attrs = m[1];
+    const inner = m[2];
+
+    const idMatch = attrs.match(/ID="([^"]*)"/);
+    const event_id = idMatch ? parseInt(idMatch[1]) : null;
+
+    const latitude  = num(inner, "latitude");
+    const longitude = num(inner, "longitude");
+    const intensity = (() => {
+      const v = text(inner, "meso_intensity");
+      return v !== null ? parseInt(v) : null;
+    })();
+    const mesocyclone_top  = num(inner, "mesocyclone_top");
+    const mesocyclone_base = num(inner, "mesocyclone_base");
+    const max_dbz          = num(inner, "max_dbz");
+    const base_speed       = num(inner, "mesocyclone_velocity_rotational_max_closest_to_ground");
+
+    cells.push({
+      dateStr,
+      timeStr,
+      event_id,
+      latitude,
+      longitude,
+      intensity,
+      mesocyclone_top,
+      mesocyclone_base,
+      max_dbz,
+      base_speed,
+    });
+  }
+
+  return cells;
+};
+
+// ── Mesozyklonen-Fetch ────────────────────────────────────────────────────────
+const fetchMesoCells = async () => {
+  const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_latest.xml";
+  const r   = await fetch(url, {
+    headers: { "User-Agent": "konrad3d-api/1.0" },
+    signal:  AbortSignal.timeout(12000),
+  });
+  if (!r.ok) throw new Error(`Mesozyklonen-Fetch fehlgeschlagen: HTTP ${r.status}`);
+  return parseMesoCells(await r.text());
+};
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  // ── Test-Endpunkt ─────────────────────────────────────────────────────────
+  if (req.url?.includes("test=meso") || req.query?.test === "meso") {
+    try {
+      const meso_cells = await fetchMesoCells();
+      return res.status(200).json({
+        test: "mesocyclones",
+        count: meso_cells.length,
+        meso_cells,
+      });
+    } catch (err) {
+      return res.status(502).json({ test: "mesocyclones", error: err.message });
+    }
+  }
 
   // ── XML-Hilfsfunktionen ────────────────────────────────────────────────
   const buildFilename = (offsetMin) => {
@@ -213,26 +299,15 @@ export default async function handler(req, res) {
       let isAffected = false;
 
       if (f.geometry.type === "Point") {
-        const pt = turf.point(f.geometry.coordinates);
-
-        // 👉 Ortstyp bestimmen
+        const pt    = turf.point(f.geometry.coordinates);
         const place = f.properties?.place;
-
-        // 👉 Radius festlegen
-        let radiusKm = 1.0; // Default
-
+        let radiusKm = 1.0;
         if (place === "village") radiusKm = 1.5;
         else if (place === "town") radiusKm = 2.0;
         else if (place === "city") radiusKm = 3.0;
-
-        // 👉 Kreis um den Punkt
         const bufferedPoint = turf.buffer(pt, radiusKm, { units: "kilometers" });
-
-        // 👉 Schnitt prüfen statt Punkt-in-Polygon
         isAffected = turf.booleanIntersects(bufferedPoint, trackBuffer);
-
       } else {
-        // Flächen bleiben unverändert
         isAffected = turf.booleanIntersects(f, trackBuffer);
       }
 
@@ -292,7 +367,7 @@ export default async function handler(req, res) {
     return orte;
   };
 
-  // ── Feature parsen ────────────────────────────────────────────────────
+  // ── Feature parsen ────────────────────────────────────────────────────────
   const parseFeature = (featureFull, geojson, refTime) => {
     const featureTag = featureFull.match(/<feature([^>]*)>/)?.[0] ?? "";
     const inner      = block(featureFull, "feature") ?? featureFull;
@@ -372,11 +447,10 @@ export default async function handler(req, res) {
     const trackBlock = block(inner, "tracking") ?? "";
     const cell_speed = num(trackBlock, "cell_speed");
 
-    // severity_trend & mass_trend: erst im tracking-Block, dann direkt in inner
     const severity_trend = num(trackBlock, "severity_trend") ?? num(inner, "severity_trend");
     const mass_trend     = num(trackBlock, "mass_trend")     ?? num(inner, "mass_trend");
 
-    // ── Zellenentwicklung (radar-style) ───────────────────────────────
+    // ── Zellenentwicklung ─────────────────────────────────────────────
     let development = null;
     if (area_growth_rate !== null || severity_trend !== null || mass_trend !== null) {
       let pos = 0, neg = 0;
@@ -497,11 +571,15 @@ export default async function handler(req, res) {
     };
   };
 
-  // ── Handler ───────────────────────────────────────────────────────────
+  // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    const [{ xml, filename }, geojson] = await Promise.all([
+    const [{ xml, filename }, geojson, meso_cells] = await Promise.all([
       fetchXml(),
       Promise.resolve(loadGeoJson()),
+      fetchMesoCells().catch((err) => {
+        console.error("Mesozyklonen-Fetch fehlgeschlagen:", err.message);
+        return [];
+      }),
     ]);
 
     const reference_time =
@@ -519,6 +597,7 @@ export default async function handler(req, res) {
       creation_date,
       file: filename + ".xml",
       stormtracking_cells: cells,
+      meso_cells,
     });
 
   } catch (err) {
