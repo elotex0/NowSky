@@ -95,12 +95,6 @@ export default async function handler(req, res) {
         max_dbz: 59.7, base_speed: 8.619404,
       },
       {
-        dateStr: "20260505", timeStr: "1530", event_id: 2,
-        latitude: 48.775112, longitude: 10.941110,
-        intensity: 3, mesocyclone_top: 6.577403, mesocyclone_base: 0.918220,
-        max_dbz: 52.9, base_speed: 9.850000,
-      },
-      {
         dateStr: "20260505", timeStr: "1530", event_id: 3,
         latitude: 51.312500, longitude: 12.437500,
         intensity: 2, mesocyclone_top: 5.200000, mesocyclone_base: 1.400000,
