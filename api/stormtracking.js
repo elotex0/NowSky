@@ -89,30 +89,115 @@ export default async function handler(req, res) {
   if (req.url?.includes("test=meso") || req.query?.test === "meso") {
     const TEST_MESO_CELLS = [
       {
-        dateStr: "20260504", timeStr: "1530", event_id: 1,
+        dateStr: "20260505", timeStr: "1530", event_id: 1,
         latitude: 53.286025, longitude: 6.941067,
         intensity: 1, mesocyclone_top: 3.637998, mesocyclone_base: 2.519183,
         max_dbz: 59.7, base_speed: 8.619404,
       },
       {
-        dateStr: "20260504", timeStr: "1530", event_id: 2,
+        dateStr: "20260505", timeStr: "1530", event_id: 2,
         latitude: 48.775112, longitude: 10.941110,
         intensity: 3, mesocyclone_top: 6.577403, mesocyclone_base: 0.918220,
         max_dbz: 52.9, base_speed: 9.850000,
       },
       {
-        dateStr: "20260504", timeStr: "1530", event_id: 3,
+        dateStr: "20260505", timeStr: "1530", event_id: 3,
         latitude: 51.312500, longitude: 12.437500,
         intensity: 2, mesocyclone_top: 5.200000, mesocyclone_base: 1.400000,
         max_dbz: 47.3, base_speed: 6.210000,
       },
     ];
+
+    const TEST_STORMTRACKING_CELLS = [
+      {
+        dateStr: "20260505", timeStr: "1530",
+        cell_id: "T1",
+        latitude: 53.286025, longitude: 6.941067,
+        position: { text: "Testgebiet Nord", name: "Testgebiet Nord", dist_km: 0 },
+        cell_speed: 45.0,
+        cell_based_vil_density: 3.5,
+        dbz_max: 62.0,
+        hail_flag: 2, hail_cm: 2.5,
+        lightning_rate: 12,
+        wind_gust: 28.5,
+        heavy_rain_rate: 15.0,
+        severity: 3,
+        severity_trend: 1.2, mass_trend: 0.8, area_growth_rate: 1.5,
+        development: { status: "wachsend", color: "red" },
+        forecast_latitude: 53.52, forecast_longitude: 7.10,
+        echo_top_msl: 8500, echo_bottom_msl: 500,
+        covered_area: 120,
+        orte: [],
+        centroid_forecasts: [
+          { forecast_time: "2026-05-05T15:40:00Z", latitude: 53.38, longitude: 6.98, minutes_from_ref: 10 },
+          { forecast_time: "2026-05-05T15:50:00Z", latitude: 53.45, longitude: 7.04, minutes_from_ref: 20 },
+          { forecast_time: "2026-05-05T16:00:00Z", latitude: 53.52, longitude: 7.10, minutes_from_ref: 30 },
+        ],
+      },
+      {
+        dateStr: "20260505", timeStr: "1530",
+        cell_id: "T2",
+        latitude: 48.775112, longitude: 10.941110,
+        position: { text: "Testgebiet Süd", name: "Testgebiet Süd", dist_km: 0 },
+        cell_speed: 38.0,
+        cell_based_vil_density: 5.2,
+        dbz_max: 68.0,
+        hail_flag: 3, hail_cm: 4.1,
+        lightning_rate: 25,
+        wind_gust: 42.0,
+        heavy_rain_rate: 22.0,
+        severity: 5,
+        severity_trend: 2.1, mass_trend: 1.5, area_growth_rate: 2.3,
+        development: { status: "wachsend", color: "red" },
+        forecast_latitude: 48.95, forecast_longitude: 11.15,
+        echo_top_msl: 12000, echo_bottom_msl: 300,
+        covered_area: 280,
+        orte: [],
+        centroid_forecasts: [
+          { forecast_time: "2026-05-05T15:40:00Z", latitude: 48.83, longitude: 11.01, minutes_from_ref: 10 },
+          { forecast_time: "2026-05-05T15:50:00Z", latitude: 48.89, longitude: 11.08, minutes_from_ref: 20 },
+          { forecast_time: "2026-05-05T16:00:00Z", latitude: 48.95, longitude: 11.15, minutes_from_ref: 30 },
+        ],
+      },
+      {
+        dateStr: "20260505", timeStr: "1530",
+        cell_id: "T3",
+        latitude: 51.312500, longitude: 12.437500,
+        position: { text: "Testgebiet Mitte", name: "Testgebiet Mitte", dist_km: 0 },
+        cell_speed: 30.0,
+        cell_based_vil_density: 2.8,
+        dbz_max: 55.0,
+        hail_flag: 1, hail_cm: 1.2,
+        lightning_rate: 5,
+        wind_gust: 22.0,
+        heavy_rain_rate: 8.5,
+        severity: 2,
+        severity_trend: 0.3, mass_trend: -0.2, area_growth_rate: 0.1,
+        development: { status: "gleichbleibend", color: "orange" },
+        forecast_latitude: 51.46, forecast_longitude: 12.58,
+        echo_top_msl: 6200, echo_bottom_msl: 700,
+        covered_area: 75,
+        orte: [],
+        centroid_forecasts: [
+          { forecast_time: "2026-05-05T15:40:00Z", latitude: 51.36, longitude: 12.49, minutes_from_ref: 10 },
+          { forecast_time: "2026-05-05T15:50:00Z", latitude: 51.41, longitude: 12.53, minutes_from_ref: 20 },
+          { forecast_time: "2026-05-05T16:00:00Z", latitude: 51.46, longitude: 12.58, minutes_from_ref: 30 },
+        ],
+      },
+    ];
+
     try {
       const live = await fetchMesoCells();
       const meso_cells = live.length > 0 ? live : TEST_MESO_CELLS;
-      return res.status(200).json({ meso_cells });
+      return res.status(200).json({
+        meso_cells,
+        stormtracking_cells: TEST_STORMTRACKING_CELLS,
+      });
     } catch (err) {
-      return res.status(200).json({ meso_cells: TEST_MESO_CELLS });
+      return res.status(200).json({
+        meso_cells: TEST_MESO_CELLS,
+        stormtracking_cells: TEST_STORMTRACKING_CELLS,
+      });
     }
   }
 
