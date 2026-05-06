@@ -587,20 +587,20 @@ export default async function handler(req, res) {
 
     // NEU (richtig):
     if (lat && lon && forecast_lat && forecast_lon) {
+      const dLat = forecast_lat - lat;
+      const dLon = forecast_lon - lon;
+      lat3 = dLat;
+      lon3 = dLon * Math.cos(toRad(lat));
+
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
-
-      // Richtungsvektor aus Bearing berechnen (konsistent mit bearing-Logik)
-      const brngRad = toRad(trackBearing);
-      lon3 = Math.sin(brngRad);
-      lat3 = Math.cos(brngRad);
-
-      const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, 25);
-      const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, 25);
+      const p1 = destPoint(forecast_lat, forecast_lon, (trackBearing + 90)  % 360, 25);
+      const p2 = destPoint(forecast_lat, forecast_lon, (trackBearing + 270) % 360, 25);
       perp_point1_lat = p1.lat;
       perp_point1_lon = p1.lon;
       perp_point2_lat = p2.lat;
       perp_point2_lon = p2.lon;
     }
+
 
     // ── Turf-basierte Ortserkennung ───────────────────────────────────
     const refMs      = new Date(ref_time).getTime();
