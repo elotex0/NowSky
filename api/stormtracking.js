@@ -577,7 +577,8 @@ export default async function handler(req, res) {
       const fg   = block(cf.inner, "geodetic_coordinate") ?? cf.inner;
       const fLat = num(fg, "latitude");
       const fLon = num(fg, "longitude");
-      if (forecast_lat === null) { forecast_lat = fLat; forecast_lon = fLon; }
+      forecast_lat = fLat;
+      forecast_lon = fLon;
       if (fLat && fLon) allForecasts.push({ forecast_time, lat: fLat, lon: fLon });
     }
 
