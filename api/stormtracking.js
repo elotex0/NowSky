@@ -590,7 +590,7 @@ export default async function handler(req, res) {
       const dLat = forecast_lat - lat;
       const dLon = forecast_lon - lon;
       lat3 = dLat;
-      lon3 = dLon * Math.cos(toRad(lat));
+      lon3 = dLon;
 
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
       const p1 = destPoint(forecast_lat, forecast_lon, (trackBearing + 90)  % 360, 25);
