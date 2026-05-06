@@ -290,7 +290,13 @@ export default async function handler(req, res) {
     if (hasVectorTrack) {
       const midLat = (perp_point1_lat + perp_point2_lat) / 2;
       const midLon = (perp_point1_lon + perp_point2_lon) / 2;
-      const dist   = Math.sqrt((midLat - lat) ** 2 + (midLon - lon) ** 2);
+      const distFromMid = Math.sqrt((midLat - lat) ** 2 + (midLon - lon) ** 2);
+      const perpSpan = Math.sqrt(
+        (perp_point1_lat - perp_point2_lat) ** 2 +
+        (perp_point1_lon - perp_point2_lon) ** 2
+      );
+      // Wie im Frontend: wenn Midpoint fast auf der Zelle liegt, sonst zu kurze Spur vermeiden.
+      const dist = distFromMid > 0.003 ? distFromMid : perpSpan * 0.5;
       const vecLen = Math.sqrt(lat3 ** 2 + lon3 ** 2) || 1;
       const dirLat = lat3 / vecLen;
       const dirLon = lon3 / vecLen;
