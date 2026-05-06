@@ -214,42 +214,86 @@ export default async function handler(req, res) {
   if (req.url?.includes("test=track") || req.query?.test === "track") {
     const ref_time = "2026-05-05T16:00:00Z";
     const refMs = new Date(ref_time).getTime();
-    const sample = {
-      latitude: 49.20395,
-      longitude: 9.46232,
-      lat3: 0.0774512,
-      lon3: 0.020032752,
-      perp_point1_lat: 49.53515,
-      perp_point1_lon: 9.43114,
-      perp_point2_lat: 49.5102,
-      perp_point2_lon: 9.658347,
-      allForecasts: [
-        { forecast_time: "2026-05-05T16:10:00Z", lat: 49.22403, lon: 9.46735, ms: new Date("2026-05-05T16:10:00Z").getTime() },
-        { forecast_time: "2026-05-05T16:20:00Z", lat: 49.24411, lon: 9.47251, ms: new Date("2026-05-05T16:20:00Z").getTime() },
-      ],
-    };
-    const trackPoints = buildTrackPointsForOrte({
-      lat: sample.latitude,
-      lon: sample.longitude,
-      lat3: sample.lat3,
-      lon3: sample.lon3,
-      perp_point1_lat: sample.perp_point1_lat,
-      perp_point1_lon: sample.perp_point1_lon,
-      perp_point2_lat: sample.perp_point2_lat,
-      perp_point2_lon: sample.perp_point2_lon,
-      allForecasts: sample.allForecasts,
-      refMs,
+    const stormtracking_cells = [
+      {
+        dateStr: "20260505",
+        timeStr: "1600",
+        cell_id: "23",
+        latitude: 47.68651,
+        longitude: 7.69439,
+        position: null,
+        cell_speed: 40.111,
+        cell_based_vil_density: 2.368,
+        dbz_max: 62.68,
+        hail_flag: null,
+        hail_cm: null,
+        lightning_rate: 27,
+        wind_gust: 47.609,
+        heavy_rain_rate: 16.41,
+        severity: 1,
+        severity_trend: null,
+        mass_trend: null,
+        area_growth_rate: 1.26,
+        development: null,
+        forecast_latitude: 47.7046,
+        forecast_longitude: 7.72611,
+        perp_point1_lat: 48.020725,
+        perp_point1_lon: 8.048452,
+        perp_point2_lat: 47.863308,
+        perp_point2_lon: 8.245089,
+        lon3: 0.0696602,
+        lat3: 0.03933772,
+        echo_top_msl: 5145,
+        echo_bottom_msl: 1472,
+        covered_area: 99.875,
+        orte: [
+          { name: "Binzen", arrival_time: "16:00", minutes_until: 0 },
+          { name: "Efringen-Kirchen", arrival_time: "16:00", minutes_until: 0 },
+          { name: "Eimeldingen", arrival_time: "16:00", minutes_until: 0 },
+          { name: "Fischingen", arrival_time: "16:00", minutes_until: 0 },
+        ],
+        centroid_forecasts: [],
+      },
+    ];
+
+    const debug_cells = stormtracking_cells.map((cell) => {
+      const allForecasts = Array.isArray(cell.centroid_forecasts)
+        ? cell.centroid_forecasts
+            .map((f) => ({
+              lat: Number(f.latitude),
+              lon: Number(f.longitude),
+              ms: f.forecast_time ? new Date(f.forecast_time).getTime() : NaN,
+            }))
+            .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon))
+        : [];
+      const trackPoints = buildTrackPointsForOrte({
+        lat: Number(cell.latitude),
+        lon: Number(cell.longitude),
+        lat3: Number(cell.lat3),
+        lon3: Number(cell.lon3),
+        perp_point1_lat: Number(cell.perp_point1_lat),
+        perp_point1_lon: Number(cell.perp_point1_lon),
+        perp_point2_lat: Number(cell.perp_point2_lat),
+        perp_point2_lon: Number(cell.perp_point2_lon),
+        allForecasts,
+        refMs,
+      });
+      return {
+        ...cell,
+        debug_track_points: trackPoints.map((p) => ({
+          latitude: Number(p.lat.toFixed(6)),
+          longitude: Number(p.lon.toFixed(6)),
+          minutes_from_ref: Math.round((p.ms - refMs) / 60000),
+        })),
+      };
     });
+
     return res.status(200).json({
       ok: true,
       mode: "vector_perp_track",
       reference_time: ref_time,
-      input: sample,
-      track_points: trackPoints.map((p) => ({
-        lat: Number(p.lat.toFixed(6)),
-        lon: Number(p.lon.toFixed(6)),
-        minutes_from_ref: Math.round((p.ms - refMs) / 60000),
-      })),
+      stormtracking_cells: debug_cells,
+      meso_cells: [],
     });
   }
 
