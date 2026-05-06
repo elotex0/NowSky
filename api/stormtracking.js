@@ -630,20 +630,24 @@ export default async function handler(req, res) {
     let perp_point2_lat = null, perp_point2_lon = null;
 
     if (lat && lon && forecast_lat && forecast_lon) {
+      const firstForecast = allForecasts.find(f => Number.isFinite(f.ms) && f.ms > refMs);
+      const minutesDelta  = firstForecast ? (firstForecast.ms - refMs) / 60000 : 10;
+
       const dLat = forecast_lat - lat;
       const dLon = (forecast_lon - lon) * Math.cos(toRad((lat + forecast_lat) / 2));
-      const mag  = Math.sqrt(dLat ** 2 + dLon ** 2) || 1;
-      lat3 = dLat / mag;
-      lon3 = dLon / mag;
+
+      lat3 = dLat / minutesDelta;   // Grad/min
+      lon3 = dLon / minutesDelta;   // Grad/min (cos-korrigiert)
 
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
-      const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, 25);
-      const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, 25);
+      const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, 10);
+      const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, 10);
       perp_point1_lat = p1.lat;
       perp_point1_lon = p1.lon;
       perp_point2_lat = p2.lat;
       perp_point2_lon = p2.lon;
     }
+
 
     // ── Turf-basierte Ortserkennung ───────────────────────────────────
     const refMs = new Date(ref_time).getTime();
