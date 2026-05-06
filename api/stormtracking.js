@@ -633,13 +633,17 @@ export default async function handler(req, res) {
     if (lat && lon && forecast_lat && forecast_lon) {
       const dLat = forecast_lat - lat;
       const dLon = forecast_lon - lon;
-      const mag  = Math.sqrt(dLat ** 2 + dLon ** 2) || 1;
-      lat3 = dLat / mag;
-      lon3 = dLon / mag;
+      // Nicht normieren: lat3/lon3 sollen den tatsächlichen Delta-Vektor tragen.
+      lat3 = dLat;
+      lon3 = dLon;
 
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
-      const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, 25);
-      const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, 25);
+      // Realistischere Querbreite statt fixen 25 km:
+      // aus der Verlagerungsstrecke abgeleitet, aber begrenzt.
+      const moveKm = haversine(lat, lon, forecast_lat, forecast_lon);
+      const perpHalfKm = Math.max(4, Math.min(8, moveKm * 0.7));
+      const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, perpHalfKm);
+      const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, perpHalfKm);
       perp_point1_lat = p1.lat;
       perp_point1_lon = p1.lon;
       perp_point2_lat = p2.lat;
