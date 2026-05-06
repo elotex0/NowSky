@@ -302,7 +302,7 @@ export default async function handler(req, res) {
       const dirLon = lon3 / vecLen;
       const cosLat = Math.cos(toRad(lat));
       const endLat = lat + dirLat * dist;
-      const endLon = lon + (dirLon * dist) / cosLat; // Rücktransformation in Grad
+      const endLon = lon + (dirLon * dist) / cosLat;
 
       const validForecastTimes = allForecasts
         .map((f) => f.ms)
@@ -633,7 +633,7 @@ export default async function handler(req, res) {
 
     if (lat && lon && forecast_lat && forecast_lon) {
       const dLat = forecast_lat - lat;
-      const dLon = (forecast_lon - lon) * Math.cos(toRad((lat + forecast_lat) / 2)); // Kosinus-Korrektur!
+      const dLon = (forecast_lon - lon) * Math.cos(toRad((lat + forecast_lat) / 2));
       const mag  = Math.sqrt(dLat ** 2 + dLon ** 2) || 1;
       lat3 = dLat / mag;
       lon3 = dLon / mag; // lon3 bleibt im "Grad-Raum" normiert, aber geometrisch korrekt
