@@ -154,45 +154,6 @@ export default async function handler(req, res) {
         ],
         centroid_forecasts: [],
       },
-      {
-        dateStr: "20260505", timeStr: "1600",
-        cell_id: "27",
-        latitude: 49.20395, longitude: 9.46232,
-        position: null,
-        cell_speed: 28.833,
-        cell_based_vil_density: 1.91,
-        dbz_max: 55.38,
-        hail_flag: null, hail_cm: null,
-        lightning_rate: 0,
-        wind_gust: 38.236,
-        heavy_rain_rate: 3.72,
-        severity: 0,
-        severity_trend: null, mass_trend: null, area_growth_rate: 0.69,
-        development: null,
-        forecast_latitude: 49.22403, forecast_longitude: 9.46735,
-        perp_point1_lat: 49.53515, perp_point1_lon: 9.43114,
-        perp_point2_lat: 49.5102, perp_point2_lon: 9.658347,
-        lon3: 0.020032752, lat3: 0.0774512,
-        echo_top_msl: 4366, echo_bottom_msl: 956,
-        covered_area: 15.625,
-        orte: [
-          { name: "Bretzfeld", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Obersulm", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Pfedelbach", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Langenbrettach", arrival_time: "16:01", minutes_until: 1 },
-          { name: "Öhringen", arrival_time: "16:02", minutes_until: 2 },
-          { name: "Neuenstein", arrival_time: "16:07", minutes_until: 7 },
-          { name: "Hardthausen am Kocher", arrival_time: "16:12", minutes_until: 12 },
-          { name: "Zweiflingen", arrival_time: "16:13", minutes_until: 13 },
-          { name: "Forchtenberg", arrival_time: "16:19", minutes_until: 19 },
-          { name: "Jagsthausen", arrival_time: "16:24", minutes_until: 24 },
-          { name: "Schöntal", arrival_time: "16:35", minutes_until: 35 },
-          { name: "Ravenstein", arrival_time: "16:49", minutes_until: 49 },
-          { name: "Assamstadt", arrival_time: "16:57", minutes_until: 57 },
-          { name: "Rosenberg", arrival_time: "17:00", minutes_until: 60 },
-        ],
-        centroid_forecasts: [],
-      },
     ];
 
     try {
@@ -208,93 +169,6 @@ export default async function handler(req, res) {
         stormtracking_cells: TEST_STORMTRACKING_CELLS,
       });
     }
-  }
-
-  // ── Track-Test (prüft lat3/lon3 + perp_points Geometrie) ─────────────────
-  if (req.url?.includes("test=track") || req.query?.test === "track") {
-    const ref_time = "2026-05-05T16:00:00Z";
-    const refMs = new Date(ref_time).getTime();
-    const stormtracking_cells = [
-      {
-        dateStr: "20260505",
-        timeStr: "1600",
-        cell_id: "23",
-        latitude: 47.68651,
-        longitude: 7.69439,
-        position: null,
-        cell_speed: 40.111,
-        cell_based_vil_density: 2.368,
-        dbz_max: 62.68,
-        hail_flag: null,
-        hail_cm: null,
-        lightning_rate: 27,
-        wind_gust: 47.609,
-        heavy_rain_rate: 16.41,
-        severity: 1,
-        severity_trend: null,
-        mass_trend: null,
-        area_growth_rate: 1.26,
-        development: null,
-        forecast_latitude: 47.7046,
-        forecast_longitude: 7.72611,
-        perp_point1_lat: 48.020725,
-        perp_point1_lon: 8.048452,
-        perp_point2_lat: 47.863308,
-        perp_point2_lon: 8.245089,
-        lon3: 0.0696602,
-        lat3: 0.03933772,
-        echo_top_msl: 5145,
-        echo_bottom_msl: 1472,
-        covered_area: 99.875,
-        orte: [
-          { name: "Binzen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Efringen-Kirchen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Eimeldingen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Fischingen", arrival_time: "16:00", minutes_until: 0 },
-        ],
-        centroid_forecasts: [],
-      },
-    ];
-
-    const debug_cells = stormtracking_cells.map((cell) => {
-      const allForecasts = Array.isArray(cell.centroid_forecasts)
-        ? cell.centroid_forecasts
-            .map((f) => ({
-              lat: Number(f.latitude),
-              lon: Number(f.longitude),
-              ms: f.forecast_time ? new Date(f.forecast_time).getTime() : NaN,
-            }))
-            .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon))
-        : [];
-      const trackPoints = buildTrackPointsForOrte({
-        lat: Number(cell.latitude),
-        lon: Number(cell.longitude),
-        lat3: Number(cell.lat3),
-        lon3: Number(cell.lon3),
-        perp_point1_lat: Number(cell.perp_point1_lat),
-        perp_point1_lon: Number(cell.perp_point1_lon),
-        perp_point2_lat: Number(cell.perp_point2_lat),
-        perp_point2_lon: Number(cell.perp_point2_lon),
-        allForecasts,
-        refMs,
-      });
-      return {
-        ...cell,
-        debug_track_points: trackPoints.map((p) => ({
-          latitude: Number(p.lat.toFixed(6)),
-          longitude: Number(p.lon.toFixed(6)),
-          minutes_from_ref: Math.round((p.ms - refMs) / 60000),
-        })),
-      };
-    });
-
-    return res.status(200).json({
-      ok: true,
-      mode: "vector_perp_track",
-      reference_time: ref_time,
-      stormtracking_cells: debug_cells,
-      meso_cells: [],
-    });
   }
 
   // ── XML-Hilfsfunktionen ────────────────────────────────────────────────
@@ -392,66 +266,6 @@ export default async function handler(req, res) {
     for (const [limit, label] of dirs) if (brng < limit) return label;
     return "nördlich";
   };
-
-  // Einheitliche Trackpunkte für Turf-Ortserkennung (gleiches Prinzip wie Frontend-Zuglinie)
-  function buildTrackPointsForOrte({
-    lat,
-    lon,
-    lat3,
-    lon3,
-    perp_point1_lat,
-    perp_point1_lon,
-    perp_point2_lat,
-    perp_point2_lon,
-    allForecasts = [],
-    refMs,
-  }) {
-    const trackPoints = [];
-    const hasVectorTrack =
-      lat !== null && lon !== null &&
-      lat3 !== null && lon3 !== null &&
-      perp_point1_lat !== null && perp_point1_lon !== null &&
-      perp_point2_lat !== null && perp_point2_lon !== null;
-
-    if (hasVectorTrack) {
-      const midLat = (perp_point1_lat + perp_point2_lat) / 2;
-      const midLon = (perp_point1_lon + perp_point2_lon) / 2;
-      const dist   = Math.sqrt((midLat - lat) ** 2 + (midLon - lon) ** 2);
-      const vecLen = Math.sqrt(lat3 ** 2 + lon3 ** 2) || 1;
-      const dirLat = lat3 / vecLen;
-      const dirLon = lon3 / vecLen;
-      const endLat = lat + dirLat * dist;
-      const endLon = lon + dirLon * dist;
-
-      const validForecastTimes = allForecasts
-        .map((f) => f.ms)
-        .filter((ms) => Number.isFinite(ms) && ms >= refMs);
-      const endMs = validForecastTimes.length
-        ? Math.max(...validForecastTimes)
-        : refMs + 60 * 60 * 1000;
-
-      const steps = Math.max(2, validForecastTimes.length + 1);
-      for (let i = 0; i < steps; i++) {
-        const ratio = i / (steps - 1);
-        const ms = i === 0
-          ? refMs
-          : (validForecastTimes[i - 1] ?? Math.round(refMs + ratio * (endMs - refMs)));
-        trackPoints.push({
-          lat: lat + (endLat - lat) * ratio,
-          lon: lon + (endLon - lon) * ratio,
-          ms,
-        });
-      }
-      return trackPoints;
-    }
-
-    if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
-    for (const f of allForecasts) {
-      if (!Number.isFinite(f.ms)) continue;
-      trackPoints.push({ lat: f.lat, lon: f.lon, ms: f.ms });
-    }
-    return trackPoints;
-  }
 
   const findNearestPlace = (lat, lon, geojson, maxKm = 30) => {
     if (!geojson?.features) return null;
@@ -740,10 +554,7 @@ export default async function handler(req, res) {
       const fLat = num(fg, "latitude");
       const fLon = num(fg, "longitude");
       if (forecast_lat === null) { forecast_lat = fLat; forecast_lon = fLon; }
-      if (fLat && fLon) {
-        const ms = forecast_time ? new Date(forecast_time).getTime() : NaN;
-        allForecasts.push({ forecast_time, lat: fLat, lon: fLon, ms });
-      }
+      if (fLat && fLon) allForecasts.push({ forecast_time, lat: fLat, lon: fLon });
     }
 
     let lat3 = null, lon3 = null;
@@ -767,19 +578,15 @@ export default async function handler(req, res) {
     }
 
     // ── Turf-basierte Ortserkennung ───────────────────────────────────
-    const refMs = new Date(ref_time).getTime();
-    const trackPoints = buildTrackPointsForOrte({
-      lat,
-      lon,
-      lat3,
-      lon3,
-      perp_point1_lat,
-      perp_point1_lon,
-      perp_point2_lat,
-      perp_point2_lon,
-      allForecasts,
-      refMs,
-    });
+    const refMs      = new Date(ref_time).getTime();
+    const trackPoints = [];
+
+    if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
+    for (const f of allForecasts) {
+      if (!f.forecast_time) continue;
+      const ms = new Date(f.forecast_time).getTime();
+      if (!isNaN(ms)) trackPoints.push({ lat: f.lat, lon: f.lon, ms });
+    }
 
     const orte = (trackPoints.length > 0 && geojson)
       ? findOrteAlongTrack(trackPoints, geojson, ref_time)
