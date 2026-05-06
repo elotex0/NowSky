@@ -1,4 +1,3 @@
-/ api/konrad3d.js
 import fs   from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -7,10 +6,16 @@ import * as turf from "@turf/turf";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
+// ── Sichere RegExp-Hilfsfunktionen ────────────────────────────────────────────
+const tagRe     = (tag)        => new RegExp("<" + tag + "(?:[^>]*)>([^<]*)</" + tag + ">");
+const tagReAll  = (tag)        => new RegExp("<" + tag + "(?:[^>]*)>([\\s\\S]*?)</" + tag + ">", "g");
+const tagReOne  = (tag)        => new RegExp("<" + tag + "(?:[^>]*)>([\\s\\S]*?)</" + tag + ">");
+const attrRe    = (attrName)   => new RegExp(attrName + '="([^"]*)"');
+
 // ── Mesozyklonen-Parser ───────────────────────────────────────────────────────
 const parseMesoCells = (xml) => {
   const text = (xml, tag) => {
-    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
+    const m = xml.match(tagRe(tag));
     return m ? m[1].trim() : null;
   };
   const num = (xml, tag) => {
@@ -37,7 +42,7 @@ const parseMesoCells = (xml) => {
     const attrs = m[1];
     const inner = m[2];
 
-    const idMatch = attrs.match(/ID="([^"]*)"/);
+    const idMatch  = attrs.match(/ID="([^"]*)"/);
     const event_id = idMatch ? parseInt(idMatch[1]) : null;
 
     const latitude  = num(inner, "latitude");
@@ -184,7 +189,7 @@ export default async function handler(req, res) {
   };
 
   const text = (xml, tag) => {
-    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
+    const m = xml.match(tagRe(tag));
     return m ? m[1].trim() : null;
   };
   const num = (xml, tag) => {
@@ -198,18 +203,18 @@ export default async function handler(req, res) {
     return n === -1000000000 ? null : n;
   };
   const block = (xml, tag) => {
-    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`));
+    const m = xml.match(tagReOne(tag));
     return m ? m[1] : null;
   };
   const allBlocks = (xml, tag) => {
-    const re = new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`, "g");
+    const re = tagReAll(tag);
     const results = [];
     let m;
     while ((m = re.exec(xml)) !== null) results.push({ full: m[0], inner: m[1] });
     return results;
   };
   const attr = (tagStr, attrName) => {
-    const m = tagStr.match(new RegExp(`${attrName}="([^"]*)"`));
+    const m = tagStr.match(attrRe(attrName));
     return m ? m[1] : null;
   };
   const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
@@ -267,18 +272,12 @@ export default async function handler(req, res) {
     return "nördlich";
   };
 
-  // ── Track-Geometrie für Orte: wie Frontend (lat3/lon3 + perp_points), Forecast als Fallback ──
+  // ── Track-Geometrie für Orte ──────────────────────────────────────────────
   const buildTrackPointsForOrte = ({
-    lat,
-    lon,
-    lat3,
-    lon3,
-    perp_point1_lat,
-    perp_point1_lon,
-    perp_point2_lat,
-    perp_point2_lon,
-    allForecasts,
-    refMs,
+    lat, lon, lat3, lon3,
+    perp_point1_lat, perp_point1_lon,
+    perp_point2_lat, perp_point2_lon,
+    allForecasts, refMs,
   }) => {
     const trackPoints = [];
     const hasVectorTrack =
@@ -295,7 +294,6 @@ export default async function handler(req, res) {
         (perp_point1_lat - perp_point2_lat) ** 2 +
         (perp_point1_lon - perp_point2_lon) ** 2
       );
-      // Wie im Frontend: wenn Midpoint fast auf der Zelle liegt, sonst zu kurze Spur vermeiden.
       const dist = distFromMid > 0.003 ? distFromMid : perpSpan * 0.5;
       const vecLen = Math.sqrt(lat3 ** 2 + lon3 ** 2) || 1;
       const dirLat = lat3 / vecLen;
@@ -636,7 +634,7 @@ export default async function handler(req, res) {
       const dLon = (forecast_lon - lon) * Math.cos(toRad((lat + forecast_lat) / 2));
       const mag  = Math.sqrt(dLat ** 2 + dLon ** 2) || 1;
       lat3 = dLat / mag;
-      lon3 = dLon / mag; // lon3 bleibt im "Grad-Raum" normiert, aber geometrisch korrekt
+      lon3 = dLon / mag;
 
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
       const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, 25);
@@ -650,16 +648,10 @@ export default async function handler(req, res) {
     // ── Turf-basierte Ortserkennung ───────────────────────────────────
     const refMs = new Date(ref_time).getTime();
     const trackPoints = buildTrackPointsForOrte({
-      lat,
-      lon,
-      lat3,
-      lon3,
-      perp_point1_lat,
-      perp_point1_lon,
-      perp_point2_lat,
-      perp_point2_lon,
-      allForecasts,
-      refMs,
+      lat, lon, lat3, lon3,
+      perp_point1_lat, perp_point1_lon,
+      perp_point2_lat, perp_point2_lon,
+      allForecasts, refMs,
     });
 
     const orte = (trackPoints.length > 0 && geojson)
