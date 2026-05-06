@@ -626,16 +626,26 @@ export default async function handler(req, res) {
       }
     }
 
-    let lat3 = null, lon3 = null;
-    let perp_point1_lat = null, perp_point1_lon = null;
-    let perp_point2_lat = null, perp_point2_lon = null;
+    // Primär: Werte direkt aus XML übernehmen (falls vorhanden).
+    let lat3 = num(trackBlock, "lat3") ?? num(inner, "lat3");
+    let lon3 = num(trackBlock, "lon3") ?? num(inner, "lon3");
+    let perp_point1_lat = num(trackBlock, "perp_point1_lat") ?? num(inner, "perp_point1_lat");
+    let perp_point1_lon = num(trackBlock, "perp_point1_lon") ?? num(inner, "perp_point1_lon");
+    let perp_point2_lat = num(trackBlock, "perp_point2_lat") ?? num(inner, "perp_point2_lat");
+    let perp_point2_lon = num(trackBlock, "perp_point2_lon") ?? num(inner, "perp_point2_lon");
 
-    if (lat && lon && forecast_lat && forecast_lon) {
+    // Fallback nur, wenn XML diese Felder nicht liefert.
+    const needDerivedVector =
+      lat3 === null || lon3 === null ||
+      perp_point1_lat === null || perp_point1_lon === null ||
+      perp_point2_lat === null || perp_point2_lon === null;
+
+    if (needDerivedVector && lat && lon && forecast_lat && forecast_lon) {
       const dLat = forecast_lat - lat;
       const dLon = forecast_lon - lon;
       // Nicht normieren: lat3/lon3 sollen den tatsächlichen Delta-Vektor tragen.
-      lat3 = dLat;
-      lon3 = dLon;
+      if (lat3 === null) lat3 = dLat;
+      if (lon3 === null) lon3 = dLon;
 
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
       // Realistischere Querbreite statt fixen 25 km:
@@ -644,10 +654,10 @@ export default async function handler(req, res) {
       const perpHalfKm = Math.max(4, Math.min(8, moveKm * 0.7));
       const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, perpHalfKm);
       const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, perpHalfKm);
-      perp_point1_lat = p1.lat;
-      perp_point1_lon = p1.lon;
-      perp_point2_lat = p2.lat;
-      perp_point2_lon = p2.lon;
+      if (perp_point1_lat === null) perp_point1_lat = p1.lat;
+      if (perp_point1_lon === null) perp_point1_lon = p1.lon;
+      if (perp_point2_lat === null) perp_point2_lat = p2.lat;
+      if (perp_point2_lon === null) perp_point2_lon = p2.lon;
     }
 
     // ── Turf-basierte Ortserkennung ───────────────────────────────────
