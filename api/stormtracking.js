@@ -1,3 +1,4 @@
+// api/konrad3d.js
 import fs   from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -6,16 +7,10 @@ import * as turf from "@turf/turf";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ── Sichere RegExp-Hilfsfunktionen ────────────────────────────────────────────
-const tagRe     = (tag)        => new RegExp("<" + tag + "(?:[^>]*)>([^<]*)</" + tag + ">");
-const tagReAll  = (tag)        => new RegExp("<" + tag + "(?:[^>]*)>([\\s\\S]*?)</" + tag + ">", "g");
-const tagReOne  = (tag)        => new RegExp("<" + tag + "(?:[^>]*)>([\\s\\S]*?)</" + tag + ">");
-const attrRe    = (attrName)   => new RegExp(attrName + '="([^"]*)"');
-
 // ── Mesozyklonen-Parser ───────────────────────────────────────────────────────
 const parseMesoCells = (xml) => {
   const text = (xml, tag) => {
-    const m = xml.match(tagRe(tag));
+    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
     return m ? m[1].trim() : null;
   };
   const num = (xml, tag) => {
@@ -42,7 +37,7 @@ const parseMesoCells = (xml) => {
     const attrs = m[1];
     const inner = m[2];
 
-    const idMatch  = attrs.match(/ID="([^"]*)"/);
+    const idMatch = attrs.match(/ID="([^"]*)"/);
     const event_id = idMatch ? parseInt(idMatch[1]) : null;
 
     const latitude  = num(inner, "latitude");
@@ -95,7 +90,7 @@ export default async function handler(req, res) {
     const TEST_MESO_CELLS = [
       {
         dateStr: "20260505", timeStr: "1530", event_id: 1,
-        latitude: 47.69651, longitude: 7.70439,
+        latitude: 53.289025, longitude: 6.941067,
         intensity: 1, mesocyclone_top: 3.637998, mesocyclone_base: 2.519183,
         max_dbz: 59.7, base_speed: 8.619404,
       },
@@ -109,55 +104,79 @@ export default async function handler(req, res) {
 
     const TEST_STORMTRACKING_CELLS = [
       {
-        dateStr: "20260505", timeStr: "1600",
-        cell_id: "23",
-        latitude: 47.68651, longitude: 7.69439,
-        position: null,
-        cell_speed: 40.111,
-        cell_based_vil_density: 2.368,
-        dbz_max: 62.68,
-        hail_flag: null, hail_cm: null,
-        lightning_rate: 27,
-        wind_gust: 47.609,
-        heavy_rain_rate: 16.41,
-        severity: 1,
-        severity_trend: null, mass_trend: null, area_growth_rate: 1.26,
-        development: null,
-        forecast_latitude: 47.7046, forecast_longitude: 7.72611,
-        perp_point1_lat: 48.020725, perp_point1_lon: 8.048452,
-        perp_point2_lat: 47.863308, perp_point2_lon: 8.245089,
-        lon3: 0.0696602, lat3: 0.03933772,
-        echo_top_msl: 5145, echo_bottom_msl: 1472,
-        covered_area: 99.875,
-        orte: [
-          { name: "Binzen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Efringen-Kirchen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Eimeldingen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Fischingen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Kandern", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Lörrach", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Rümmingen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Schallbach", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Wittlingen", arrival_time: "16:00", minutes_until: 0 },
-          { name: "Schliengen", arrival_time: "16:02", minutes_until: 2 },
-          { name: "Maulburg", arrival_time: "16:03", minutes_until: 3 },
-          { name: "Steinen", arrival_time: "16:03", minutes_until: 3 },
-          { name: "Malsburg-Marzell", arrival_time: "16:09", minutes_until: 9 },
-          { name: "Kleines Wiesental", arrival_time: "16:16", minutes_until: 16 },
-          { name: "Schönau im Schwarzwald", arrival_time: "16:27", minutes_until: 27 },
-          { name: "Utzenfeld", arrival_time: "16:32", minutes_until: 32 },
-          { name: "Wieden", arrival_time: "16:33", minutes_until: 33 },
-          { name: "Todtnau", arrival_time: "16:38", minutes_until: 38 },
-          { name: "Oberried", arrival_time: "16:46", minutes_until: 46 },
-          { name: "Feldberg", arrival_time: "16:51", minutes_until: 51 },
-          { name: "Kirchzarten", arrival_time: "16:52", minutes_until: 52 },
-          { name: "Schluchsee", arrival_time: "16:54", minutes_until: 54 },
-          { name: "Hinterzarten", arrival_time: "16:55", minutes_until: 55 },
-          { name: "Grafenhausen", arrival_time: "16:57", minutes_until: 57 },
-          { name: "Stegen", arrival_time: "16:57", minutes_until: 57 },
-          { name: "Buchenbach", arrival_time: "16:59", minutes_until: 59 },
+        dateStr: "20260505", timeStr: "1530",
+        cell_id: "T1",
+        latitude: 53.286025, longitude: 6.941067,
+        position: { text: "Testgebiet Nord", name: "Testgebiet Nord", dist_km: 0 },
+        cell_speed: 45.0,
+        cell_based_vil_density: 3.5,
+        dbz_max: 62.0,
+        hail_flag: 2, hail_cm: 2.5,
+        lightning_rate: 12,
+        wind_gust: 28.5,
+        heavy_rain_rate: 15.0,
+        severity: 3,
+        severity_trend: 1.2, mass_trend: 0.8, area_growth_rate: 1.5,
+        development: { status: "wachsend", color: "red" },
+        forecast_latitude: 53.52, forecast_longitude: 7.10,
+        echo_top_msl: 8500, echo_bottom_msl: 500,
+        covered_area: 120,
+        orte: [],
+        centroid_forecasts: [
+          { forecast_time: "2026-05-05T15:40:00Z", latitude: 53.38, longitude: 6.98, minutes_from_ref: 10 },
+          { forecast_time: "2026-05-05T15:50:00Z", latitude: 53.45, longitude: 7.04, minutes_from_ref: 20 },
+          { forecast_time: "2026-05-05T16:00:00Z", latitude: 53.52, longitude: 7.10, minutes_from_ref: 30 },
         ],
-        centroid_forecasts: [],
+      },
+      {
+        dateStr: "20260505", timeStr: "1530",
+        cell_id: "T2",
+        latitude: 48.775112, longitude: 10.941110,
+        position: { text: "Testgebiet Süd", name: "Testgebiet Süd", dist_km: 0 },
+        cell_speed: 38.0,
+        cell_based_vil_density: 5.2,
+        dbz_max: 68.0,
+        hail_flag: 3, hail_cm: 4.1,
+        lightning_rate: 25,
+        wind_gust: 42.0,
+        heavy_rain_rate: 22.0,
+        severity: 5,
+        severity_trend: 2.1, mass_trend: 1.5, area_growth_rate: 2.3,
+        development: { status: "wachsend", color: "red" },
+        forecast_latitude: 48.95, forecast_longitude: 11.15,
+        echo_top_msl: 12000, echo_bottom_msl: 300,
+        covered_area: 280,
+        orte: [],
+        centroid_forecasts: [
+          { forecast_time: "2026-05-05T15:40:00Z", latitude: 48.83, longitude: 11.01, minutes_from_ref: 10 },
+          { forecast_time: "2026-05-05T15:50:00Z", latitude: 48.89, longitude: 11.08, minutes_from_ref: 20 },
+          { forecast_time: "2026-05-05T16:00:00Z", latitude: 48.95, longitude: 11.15, minutes_from_ref: 30 },
+        ],
+      },
+      {
+        dateStr: "20260505", timeStr: "1530",
+        cell_id: "T3",
+        latitude: 51.312500, longitude: 12.437500,
+        position: { text: "Testgebiet Mitte", name: "Testgebiet Mitte", dist_km: 0 },
+        cell_speed: 30.0,
+        cell_based_vil_density: 2.8,
+        dbz_max: 55.0,
+        hail_flag: 1, hail_cm: 1.2,
+        lightning_rate: 5,
+        wind_gust: 22.0,
+        heavy_rain_rate: 8.5,
+        severity: 2,
+        severity_trend: 0.3, mass_trend: -0.2, area_growth_rate: 0.1,
+        development: { status: "gleichbleibend", color: "orange" },
+        forecast_latitude: 51.46, forecast_longitude: 12.58,
+        echo_top_msl: 6200, echo_bottom_msl: 700,
+        covered_area: 75,
+        orte: [],
+        centroid_forecasts: [
+          { forecast_time: "2026-05-05T15:40:00Z", latitude: 51.36, longitude: 12.49, minutes_from_ref: 10 },
+          { forecast_time: "2026-05-05T15:50:00Z", latitude: 51.41, longitude: 12.53, minutes_from_ref: 20 },
+          { forecast_time: "2026-05-05T16:00:00Z", latitude: 51.46, longitude: 12.58, minutes_from_ref: 30 },
+        ],
       },
     ];
 
@@ -189,7 +208,7 @@ export default async function handler(req, res) {
   };
 
   const text = (xml, tag) => {
-    const m = xml.match(tagRe(tag));
+    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
     return m ? m[1].trim() : null;
   };
   const num = (xml, tag) => {
@@ -203,18 +222,18 @@ export default async function handler(req, res) {
     return n === -1000000000 ? null : n;
   };
   const block = (xml, tag) => {
-    const m = xml.match(tagReOne(tag));
+    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`));
     return m ? m[1] : null;
   };
   const allBlocks = (xml, tag) => {
-    const re = tagReAll(tag);
+    const re = new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`, "g");
     const results = [];
     let m;
     while ((m = re.exec(xml)) !== null) results.push({ full: m[0], inner: m[1] });
     return results;
   };
   const attr = (tagStr, attrName) => {
-    const m = tagStr.match(attrRe(attrName));
+    const m = tagStr.match(new RegExp(`${attrName}="([^"]*)"`));
     return m ? m[1] : null;
   };
   const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
@@ -270,66 +289,6 @@ export default async function handler(req, res) {
     ];
     for (const [limit, label] of dirs) if (brng < limit) return label;
     return "nördlich";
-  };
-
-  // ── Track-Geometrie für Orte ──────────────────────────────────────────────
-  const buildTrackPointsForOrte = ({
-    lat, lon, lat3, lon3,
-    perp_point1_lat, perp_point1_lon,
-    perp_point2_lat, perp_point2_lon,
-    allForecasts, refMs,
-  }) => {
-    const trackPoints = [];
-    const hasVectorTrack =
-      lat !== null && lon !== null &&
-      lat3 !== null && lon3 !== null &&
-      perp_point1_lat !== null && perp_point1_lon !== null &&
-      perp_point2_lat !== null && perp_point2_lon !== null;
-
-    if (hasVectorTrack) {
-      const midLat = (perp_point1_lat + perp_point2_lat) / 2;
-      const midLon = (perp_point1_lon + perp_point2_lon) / 2;
-      const distFromMid = Math.sqrt((midLat - lat) ** 2 + (midLon - lon) ** 2);
-      const perpSpan = Math.sqrt(
-        (perp_point1_lat - perp_point2_lat) ** 2 +
-        (perp_point1_lon - perp_point2_lon) ** 2
-      );
-      const dist = distFromMid > 0.003 ? distFromMid : perpSpan * 0.5;
-      const vecLen = Math.sqrt(lat3 ** 2 + lon3 ** 2) || 1;
-      const dirLat = lat3 / vecLen;
-      const dirLon = lon3 / vecLen;
-      const cosLat = Math.cos(toRad(lat));
-      const endLat = lat + dirLat * dist;
-      const endLon = lon + (dirLon * dist) / cosLat;
-
-      const validForecastTimes = allForecasts
-        .map((f) => f.ms)
-        .filter((ms) => Number.isFinite(ms) && ms >= refMs);
-      const endMs = validForecastTimes.length
-        ? Math.max(...validForecastTimes)
-        : refMs + 60 * 60 * 1000;
-
-      const steps = Math.max(2, validForecastTimes.length + 1);
-      for (let i = 0; i < steps; i++) {
-        const ratio = i / (steps - 1);
-        const ms = i === 0
-          ? refMs
-          : (validForecastTimes[i - 1] ?? Math.round(refMs + ratio * (endMs - refMs)));
-        trackPoints.push({
-          lat: lat + (endLat - lat) * ratio,
-          lon: lon + (endLon - lon) * ratio,
-          ms,
-        });
-      }
-      return trackPoints;
-    }
-
-    if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
-    for (const f of allForecasts) {
-      if (!Number.isFinite(f.ms)) continue;
-      trackPoints.push({ lat: f.lat, lon: f.lon, ms: f.ms });
-    }
-    return trackPoints;
   };
 
   const findNearestPlace = (lat, lon, geojson, maxKm = 30) => {
@@ -619,10 +578,7 @@ export default async function handler(req, res) {
       const fLat = num(fg, "latitude");
       const fLon = num(fg, "longitude");
       if (forecast_lat === null) { forecast_lat = fLat; forecast_lon = fLon; }
-      if (fLat && fLon) {
-        const ms = forecast_time ? new Date(forecast_time).getTime() : NaN;
-        allForecasts.push({ forecast_time, lat: fLat, lon: fLon, ms });
-      }
+      if (fLat && fLon) allForecasts.push({ forecast_time, lat: fLat, lon: fLon });
     }
 
     let lat3 = null, lon3 = null;
@@ -631,13 +587,14 @@ export default async function handler(req, res) {
 
     if (lat && lon && forecast_lat && forecast_lon) {
       const dLat = forecast_lat - lat;
-      const dLon = (forecast_lon - lon) * Math.cos(toRad((lat + forecast_lat) / 2));
-      lat3 = dLat;   // Grad-Differenz, KEIN Normalisieren
-      lon3 = dLon;   // cos-korrigiert, KEIN Normalisieren
+      const dLon = forecast_lon - lon;
+      const mag  = Math.sqrt(dLat ** 2 + dLon ** 2) || 1;
+      lat3 = dLat / mag;
+      lon3 = dLon / mag;
 
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
-      const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, 10);
-      const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, 10);
+      const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, 25);
+      const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, 25);
       perp_point1_lat = p1.lat;
       perp_point1_lon = p1.lon;
       perp_point2_lat = p2.lat;
@@ -645,13 +602,15 @@ export default async function handler(req, res) {
     }
 
     // ── Turf-basierte Ortserkennung ───────────────────────────────────
-    const refMs = new Date(ref_time).getTime();
-    const trackPoints = buildTrackPointsForOrte({
-      lat, lon, lat3, lon3,
-      perp_point1_lat, perp_point1_lon,
-      perp_point2_lat, perp_point2_lon,
-      allForecasts, refMs,
-    });
+    const refMs      = new Date(ref_time).getTime();
+    const trackPoints = [];
+
+    if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
+    for (const f of allForecasts) {
+      if (!f.forecast_time) continue;
+      const ms = new Date(f.forecast_time).getTime();
+      if (!isNaN(ms)) trackPoints.push({ lat: f.lat, lon: f.lon, ms });
+    }
 
     const orte = (trackPoints.length > 0 && geojson)
       ? findOrteAlongTrack(trackPoints, geojson, ref_time)
