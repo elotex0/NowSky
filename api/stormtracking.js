@@ -592,6 +592,7 @@ export default async function handler(req, res) {
       lat3 = dLat;
       lon3 = dLon;
 
+      const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
       const trackDist = haversine(lat, lon, forecast_lat, forecast_lon);
       const coneWidth = Math.max(25, trackDist * 0.5); // z.B. 50% der Track-Distanz
       const p1 = destPoint(forecast_lat, forecast_lon, (trackBearing + 90)  % 360, coneWidth);
