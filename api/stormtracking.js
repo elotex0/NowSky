@@ -210,6 +210,49 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── Track-Test (prüft lat3/lon3 + perp_points Geometrie) ─────────────────
+  if (req.url?.includes("test=track") || req.query?.test === "track") {
+    const ref_time = "2026-05-05T16:00:00Z";
+    const refMs = new Date(ref_time).getTime();
+    const sample = {
+      latitude: 49.20395,
+      longitude: 9.46232,
+      lat3: 0.0774512,
+      lon3: 0.020032752,
+      perp_point1_lat: 49.53515,
+      perp_point1_lon: 9.43114,
+      perp_point2_lat: 49.5102,
+      perp_point2_lon: 9.658347,
+      allForecasts: [
+        { forecast_time: "2026-05-05T16:10:00Z", lat: 49.22403, lon: 9.46735, ms: new Date("2026-05-05T16:10:00Z").getTime() },
+        { forecast_time: "2026-05-05T16:20:00Z", lat: 49.24411, lon: 9.47251, ms: new Date("2026-05-05T16:20:00Z").getTime() },
+      ],
+    };
+    const trackPoints = buildTrackPointsForOrte({
+      lat: sample.latitude,
+      lon: sample.longitude,
+      lat3: sample.lat3,
+      lon3: sample.lon3,
+      perp_point1_lat: sample.perp_point1_lat,
+      perp_point1_lon: sample.perp_point1_lon,
+      perp_point2_lat: sample.perp_point2_lat,
+      perp_point2_lon: sample.perp_point2_lon,
+      allForecasts: sample.allForecasts,
+      refMs,
+    });
+    return res.status(200).json({
+      ok: true,
+      mode: "vector_perp_track",
+      reference_time: ref_time,
+      input: sample,
+      track_points: trackPoints.map((p) => ({
+        lat: Number(p.lat.toFixed(6)),
+        lon: Number(p.lon.toFixed(6)),
+        minutes_from_ref: Math.round((p.ms - refMs) / 60000),
+      })),
+    });
+  }
+
   // ── XML-Hilfsfunktionen ────────────────────────────────────────────────
   const buildFilename = (offsetMin) => {
     const t   = new Date(Date.now() - offsetMin * 60 * 1000);
@@ -305,6 +348,66 @@ export default async function handler(req, res) {
     for (const [limit, label] of dirs) if (brng < limit) return label;
     return "nördlich";
   };
+
+  // Einheitliche Trackpunkte für Turf-Ortserkennung (gleiches Prinzip wie Frontend-Zuglinie)
+  function buildTrackPointsForOrte({
+    lat,
+    lon,
+    lat3,
+    lon3,
+    perp_point1_lat,
+    perp_point1_lon,
+    perp_point2_lat,
+    perp_point2_lon,
+    allForecasts = [],
+    refMs,
+  }) {
+    const trackPoints = [];
+    const hasVectorTrack =
+      lat !== null && lon !== null &&
+      lat3 !== null && lon3 !== null &&
+      perp_point1_lat !== null && perp_point1_lon !== null &&
+      perp_point2_lat !== null && perp_point2_lon !== null;
+
+    if (hasVectorTrack) {
+      const midLat = (perp_point1_lat + perp_point2_lat) / 2;
+      const midLon = (perp_point1_lon + perp_point2_lon) / 2;
+      const dist   = Math.sqrt((midLat - lat) ** 2 + (midLon - lon) ** 2);
+      const vecLen = Math.sqrt(lat3 ** 2 + lon3 ** 2) || 1;
+      const dirLat = lat3 / vecLen;
+      const dirLon = lon3 / vecLen;
+      const endLat = lat + dirLat * dist;
+      const endLon = lon + dirLon * dist;
+
+      const validForecastTimes = allForecasts
+        .map((f) => f.ms)
+        .filter((ms) => Number.isFinite(ms) && ms >= refMs);
+      const endMs = validForecastTimes.length
+        ? Math.max(...validForecastTimes)
+        : refMs + 60 * 60 * 1000;
+
+      const steps = Math.max(2, validForecastTimes.length + 1);
+      for (let i = 0; i < steps; i++) {
+        const ratio = i / (steps - 1);
+        const ms = i === 0
+          ? refMs
+          : (validForecastTimes[i - 1] ?? Math.round(refMs + ratio * (endMs - refMs)));
+        trackPoints.push({
+          lat: lat + (endLat - lat) * ratio,
+          lon: lon + (endLon - lon) * ratio,
+          ms,
+        });
+      }
+      return trackPoints;
+    }
+
+    if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
+    for (const f of allForecasts) {
+      if (!Number.isFinite(f.ms)) continue;
+      trackPoints.push({ lat: f.lat, lon: f.lon, ms: f.ms });
+    }
+    return trackPoints;
+  }
 
   const findNearestPlace = (lat, lon, geojson, maxKm = 30) => {
     if (!geojson?.features) return null;
@@ -593,7 +696,10 @@ export default async function handler(req, res) {
       const fLat = num(fg, "latitude");
       const fLon = num(fg, "longitude");
       if (forecast_lat === null) { forecast_lat = fLat; forecast_lon = fLon; }
-      if (fLat && fLon) allForecasts.push({ forecast_time, lat: fLat, lon: fLon });
+      if (fLat && fLon) {
+        const ms = forecast_time ? new Date(forecast_time).getTime() : NaN;
+        allForecasts.push({ forecast_time, lat: fLat, lon: fLon, ms });
+      }
     }
 
     let lat3 = null, lon3 = null;
@@ -617,15 +723,19 @@ export default async function handler(req, res) {
     }
 
     // ── Turf-basierte Ortserkennung ───────────────────────────────────
-    const refMs      = new Date(ref_time).getTime();
-    const trackPoints = [];
-
-    if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
-    for (const f of allForecasts) {
-      if (!f.forecast_time) continue;
-      const ms = new Date(f.forecast_time).getTime();
-      if (!isNaN(ms)) trackPoints.push({ lat: f.lat, lon: f.lon, ms });
-    }
+    const refMs = new Date(ref_time).getTime();
+    const trackPoints = buildTrackPointsForOrte({
+      lat,
+      lon,
+      lat3,
+      lon3,
+      perp_point1_lat,
+      perp_point1_lon,
+      perp_point2_lat,
+      perp_point2_lon,
+      allForecasts,
+      refMs,
+    });
 
     const orte = (trackPoints.length > 0 && geojson)
       ? findOrteAlongTrack(trackPoints, geojson, ref_time)
