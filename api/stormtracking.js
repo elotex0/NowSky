@@ -585,14 +585,15 @@ export default async function handler(req, res) {
     let perp_point1_lat = null, perp_point1_lon = null;
     let perp_point2_lat = null, perp_point2_lon = null;
 
+    // NEU (richtig):
     if (lat && lon && forecast_lat && forecast_lon) {
-      const dLat = forecast_lat - lat;
-      const dLon = forecast_lon - lon;
-      const mag  = Math.sqrt(dLat ** 2 + dLon ** 2) || 1;
-      lat3 = dLat / mag;
-      lon3 = dLon / mag;
-
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
+
+      // Richtungsvektor aus Bearing berechnen (konsistent mit bearing-Logik)
+      const brngRad = toRad(trackBearing);
+      lon3 = Math.sin(brngRad);
+      lat3 = Math.cos(brngRad);
+
       const p1 = destPoint(lat, lon, (trackBearing + 90)  % 360, 25);
       const p2 = destPoint(lat, lon, (trackBearing + 270) % 360, 25);
       perp_point1_lat = p1.lat;
@@ -653,8 +654,8 @@ export default async function handler(req, res) {
       centroid_forecasts: allForecasts
         .map(f => ({
           forecast_time:    f.forecast_time,
-          latitude:         parseFloat(f.lat.toFixed(4)),
-          longitude:        parseFloat(f.lon.toFixed(4)),
+          latitude:         parseFloat(f.lat.toFixed(5)),
+          longitude:        parseFloat(f.lon.toFixed(5)),
           minutes_from_ref: f.forecast_time
             ? Math.round((new Date(f.forecast_time) - new Date(ref_time)) / 60000)
             : null,
