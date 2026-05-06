@@ -653,8 +653,8 @@ export default async function handler(req, res) {
       centroid_forecasts: allForecasts
         .map(f => ({
           forecast_time:    f.forecast_time,
-          latitude:         f.lat,
-          longitude:        f.lon,
+          latitude:         parseFloat(f.lat.toFixed(4)),
+          longitude:        parseFloat(f.lon.toFixed(4)),
           minutes_from_ref: f.forecast_time
             ? Math.round((new Date(f.forecast_time) - new Date(ref_time)) / 60000)
             : null,
