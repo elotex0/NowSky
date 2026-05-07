@@ -7,6 +7,20 @@ import * as turf from "@turf/turf";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
+// ── GeoJSON-Cache (einmal laden, dann im Speicher halten) ─────────────────────
+let _geojsonCache = null;
+const loadGeoJson = () => {
+  if (_geojsonCache) return _geojsonCache;
+  try {
+    const filePath = path.join(__dirname, "../deutschland.geojson");
+    _geojsonCache = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    return _geojsonCache;
+  } catch (e) {
+    console.error("GeoJSON laden fehlgeschlagen:", e.message);
+    return null;
+  }
+};
+
 // ── Mesozyklonen-Parser ───────────────────────────────────────────────────────
 const parseMesoCells = (xml) => {
   const text = (xml, tag) => {
@@ -18,7 +32,6 @@ const parseMesoCells = (xml) => {
     return v !== null && v !== "" && !isNaN(v) ? parseFloat(v) : null;
   };
 
-  // Referenzzeit aus dem Root-Element oder dem ersten Event
   const refTimeMatch =
     xml.match(/<time[^>]*time-coordinate="UTC"[^>]*>([^<]+)<\/time>/) ||
     xml.match(/<time[^>]*>([^<]+)<\/time>/);
@@ -28,7 +41,6 @@ const parseMesoCells = (xml) => {
   const dateStr = dtMatch ? `${dtMatch[1]}${dtMatch[2]}${dtMatch[3]}` : "";
   const timeStr = dtMatch ? `${dtMatch[4]}${dtMatch[5]}`             : "";
 
-  // Alle <event>-Blöcke
   const eventRe = /<event\b([^>]*)>([\s\S]*?)<\/event>/g;
   const cells   = [];
   let m;
@@ -321,26 +333,22 @@ export default async function handler(req, res) {
     return { text: `${distKm} km ${dir} von ${best.name}`, name: best.name, dist_km: distKm, direction: dir };
   };
 
-  const loadGeoJson = () => {
-    try {
-      const filePath = path.join(__dirname, "../deutschland.geojson");
-      return JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    } catch (e) {
-      console.error("GeoJSON laden fehlgeschlagen:", e.message);
-      return null;
-    }
-  };
-
+  // ── fetchXml — parallel statt sequenziell ────────────────────────────────
   const fetchXml = async () => {
-    for (const offset of [5, 10, 15, 20]) {
-      const filename = buildFilename(offset);
-      const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
-      const r = await fetch(url, {
-        headers: { "User-Agent": "konrad3d-api/1.0" },
-        signal:  AbortSignal.timeout(12000),
-      });
-      if (r.ok) return { xml: await r.text(), filename };
-    }
+    const results = await Promise.allSettled(
+      [5, 10, 15, 20].map(async (offset) => {
+        const filename = buildFilename(offset);
+        const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
+        const r = await fetch(url, {
+          headers: { "User-Agent": "konrad3d-api/1.0" },
+          signal: AbortSignal.timeout(12000),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return { xml: await r.text(), filename };
+      })
+    );
+    const first = results.find((r) => r.status === "fulfilled");
+    if (first) return first.value;
     throw new Error("Keine aktuelle KONRAD3D-Datei verfügbar");
   };
 
@@ -355,6 +363,13 @@ export default async function handler(req, res) {
 
     const BUFFER_KM = 2.5;
     const refMs     = new Date(ref_time).getTime();
+
+    // Bounding box des gesamten Tracks als schneller Vorfilter
+    const trackMinLat = Math.min(...trackPoints.map(p => p.lat));
+    const trackMaxLat = Math.max(...trackPoints.map(p => p.lat));
+    const trackMinLon = Math.min(...trackPoints.map(p => p.lon));
+    const trackMaxLon = Math.max(...trackPoints.map(p => p.lon));
+    const PAD = 0.5; // ~50 km Puffer in Grad
 
     let trackBuffer;
     if (trackPoints.length === 1) {
@@ -383,13 +398,37 @@ export default async function handler(req, res) {
       const name = getCityName(f.properties);
       if (!name || seen.has(name)) continue;
 
+      // Schneller Track-BBox-Vorcheck (spart teure turf-Operationen)
       const featBbox = turf.bbox(f);
+      if (
+        featBbox[2] < trackMinLon - PAD ||
+        featBbox[0] > trackMaxLon + PAD ||
+        featBbox[3] < trackMinLat - PAD ||
+        featBbox[1] > trackMaxLat + PAD
+      ) continue;
+
       if (
         featBbox[2] < bufferBbox[0] ||
         featBbox[0] > bufferBbox[2] ||
         featBbox[3] < bufferBbox[1] ||
         featBbox[1] > bufferBbox[3]
       ) continue;
+
+      // Schneller Centroid-Distanz-Vorcheck (~80 km) — spart teure booleanIntersects-Calls
+      let centroidCoord;
+      try {
+        const c = turf.centroid(f);
+        centroidCoord = c.geometry.coordinates;
+      } catch {
+        centroidCoord = [
+          (featBbox[0] + featBbox[2]) / 2,
+          (featBbox[1] + featBbox[3]) / 2,
+        ];
+      }
+
+      const refPoint = trackPoints[0];
+      const quickDist = haversine(centroidCoord[1], centroidCoord[0], refPoint.lat, refPoint.lon);
+      if (quickDist > 80) continue;
 
       let isAffected = false;
 
@@ -410,17 +449,6 @@ export default async function handler(req, res) {
 
       let bestMs   = trackPoints[0].ms;
       let bestDist = Infinity;
-
-      let centroidCoord;
-      try {
-        const c = turf.centroid(f);
-        centroidCoord = c.geometry.coordinates;
-      } catch {
-        centroidCoord = [
-          (featBbox[0] + featBbox[2]) / 2,
-          (featBbox[1] + featBbox[3]) / 2,
-        ];
-      }
 
       for (let i = 0; i < trackPoints.length - 1; i++) {
         const p = trackPoints[i];
@@ -586,7 +614,6 @@ export default async function handler(req, res) {
     let perp_point1_lat = null, perp_point1_lon = null;
     let perp_point2_lat = null, perp_point2_lon = null;
 
-    // NEU (richtig):
     if (lat && lon && forecast_lat && forecast_lon) {
       const dLat = forecast_lat - lat;
       const dLon = forecast_lon - lon;
@@ -595,7 +622,7 @@ export default async function handler(req, res) {
 
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
       const trackDist = haversine(lat, lon, forecast_lat, forecast_lon);
-      const coneWidth = Math.max(25, trackDist * 0.5); // z.B. 50% der Track-Distanz
+      const coneWidth = Math.max(25, trackDist * 0.5);
       const p1 = destPoint(forecast_lat, forecast_lon, (trackBearing + 90)  % 360, coneWidth);
       const p2 = destPoint(forecast_lat, forecast_lon, (trackBearing + 270) % 360, coneWidth);
       perp_point1_lat = p1.lat;
@@ -603,7 +630,6 @@ export default async function handler(req, res) {
       perp_point2_lat = p2.lat;
       perp_point2_lon = p2.lon;
     }
-
 
     // ── Turf-basierte Ortserkennung ───────────────────────────────────
     const refMs      = new Date(ref_time).getTime();
