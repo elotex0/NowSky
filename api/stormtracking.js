@@ -430,144 +430,112 @@ export default async function handler(req, res) {
     const nwp_dcape      = num(nwp, "nwp_dcape");
 
     // ── STP & SCP (europäische Klimatologie, korrigiert nach Taszarek et al. 2020,
-    //    Coffer et al. 2020, Pilguj et al. 2022) ──────────────────────────────────
-    //
-    // Wichtige Korrekturen gegenüber vorheriger Version:
-    //
-    //   STP:  - SRH-Layer: 0-500m AGL (nwp_srh_500m_rm) bevorzugt, Nenner 75
-    //               → falls nicht verfügbar: SRH1km / 150 (Thompson-Standard)
-    //           - CAPE-Nenner: 1000 J/kg (EU-Kompromiss, kein harter Cap bei 1.0)
-    //           - LCL-Term: 0 bei > 2000m (nicht 2500m), 1.0 bei < 1000m
-    //           - CIN-Term: 0 bei < -150 J/kg, 1.0 bei > -50 J/kg (SPC-ähnlich, EU-angepasst)
-    //           - BS-Nenner: 20 m/s (Effective Shear Standard, nicht 12)
-    //
-    //   SCP:  - CAPE-Nenner: 1000 J/kg (statt 500 → verhindert absurde Werte)
-    //           - SRH3km-Nenner: 50 m²/s² (statt 30)
-    //           - BS06-Nenner: 20 m/s (statt 12), Cap bei 1.5
-    //
-    //   Tornado-Wahrscheinlichkeit: EU-Kalibrierung nach ERA5-Befunden:
-    //           mittlerer STP für (E)F2+ in Europa ≈ 0.15 (ERA5, Coffer 2020)
-    //           → selbst STP > 1.0 ist extrem selten und signifikant
-    //
-    //   SHIP-Proxy: ersetzt den Score-Ansatz durch eine formelnähere Berechnung
-    //           mit EU-angepasstem Divisor
+//    Coffer et al. 2020, Pilguj et al. 2022) ──────────────────────────────────
+//
+// Korrekturen gegenüber vorheriger Version:
+//
+//   STP:  - SRH1km-Nenner: 150 m²/s² (Thompson 2003 Standard; 75 gehört zu SRH500)
+//           - CAPE-Nenner: 1000 J/kg (EU-Anpassung; kein harter Cap bei 1.0)
+//           - BS_eff-Nenner: 20 m/s (Standard; 12 m/s erzeugte überhöhte Werte)
+//           - LCL-Term: 1.0 bei < 1000m, 0.0 bei >= 2000m (SPC-Standard)
+//           - CIN-Term: 1.0 bei > -50 J/kg, 0.0 bei < -150 J/kg (EU-angepasst)
+//
+//   SCP:  - CAPE-Nenner: 1000 J/kg (statt 500 → verhindert Werte > 20)
+//           - SRH3km-Nenner: 50 m²/s² (statt 30)
+//           - BS06-Nenner: 20 m/s (statt 12), Cap bei 1.5
+//
+//   Tornado-Wahrscheinlichkeit: EU-Kalibrierung nach ERA5:
+//           Coffer et al. 2020: mittlerer STP für (E)F2+ in Europa ≈ 0.15
+//           Pilguj et al. 2022: Gewalttornados ≈ 0.7–0.9
+//           → neue Schwellen entsprechend angepasst
 
     let stp = null;
     let scp = null;
-    let hail_prob_2cm  = null;
-    let tornado_prob   = null;
+    let hail_prob_2cm = null;
+    let tornado_prob  = null;
 
     if (nwp_mu_cape !== null) {
 
-      // ── STP (Significant Tornado Parameter, EU-kalibriert) ─────────────────
-      // Basis: Coffer et al. (2019/2020) mit 0-500m SRH; fallback auf 0-1km SRH
+      // ── STP ────────────────────────────────────────────────────────────────────
       if (
         nwp_mu_cape    !== null &&
         nwp_bs_eff_mu  !== null &&
+        nwp_srh_1km_rm !== null &&
         nwp_mu_lcl_hgt !== null
       ) {
-        // CAPE-Term: Nenner 1000 J/kg (EU-Anpassung; US-Standard 1500 zu hoch)
-        // Kein harter Cap – höhere CAPE soll sich weiter auszahlen
+        // CAPE-Term: Nenner 1000 J/kg (EU); kein harter Cap, höhere CAPE zahlt sich aus
         const cape_term = nwp_mu_cape / 1000;
 
-        // Scherung: Effective Bulk Wind Difference, Standard-Nenner 20 m/s, Cap 1.5
-        // (SPC-Standard; 12 m/s als Nenner erzeugt unrealistisch hohe Werte)
+        // Effective Shear: Standard-Nenner 20 m/s, Cap 1.5 (SPC-Standard)
+        // Nenner 12 m/s war falsch und überbewertete selbst schwache Scherung massiv
         const eshr_term = Math.min(nwp_bs_eff_mu / 20, 1.5);
 
-        // SRH-Term: 0-500m bevorzugt (Coffer 2020, bestes Diskriminierungsmerkmal)
-        // Falls SRH500 nicht verfügbar: 0-1km SRH mit Nenner 150 (Thompson 2003)
-        let srh_term;
-        if (nwp_srh_500m_rm !== null) {
-          srh_term = Math.min(Math.max(nwp_srh_500m_rm, 0) / 75, 2.0);
-        } else if (nwp_srh_1km_rm !== null) {
-          srh_term = Math.min(Math.max(nwp_srh_1km_rm, 0) / 150, 2.0);
-        } else {
-          srh_term = null;
-        }
+        // SRH1km: Nenner 150 m²/s² (Thompson 2003)
+        // ACHTUNG: Nenner 75 gehört ausschließlich zur Coffer-SRH500-Formel
+        const srh_term = Math.min(Math.max(nwp_srh_1km_rm, 0) / 150, 2.0);
 
-        // LCL-Term: linear 1.0 bei < 1000m, 0.0 bei > 2000m (SPC-Standard, EU-validiert)
-        // Pilguj 2022: mittlere LCL europ. Tornado-Fälle ≈ 1000m → 1000m als obere Grenze sinnvoll
+        // LCL-Term: SPC-Standard, in Europa validiert (Pilguj 2022: mittlere LCL ~1000m)
+        // 1.0 bei LCL <= 1000m, linear auf 0.0 bei LCL >= 2000m
         let lcl_term;
-        if (nwp_mu_lcl_hgt <= 1000) {
-          lcl_term = 1.0;
-        } else if (nwp_mu_lcl_hgt >= 2000) {
-          lcl_term = 0.0;
-        } else {
-          lcl_term = (2000 - nwp_mu_lcl_hgt) / 1000;  // linear zwischen 1000 und 2000m
-        }
+        if      (nwp_mu_lcl_hgt <= 1000) lcl_term = 1.0;
+        else if (nwp_mu_lcl_hgt >= 2000) lcl_term = 0.0;
+        else    lcl_term = (2000 - nwp_mu_lcl_hgt) / 1000;
 
-        // CIN-Term: SPC-ähnlich, EU-angepasst (weniger streng; EU hat oft schwächere CIN)
-        // 1.0 bei CIN > -50 J/kg; linear 0 bei CIN = -150 J/kg (statt -50 im alten Code)
-        let cin_term;
+        // CIN-Term: EU-angepasst (europäische Gewitter oft weniger CIN als US)
+        // 1.0 bei CIN > -50 J/kg; linear auf 0.0 bei CIN <= -150 J/kg
+        let cin_term = 1.0;
         if (nwp_mu_cin !== null) {
-          if (nwp_mu_cin >= -50) {
-            cin_term = 1.0;
-          } else if (nwp_mu_cin <= -150) {
-            cin_term = 0.0;
-          } else {
-            cin_term = (150 + nwp_mu_cin) / 100;  // CIN ist negativ: (-50-(-150))/100
-          }
-        } else {
-          cin_term = 1.0;
+          if      (nwp_mu_cin >= -50)  cin_term = 1.0;
+          else if (nwp_mu_cin <= -150) cin_term = 0.0;
+          else    cin_term = (150 + nwp_mu_cin) / 100;  // linear zwischen -50 und -150
         }
 
-        if (srh_term !== null) {
-          stp = cape_term * eshr_term * srh_term * lcl_term * cin_term;
-          stp = Math.round(stp * 100) / 100;
+        stp = cape_term * eshr_term * srh_term * lcl_term * cin_term;
+        stp = Math.round(stp * 100) / 100;
 
-          // Tornado-Wahrscheinlichkeit, EU-kalibriert nach ERA5-Befunden:
-          // Coffer et al. 2020: mittlerer STP (ERA5) für (E)F2+ in Europa ≈ 0.15
-          // Pilguj et al. 2022: mittlerer STP für Gewalttornados ≈ 0.7-0.9
-          // → STP > 1.0 ist in Europa SEHR selten und hochsignifikant
-          // Wahrscheinlichkeiten (bed. Wahrsch., gegeben Sturmentwicklung):
-          // STP < 0.1  → ~1-3%
-          // STP 0.1-0.5 → ~4-10%
-          // STP 0.5-1.0 → ~12-25%
-          // STP 1.0-2.0 → ~30-50%
-          // STP > 2.0   → ~55%+
-          if      (stp >= 3.0) tornado_prob = Math.min(75, 55 + (stp - 3.0) * 5);
-          else if (stp >= 2.0) tornado_prob = 40 + (stp - 2.0) * 15;
-          else if (stp >= 1.0) tornado_prob = 20 + (stp - 1.0) * 20;
-          else if (stp >= 0.5) tornado_prob = 8  + (stp - 0.5) * 24;
-          else if (stp >= 0.1) tornado_prob = 2  + stp * 30;
-          else                 tornado_prob = Math.max(0.5, stp * 20);
-          tornado_prob = Math.round(tornado_prob * 10) / 10;
-        }
+        // Tornado-Wahrscheinlichkeit, EU-kalibriert:
+        // Referenzwerte aus ERA5-Literatur (Coffer 2020, Pilguj 2022):
+        //   STP 0.15 = typischer Median für signifikante Tornados (EF2+) in Europa
+        //   STP 0.7–0.9 = Gewalttornados (EF4–EF5 Äquivalent)
+        //   STP > 1.0 = in Europa extrem selten, sehr hohes Potenzial
+        // Wahrscheinlichkeiten sind bedingt auf Sturmentwicklung:
+        if      (stp >= 3.0) tornado_prob = Math.min(75, 55 + (stp - 3.0) * 5);
+        else if (stp >= 2.0) tornado_prob = 40 + (stp - 2.0) * 15;
+        else if (stp >= 1.0) tornado_prob = 20 + (stp - 1.0) * 20;
+        else if (stp >= 0.5) tornado_prob = 8  + (stp - 0.5) * 24;
+        else if (stp >= 0.1) tornado_prob = 2  + stp * 30;
+        else                 tornado_prob = Math.max(0.5, stp * 20);
+        tornado_prob = Math.round(tornado_prob * 10) / 10;
       }
 
-      // ── SCP (Supercell Composite Parameter, EU-korrigiert) ────────────────────
-      // Kritische Korrektur: Nenner 500 für CAPE und 30 für SRH3km erzeugten
-      // absurde Werte (SCP > 20). Standard: CAPE/1000, SRH3km/50, BS06/20.
+      // ── SCP ────────────────────────────────────────────────────────────────────
+      // Alle drei Nenner waren zu klein → SCP von 21.74 ist physikalisch unsinnig.
+      // Selbst in US-Tornado-Outbreaks liegt SCP selten über 10–15.
       if (
         nwp_mu_cape    !== null &&
         nwp_srh_3km_rm !== null &&
         nwp_bs_06km    !== null
       ) {
-        const cape_term_scp = nwp_mu_cape / 1000;              // EU: 1000 statt US 1000 ident
-        const srh_term_scp  = Math.max(nwp_srh_3km_rm, 0) / 50; // 50 m²/s² Standard
-        const bs_term_scp   = Math.min(nwp_bs_06km / 20, 1.5); // 20 m/s, Cap 1.5
+        const cape_term_scp = nwp_mu_cape / 1000;
+        const srh_term_scp  = Math.max(nwp_srh_3km_rm, 0) / 50;
+        const bs_term_scp   = Math.min(nwp_bs_06km / 20, 1.5);
 
         scp = cape_term_scp * srh_term_scp * bs_term_scp;
         scp = Math.round(scp * 100) / 100;
       }
 
-      // ── Hagel >= 2 cm Wahrscheinlichkeit (EU SHIP-Proxy) ────────────────────
-      // Verbessert: stärker formelbasiert nach SHIP-Konzept (SPC / Kunz et al.)
-      // SHIP = [MUCAPE * MU_MR * LR700-500 * (-T500) * BS06] / Divisor
-      // Für EU: Divisor ~25.000.000 (geringere MR als US), + Radar-Korrekturen
+      // ── Hagel >= 2 cm (EU SHIP-Proxy) ─────────────────────────────────────────
       if (nwp_mu_cape !== null && nwp_bs_06km !== null) {
 
         let hail_score = 0;
 
-        // CAPE-Beitrag (weniger stufig, mehr proportional)
-        const cape_contribution = Math.min(nwp_mu_cape / 2000, 1.0) * 35;
-        hail_score += cape_contribution;
+        // CAPE-Beitrag: proportional bis 2000 J/kg = 35 Punkte
+        hail_score += Math.min(nwp_mu_cape / 2000, 1.0) * 35;
 
-        // Scherung 0-6km (proportional bis 25 m/s)
-        const bs_contribution = Math.min(nwp_bs_06km / 25, 1.0) * 25;
-        hail_score += bs_contribution;
+        // Scherung 0-6km: proportional bis 25 m/s = 25 Punkte
+        hail_score += Math.min(nwp_bs_06km / 25, 1.0) * 25;
 
-        // Echo-Top Beitrag (Proxy für Gefrierzone / Aufwindhöhe)
+        // Echo-Top (Aufwindhöhe / Gefrierzone-Proxy)
         if (echo_top_msl !== null) {
           if      (echo_top_msl >= 12000) hail_score += 20;
           else if (echo_top_msl >= 10000) hail_score += 15;
@@ -576,7 +544,7 @@ export default async function handler(req, res) {
           else if (echo_top_msl >= 4000)  hail_score += 2;
         }
 
-        // VIL-Dichte (wichtigster Echtzeit-Hagelindikator)
+        // VIL-Dichte
         if (vil_density !== null) {
           if      (vil_density >= 4.0) hail_score += 15;
           else if (vil_density >= 3.0) hail_score += 10;
@@ -584,14 +552,14 @@ export default async function handler(req, res) {
           else if (vil_density >= 1.0) hail_score += 2;
         }
 
-        // HYMEC / Radar-Hagelnachweis (direkter Nachweis → stärkste Gewichtung)
-        if      (hail_flag >= 2) hail_score += 25;   // erhöht: direkter Nachweis ist sicher
+        // HYMEC-Radar-Hagelnachweis (direkter Nachweis → stärkste Gewichtung)
+        if      (hail_flag >= 2) hail_score += 25;
         else if (hail_flag === 1) hail_score += 12;
 
-        // HYMEC Großhagelfläche
+        // Großhagelfläche
         if (area_large_hail > 0) hail_score += 10;
 
-        // Basiswahrscheinlichkeit ohne CAPE/Scherung deckeln (min. 5% wenn Radar Hagel zeigt)
+        // Minimum-Wahrscheinlichkeit wenn Radar bereits Hagel zeigt
         const min_prob = (hail_flag >= 1) ? 10 : 1;
 
         hail_prob_2cm = Math.min(95, Math.max(min_prob, hail_score));
