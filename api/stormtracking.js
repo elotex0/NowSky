@@ -417,6 +417,135 @@ export default async function handler(req, res) {
     const echo_bottom_large_hail = noFill(num(hymec, "echo_bottom_large_hail"));
     const hail_flag              = int(inner, "hail_flag");
 
+    // ── NWP-Parameter ─────────────────────────────────────────────────────
+    const nwp = block(inner, "nwp_model") ?? "";
+    const nwp_mu_cape    = num(nwp, "nwp_mu_cape");
+    const nwp_mu_cin     = num(nwp, "nwp_mu_cin");
+    const nwp_mu_lcl_hgt = num(nwp, "nwp_mu_lcl_hgt");
+    const nwp_bs_01km    = num(nwp, "nwp_bs_01km");
+    const nwp_bs_06km    = num(nwp, "nwp_bs_06km");
+    const nwp_bs_eff_mu  = num(nwp, "nwp_bs_eff_mu");
+    const nwp_srh_1km_rm = num(nwp, "nwp_srh_1km_rm");
+    const nwp_srh_3km_rm = num(nwp, "nwp_srh_3km_rm");
+    const nwp_dcape      = num(nwp, "nwp_dcape");
+
+    // ── STP & SCP (europäische Klimatologie nach Taszarek et al. 2020) ────
+    //
+    // Europäische Anpassungen:
+    //   STP:  CAPE-Nenner   500  statt 1500  (Europa hat selten >1000 J/kg)
+    //         SRH1km-Nenner  75  statt  150  (niedrigere SRH-Werte typisch)
+    //         BS06-Nenner    12  statt   20  (schwächere Scherung in Europa)
+    //         LCL-Offset   1500  statt 2000  (mediterran/kontinental feuchter)
+    //   SCP:  CAPE-Nenner   500  statt 1000
+    //         SRH3km-Nenner  30  statt   50
+    //         BS06-Nenner    12  statt   20
+
+    let stp = null;
+    let scp = null;
+    let hail_prob_2cm  = null;  // Wahrscheinlichkeit Hagel >= 2 cm in %
+    let tornado_prob   = null;  // Wahrscheinlichkeit Tornadogenese in %
+
+    if (nwp_mu_cape !== null) {
+
+      // ── STP (Significant Tornado Parameter, EU-angepasst) ──────────────
+      if (
+        nwp_mu_cape    !== null &&
+        nwp_bs_eff_mu  !== null &&
+        nwp_srh_1km_rm !== null &&
+        nwp_mu_lcl_hgt !== null
+      ) {
+        const cape_term = Math.min(nwp_mu_cape / 500, 1.0);          // cap bei 1.0
+        const eshr_term = Math.min(nwp_bs_eff_mu / 12, 1.5);         // cap bei 1.5
+        const srh_term  = Math.min(Math.max(nwp_srh_1km_rm, 0) / 75, 2.0); // nur positiv
+        const lcl_term  = nwp_mu_lcl_hgt <= 1500
+          ? 1.0
+          : Math.max(0, (2500 - nwp_mu_lcl_hgt) / 1000);             // linear 0 bei 2500m
+
+        // CIN-Term: stark negative CIN dämpft Tornado-Potenzial
+        const cin_term = nwp_mu_cin !== null
+          ? Math.max(0, 1 + nwp_mu_cin / 50)   // CIN ist negativ → bei -50 = 0
+          : 1.0;
+
+        stp = cape_term * eshr_term * srh_term * lcl_term * cin_term;
+        stp = Math.round(stp * 100) / 100;
+
+        // Tornado-Wahrscheinlichkeit (EU-Kalibrierung nach Taszarek 2020)
+        // STP < 0.1  → ~1-2%
+        // STP 0.1-0.5 → ~3-8%
+        // STP 0.5-1.0 → ~10-20%
+        // STP > 1.0   → ~25%+
+        if      (stp >= 2.0) tornado_prob = Math.min(40, 25 + (stp - 2.0) * 5);
+        else if (stp >= 1.0) tornado_prob = 10 + (stp - 1.0) * 15;
+        else if (stp >= 0.5) tornado_prob = 5  + (stp - 0.5) * 10;
+        else if (stp >= 0.1) tornado_prob = 1  + stp * 20;
+        else                 tornado_prob = Math.max(0.5, stp * 10);
+        tornado_prob = Math.round(tornado_prob * 10) / 10;
+      }
+
+      // ── SCP (Supercell Composite Parameter, EU-angepasst) ──────────────
+      if (
+        nwp_mu_cape    !== null &&
+        nwp_srh_3km_rm !== null &&
+        nwp_bs_06km    !== null
+      ) {
+        const cape_term_scp = nwp_mu_cape / 500;
+        const srh_term_scp  = Math.max(nwp_srh_3km_rm, 0) / 30;
+        const bs_term_scp   = Math.min(nwp_bs_06km / 12, 2.0);
+
+        scp = cape_term_scp * srh_term_scp * bs_term_scp;
+        scp = Math.round(scp * 100) / 100;
+      }
+
+      // ── Hagel >= 2 cm Wahrscheinlichkeit (EU SHIP-Proxy) ───────────────
+      // Basiert auf: CAPE, BS06, Echo-Top, VIL-Dichte, hail_flag
+      // Quelle: Kunz et al. 2020, Taszarek et al. 2020
+      if (nwp_mu_cape !== null && nwp_bs_06km !== null) {
+
+        // Basis-Score aus CAPE + Scherung
+        let hail_score = 0;
+
+        // CAPE-Beitrag (EU: schon ab 200 J/kg Hagel möglich)
+        if      (nwp_mu_cape >= 2000) hail_score += 40;
+        else if (nwp_mu_cape >= 1000) hail_score += 25;
+        else if (nwp_mu_cape >= 500)  hail_score += 15;
+        else if (nwp_mu_cape >= 200)  hail_score += 8;
+        else                          hail_score += 2;
+
+        // Scherung 0-6km Beitrag
+        if      (nwp_bs_06km >= 20) hail_score += 20;
+        else if (nwp_bs_06km >= 15) hail_score += 12;
+        else if (nwp_bs_06km >= 10) hail_score += 6;
+        else                        hail_score += 2;
+
+        // Echo-Top Beitrag (höheres Top → größeres Hagelpotenzial)
+        if (echo_top_msl !== null) {
+          if      (echo_top_msl >= 10000) hail_score += 20;
+          else if (echo_top_msl >= 8000)  hail_score += 14;
+          else if (echo_top_msl >= 6000)  hail_score += 8;
+          else if (echo_top_msl >= 4000)  hail_score += 3;
+        }
+
+        // VIL-Dichte Beitrag
+        if (vil_density !== null) {
+          if      (vil_density >= 4.0) hail_score += 15;
+          else if (vil_density >= 3.0) hail_score += 10;
+          else if (vil_density >= 2.0) hail_score += 5;
+          else if (vil_density >= 1.0) hail_score += 2;
+        }
+
+        // HYMEC-Beitrag (direkter Radar-Hagelnachweis)
+        if      (hail_flag >= 2) hail_score += 20;
+        else if (hail_flag === 1) hail_score += 10;
+
+        // HYMEC Großhagelfläche
+        if (area_large_hail > 0) hail_score += 10;
+
+        // Normierung auf 0-100%
+        hail_prob_2cm = Math.min(95, Math.max(1, hail_score));
+        hail_prob_2cm = Math.round(hail_prob_2cm);
+      }
+    }
+
     // ── Hagelberechnung ───────────────────────────────────────────────
     let hail_cm = null;
 
@@ -567,6 +696,21 @@ export default async function handler(req, res) {
       echo_bottom_msl,
       covered_area,
       orte,
+      nwp: {
+        mu_cape:    nwp_mu_cape,
+        mu_cin:     nwp_mu_cin,
+        lcl_hgt:    nwp_mu_lcl_hgt,
+        bs_01km:    nwp_bs_01km,
+        bs_06km:    nwp_bs_06km,
+        bs_eff_mu:  nwp_bs_eff_mu,
+        srh_1km_rm: nwp_srh_1km_rm,
+        srh_3km_rm: nwp_srh_3km_rm,
+        dcape:      nwp_dcape,
+      },
+      stp,
+      scp,
+      hail_prob_2cm,
+      tornado_prob,
       centroid_forecasts: allForecasts
         .map(f => ({
           forecast_time:    f.forecast_time,
