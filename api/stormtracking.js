@@ -475,38 +475,54 @@ export default async function handler(req, res) {
   // ── SCP berechnen ─────────────────────────────────────────────────
   // SCP = (MUCAPE / 1000) × (SRH3km_RM / 50) × (EBS_MU / 20)
   // Alle Terme ≥ 0 geclampt; EBS-Term auf 0 wenn < 10 m/s (kein org. Updraft)
-  let scp = null;
-  if (
-    nwp_mu_cape !== null &&
-    nwp_srh_3km_rm !== null &&
-    nwp_bs_eff_mu !== null
-  ) {
-    const cape_term = Math.max(0, nwp_mu_cape / 1000);
-    const srh_term  = Math.max(0, nwp_srh_3km_rm / 50);
-    const ebs_term  = nwp_bs_eff_mu >= 10
-      ? nwp_bs_eff_mu / 20
-      : 0;
-    scp = Math.round(cape_term * srh_term * ebs_term * 10) / 10;
-  }
+// ── SCP (ESSL/ECMWF-Ansatz) ───────────────────────────────────────
+// SCP = (MUCAPE/1000) × (SRH3km_RM/50) × (EBS_MU/20) × CIN-Faktor
+// CIN-Faktor: linear 0→1 für |CIN| 0→40 J/kg, danach geclampt auf 1
+// Alle Terme ≥ 0; negatives SRH3km_RM → Term = 0
+let scp = null;
+if (
+  nwp_mu_cape !== null &&
+  nwp_srh_3km_rm !== null &&
+  nwp_bs_eff_mu !== null &&
+  nwp_mu_cin !== null
+) {
+  const cape_term = Math.max(0, nwp_mu_cape / 1000);
+  const srh_term  = Math.max(0, nwp_srh_3km_rm / 50);
+  const ebs_term  = Math.max(0, nwp_bs_eff_mu / 20);
+  // CIN: nwp_mu_cin ist negativ (z.B. -12), wir wollen |CIN|
+  // Schwache CIN (nahe 0) → Faktor ~0 (Zelle kann leicht aufbrechen, aber auch
+  // leicht wieder zerfallen ohne getriggert zu werden — ESSL nutzt CIN als
+  // "Kappenindikator": moderate CIN = organisierender Faktor, sehr hohe CIN = limitierend)
+  // ESSL-Konvention: CIN-Term = min(1, |CIN|/40), d.h. optimum bei |CIN|=40
+  const cin_abs  = Math.abs(nwp_mu_cin);
+  const cin_term = Math.min(1, cin_abs / 40);
+  scp = Math.round(cape_term * srh_term * ebs_term * cin_term * 10) / 10;
+}
 
-  // ── STP berechnen ─────────────────────────────────────────────────
-  // STP = (MUCAPE / 1500) × ((2000 - LCL_hgt) / 1000) × (SRH1km_RM / 150) × (EBS_MU / 20)
-  // LCL-Term = 0 wenn LCL_hgt > 2000 m; alle Terme ≥ 0 geclampt
-  let stp = null;
-  if (
-    nwp_mu_cape !== null &&
-    nwp_mu_lcl_hgt !== null &&
-    nwp_srh_1km_rm !== null &&
-    nwp_bs_eff_mu !== null
-  ) {
-    const cape_term = Math.max(0, nwp_mu_cape / 1500);
-    const lcl_term  = nwp_mu_lcl_hgt <= 2000
-      ? Math.max(0, (2000 - nwp_mu_lcl_hgt) / 1000)
-      : 0;
-    const srh_term  = Math.max(0, nwp_srh_1km_rm / 150);
-    const ebs_term  = Math.max(0, nwp_bs_eff_mu / 20);
-    stp = Math.round(cape_term * lcl_term * srh_term * ebs_term * 100) / 100;
-  }
+// ── STP (ESSL/ECMWF-Ansatz) ───────────────────────────────────────
+// STP = (MUCAPE/1500) × LCL-Term × (SRH1km_RM/150) × (EBS_MU/20) × CIN-Faktor
+// LCL-Term: (2000 - LCL_hgt) / 1000, geclampt auf [0, 1.5]
+//   → LCL < 500 m  → Term = 1.5 (sehr günstig)
+//   → LCL = 2000 m → Term = 0
+//   → LCL > 2000 m → Term = 0
+// CIN-Faktor: min(1, |CIN|/50)
+let stp = null;
+if (
+  nwp_mu_cape !== null &&
+  nwp_mu_lcl_hgt !== null &&
+  nwp_srh_1km_rm !== null &&
+  nwp_bs_eff_mu !== null &&
+  nwp_mu_cin !== null
+) {
+  const cape_term = Math.max(0, nwp_mu_cape / 1500);
+  const lcl_raw   = (2000 - nwp_mu_lcl_hgt) / 1000;
+  const lcl_term  = Math.min(1.5, Math.max(0, lcl_raw));
+  const srh_term  = Math.max(0, nwp_srh_1km_rm / 150);
+  const ebs_term  = Math.max(0, nwp_bs_eff_mu / 20);
+  const cin_abs   = Math.abs(nwp_mu_cin);
+  const cin_term  = Math.min(1, cin_abs / 50);
+  stp = Math.round(cape_term * lcl_term * srh_term * ebs_term * cin_term * 100) / 100;
+}
 
   // ── NWP-Objekt zusammenbauen ──────────────────────────────────────
   const nwp = nwpBlock
