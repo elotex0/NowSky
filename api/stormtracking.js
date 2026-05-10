@@ -228,7 +228,7 @@ export default async function handler(req, res) {
     const results = await Promise.allSettled(
       [5, 10, 15, 20].map(async (offset) => {
         const filename = buildFilename(offset);
-        const url = `https://opendata.dwd.de/weather/radar/konrad3d/KONRAD3D_20260508T184000.xml`;
+        const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
         const r = await fetch(url, {
           headers: { "User-Agent": "konrad3d-api/1.0" },
           signal: AbortSignal.timeout(12000),
