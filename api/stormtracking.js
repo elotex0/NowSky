@@ -228,7 +228,7 @@ export default async function handler(req, res) {
     const results = await Promise.allSettled(
       [5, 10, 15, 20].map(async (offset) => {
         const filename = buildFilename(offset);
-        const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
+        const url = `https://opendata.dwd.de/weather/radar/konrad3d/KONRAD3D_20260508T184000.xml`;
         const r = await fetch(url, {
           headers: { "User-Agent": "konrad3d-api/1.0" },
           signal: AbortSignal.timeout(12000),
@@ -450,6 +450,90 @@ export default async function handler(req, res) {
       hail_cm = Math.round(hail_cm * 10) / 10;
     }
 
+
+    // ── NWP-Daten parsen ──────────────────────────────────────────────
+  const nwpBlock = block(inner, "nwp_model") ?? "";
+
+  const nwp_model_name  = text(nwpBlock, "nwp_model_name");
+  const nwp_init_time   = text(nwpBlock, "nwp_init_time");
+  const nwp_dcape       = num(nwpBlock, "nwp_dcape");
+  const nwp_mu_cape     = num(nwpBlock, "nwp_mu_cape");
+  const nwp_mu_cin      = num(nwpBlock, "nwp_mu_cin");
+  const nwp_mu_lcl_hgt  = num(nwpBlock, "nwp_mu_lcl_hgt");
+  const nwp_mu_lfc_hgt  = num(nwpBlock, "nwp_mu_lfc_hgt");
+  const nwp_mu_el_hgt   = num(nwpBlock, "nwp_mu_el_hgt");
+  const nwp_lr_500800   = num(nwpBlock, "nwp_lr_500800hPa");
+  const nwp_prcp_water  = num(nwpBlock, "nwp_prcp_water");
+  const nwp_bs_01km     = num(nwpBlock, "nwp_bs_01km");
+  const nwp_bs_06km     = num(nwpBlock, "nwp_bs_06km");
+  const nwp_bs_eff_mu   = num(nwpBlock, "nwp_bs_eff_mu");
+  const nwp_srh_1km_lm  = num(nwpBlock, "nwp_srh_1km_lm");
+  const nwp_srh_3km_lm  = num(nwpBlock, "nwp_srh_3km_lm");
+  const nwp_srh_1km_rm  = num(nwpBlock, "nwp_srh_1km_rm");
+  const nwp_srh_3km_rm  = num(nwpBlock, "nwp_srh_3km_rm");
+
+  // ── SCP berechnen ─────────────────────────────────────────────────
+  // SCP = (MUCAPE / 1000) × (SRH3km_RM / 50) × (EBS_MU / 20)
+  // Alle Terme ≥ 0 geclampt; EBS-Term auf 0 wenn < 10 m/s (kein org. Updraft)
+  let scp = null;
+  if (
+    nwp_mu_cape !== null &&
+    nwp_srh_3km_rm !== null &&
+    nwp_bs_eff_mu !== null
+  ) {
+    const cape_term = Math.max(0, nwp_mu_cape / 1000);
+    const srh_term  = Math.max(0, nwp_srh_3km_rm / 50);
+    const ebs_term  = nwp_bs_eff_mu >= 10
+      ? nwp_bs_eff_mu / 20
+      : 0;
+    scp = Math.round(cape_term * srh_term * ebs_term * 10) / 10;
+  }
+
+  // ── STP berechnen ─────────────────────────────────────────────────
+  // STP = (MUCAPE / 1500) × ((2000 - LCL_hgt) / 1000) × (SRH1km_RM / 150) × (EBS_MU / 20)
+  // LCL-Term = 0 wenn LCL_hgt > 2000 m; alle Terme ≥ 0 geclampt
+  let stp = null;
+  if (
+    nwp_mu_cape !== null &&
+    nwp_mu_lcl_hgt !== null &&
+    nwp_srh_1km_rm !== null &&
+    nwp_bs_eff_mu !== null
+  ) {
+    const cape_term = Math.max(0, nwp_mu_cape / 1500);
+    const lcl_term  = nwp_mu_lcl_hgt <= 2000
+      ? Math.max(0, (2000 - nwp_mu_lcl_hgt) / 1000)
+      : 0;
+    const srh_term  = Math.max(0, nwp_srh_1km_rm / 150);
+    const ebs_term  = Math.max(0, nwp_bs_eff_mu / 20);
+    stp = Math.round(cape_term * lcl_term * srh_term * ebs_term * 100) / 100;
+  }
+
+  // ── NWP-Objekt zusammenbauen ──────────────────────────────────────
+  const nwp = nwpBlock
+    ? {
+        model_name:    nwp_model_name,
+        init_time:     nwp_init_time,
+        dcape:         nwp_dcape,
+        mu_cape:       nwp_mu_cape,
+        mu_cin:        nwp_mu_cin,
+        mu_lcl_hgt:    nwp_mu_lcl_hgt,
+        mu_lfc_hgt:    nwp_mu_lfc_hgt,
+        mu_el_hgt:     nwp_mu_el_hgt,
+        lr_500_800hpa: nwp_lr_500800,
+        prcp_water:    nwp_prcp_water,
+        bs_01km:       nwp_bs_01km,
+        bs_06km:       nwp_bs_06km,
+        bs_eff_mu:     nwp_bs_eff_mu,
+        srh_1km_lm:    nwp_srh_1km_lm,
+        srh_3km_lm:    nwp_srh_3km_lm,
+        srh_1km_rm:    nwp_srh_1km_rm,
+        srh_3km_rm:    nwp_srh_3km_rm,
+        scp,
+        stp,
+      }
+    : null;
+
+
     // ── Tracking ──────────────────────────────────────────────────────
     const trackBlock = block(inner, "tracking") ?? "";
     const cell_speed = num(trackBlock, "cell_speed");
@@ -566,6 +650,7 @@ export default async function handler(req, res) {
       echo_top_msl,
       echo_bottom_msl,
       covered_area,
+      nwp,
       orte,
       centroid_forecasts: allForecasts
         .map(f => ({
