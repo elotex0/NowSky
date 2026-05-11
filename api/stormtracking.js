@@ -450,106 +450,6 @@ export default async function handler(req, res) {
       hail_cm = Math.round(hail_cm * 10) / 10;
     }
 
-
-    // ── NWP-Daten parsen ──────────────────────────────────────────────
-  const nwpBlock = block(inner, "nwp_model") ?? "";
-
-  const nwp_model_name  = text(nwpBlock, "nwp_model_name");
-  const nwp_init_time   = text(nwpBlock, "nwp_init_time");
-  const nwp_dcape       = num(nwpBlock, "nwp_dcape");
-  const nwp_mu_cape     = num(nwpBlock, "nwp_mu_cape");
-  const nwp_mu_cin      = num(nwpBlock, "nwp_mu_cin");
-  const nwp_mu_lcl_hgt  = num(nwpBlock, "nwp_mu_lcl_hgt");
-  const nwp_mu_lfc_hgt  = num(nwpBlock, "nwp_mu_lfc_hgt");
-  const nwp_mu_el_hgt   = num(nwpBlock, "nwp_mu_el_hgt");
-  const nwp_lr_500800   = num(nwpBlock, "nwp_lr_500800hPa");
-  const nwp_prcp_water  = num(nwpBlock, "nwp_prcp_water");
-  const nwp_bs_01km     = num(nwpBlock, "nwp_bs_01km");
-  const nwp_bs_06km     = num(nwpBlock, "nwp_bs_06km");
-  const nwp_bs_eff_mu   = num(nwpBlock, "nwp_bs_eff_mu");
-  const nwp_srh_1km_lm  = num(nwpBlock, "nwp_srh_1km_lm");
-  const nwp_srh_3km_lm  = num(nwpBlock, "nwp_srh_3km_lm");
-  const nwp_srh_1km_rm  = num(nwpBlock, "nwp_srh_1km_rm");
-  const nwp_srh_3km_rm  = num(nwpBlock, "nwp_srh_3km_rm");
-
-  // ── SCP berechnen ─────────────────────────────────────────────────
-  // SCP = (MUCAPE / 1000) × (SRH3km_RM / 50) × (EBS_MU / 20)
-  // Alle Terme ≥ 0 geclampt; EBS-Term auf 0 wenn < 10 m/s (kein org. Updraft)
-// ── SCP (ESSL/ECMWF-Ansatz) ───────────────────────────────────────
-// SCP = (MUCAPE/1000) × (SRH3km_RM/50) × (EBS_MU/20) × CIN-Faktor
-// CIN-Faktor: linear 0→1 für |CIN| 0→40 J/kg, danach geclampt auf 1
-// Alle Terme ≥ 0; negatives SRH3km_RM → Term = 0
-let scp = null;
-if (
-  nwp_mu_cape !== null &&
-  nwp_srh_3km_rm !== null &&
-  nwp_bs_eff_mu !== null &&
-  nwp_mu_cin !== null
-) {
-  const cape_term = Math.max(0, nwp_mu_cape / 1000);
-  const srh_term  = Math.max(0, nwp_srh_3km_rm / 50);
-  const ebs_term  = Math.max(0, nwp_bs_eff_mu / 20);
-  // CIN: nwp_mu_cin ist negativ (z.B. -12), wir wollen |CIN|
-  // Schwache CIN (nahe 0) → Faktor ~0 (Zelle kann leicht aufbrechen, aber auch
-  // leicht wieder zerfallen ohne getriggert zu werden — ESSL nutzt CIN als
-  // "Kappenindikator": moderate CIN = organisierender Faktor, sehr hohe CIN = limitierend)
-  // ESSL-Konvention: CIN-Term = min(1, |CIN|/40), d.h. optimum bei |CIN|=40
-  const cin_abs  = Math.abs(nwp_mu_cin);
-  const cin_term = Math.min(1, cin_abs / 40);
-  scp = Math.round(cape_term * srh_term * ebs_term * cin_term * 10) / 10;
-}
-
-// ── STP (ESSL/ECMWF-Ansatz) ───────────────────────────────────────
-// STP = (MUCAPE/1500) × LCL-Term × (SRH1km_RM/150) × (EBS_MU/20) × CIN-Faktor
-// LCL-Term: (2000 - LCL_hgt) / 1000, geclampt auf [0, 1.5]
-//   → LCL < 500 m  → Term = 1.5 (sehr günstig)
-//   → LCL = 2000 m → Term = 0
-//   → LCL > 2000 m → Term = 0
-// CIN-Faktor: min(1, |CIN|/50)
-let stp = null;
-if (
-  nwp_mu_cape !== null &&
-  nwp_mu_lcl_hgt !== null &&
-  nwp_srh_1km_rm !== null &&
-  nwp_bs_eff_mu !== null &&
-  nwp_mu_cin !== null
-) {
-  const cape_term = Math.max(0, nwp_mu_cape / 1500);
-  const lcl_raw   = (2000 - nwp_mu_lcl_hgt) / 1000;
-  const lcl_term  = Math.min(1.5, Math.max(0, lcl_raw));
-  const srh_term  = Math.max(0, nwp_srh_1km_rm / 150);
-  const ebs_term  = Math.max(0, nwp_bs_eff_mu / 20);
-  const cin_abs   = Math.abs(nwp_mu_cin);
-  const cin_term  = Math.min(1, cin_abs / 50);
-  stp = Math.round(cape_term * lcl_term * srh_term * ebs_term * cin_term * 100) / 100;
-}
-
-  // ── NWP-Objekt zusammenbauen ──────────────────────────────────────
-  const nwp = nwpBlock
-    ? {
-        model_name:    nwp_model_name,
-        init_time:     nwp_init_time,
-        dcape:         nwp_dcape,
-        mu_cape:       nwp_mu_cape,
-        mu_cin:        nwp_mu_cin,
-        mu_lcl_hgt:    nwp_mu_lcl_hgt,
-        mu_lfc_hgt:    nwp_mu_lfc_hgt,
-        mu_el_hgt:     nwp_mu_el_hgt,
-        lr_500_800hpa: nwp_lr_500800,
-        prcp_water:    nwp_prcp_water,
-        bs_01km:       nwp_bs_01km,
-        bs_06km:       nwp_bs_06km,
-        bs_eff_mu:     nwp_bs_eff_mu,
-        srh_1km_lm:    nwp_srh_1km_lm,
-        srh_3km_lm:    nwp_srh_3km_lm,
-        srh_1km_rm:    nwp_srh_1km_rm,
-        srh_3km_rm:    nwp_srh_3km_rm,
-        scp,
-        stp,
-      }
-    : null;
-
-
     // ── Tracking ──────────────────────────────────────────────────────
     const trackBlock = block(inner, "tracking") ?? "";
     const cell_speed = num(trackBlock, "cell_speed");
@@ -666,7 +566,6 @@ if (
       echo_top_msl,
       echo_bottom_msl,
       covered_area,
-      nwp,
       orte,
       centroid_forecasts: allForecasts
         .map(f => ({
