@@ -462,30 +462,6 @@ export default async function handler(req, res) {
       nwp_scp = Math.round(cape_term * srh_term * shr_term * 100) / 100;
     }
 
-    // SHIP_modified — Hagelpotenzial ohne T500
-    // Fokus auf: Energie, Steilheit der Schichtung und Trockenheit der Luft (Evaporative Cooling)
-    let nwp_ship_mod = null;
-    if (nwp_mu_cape !== null && nwp_lr_500800 !== null && 
-        nwp_prcp_water !== null && nwp_bs_06km !== null) {
-        
-        // 1. CAPE Term: Basis-Energie (Normierung auf 2000 J/kg)
-        const cape_term = nwp_mu_cape / 2000;
-        
-        // 2. Lapse Rate Term: Je steiler (höherer negativer Wert), desto besser das Partikelwachstum
-        // nwp_lr_500800 ist bei dir negativ für labil, daher Math.abs
-        const lr_term = Math.abs(nwp_lr_500800) / 7.5;
-        
-        // 3. Scherungs-Term: Organisierte Zellen produzieren größeren Hagel
-        const shr_term = nwp_bs_06km / 20;
-        
-        // 4. Feuchte-Malus: Zu viel Wasser (PW) führt zu "warmem" Regen/Schmelzen.
-        // Ein PW von 20-30mm ist ideal für Hagel, >45mm oft zu tropisch (Schmelzgefahr).
-        const pw_factor = nwp_prcp_water > 40 ? 0.7 : (nwp_prcp_water < 15 ? 0.5 : 1.0);
-
-        // Berechnung
-        nwp_ship_mod = Math.round(cape_term * lr_term * shr_term * pw_factor * 100) / 100;
-    }
-
     // ── Hagelberechnung ───────────────────────────────────────────────
     let hail_cm = null;
 
@@ -657,7 +633,6 @@ export default async function handler(req, res) {
       nwp_indices: {
         stp:         nwp_stp,          // Significant Tornado Parameter
         scp:         nwp_scp,          // Supercell Composite Parameter
-        ship:        nwp_ship_mod,     // Significant Hail Parameter
       },
       centroid_forecasts: allForecasts
         .map(f => ({
