@@ -462,28 +462,28 @@ export default async function handler(req, res) {
       nwp_scp = Math.round(cape_term * srh_term * shr_term * 100) / 100;
     }
 
-    // VGP — Vorticity Generation Parameter (Statt BRN)
-    // Fokus auf die Intensität der Zell-Organisation
-    let nwp_vgp = null;
-    if (nwp_mu_cape !== null && nwp_bs_06km !== null && nwp_mu_cape > 0) {
-      // Einheiten: sqrt(m²/s²) * s⁻¹ => m/s²
-      // Interpretation: > 0.4 m/s² = erhöhtes Risiko für Superzellen
-      nwp_vgp = Math.round(Math.sqrt(nwp_mu_cape) * (nwp_bs_06km / 6000) * 1000) / 1000;
-    }
-
-    // SHIP — Significant Hail Parameter (vereinfacht, ohne T500)
-    // Vollständiges SHIP = (CAPE * LR500800 * PW * BS06km * T500_faktor) / 42000000
-    // Ohne T500: normalisierter 4-Faktor-Ansatz skaliert auf typische SHIP-Werte
-    // SHIP_approx = (CAPE/2000) * (|LR_500800|/7) * (PW/15) * (BS06km/20)
-    // Gibt relative Hagelpotenzial-Abschätzung, kein klassisches SHIP!
-    let nwp_ship_approx = null;
-    if (nwp_mu_cape !== null && nwp_lr_500800 !== null &&
+    // SHIP_modified — Hagelpotenzial ohne T500
+    // Fokus auf: Energie, Steilheit der Schichtung und Trockenheit der Luft (Evaporative Cooling)
+    let nwp_ship_mod = null;
+    if (nwp_mu_cape !== null && nwp_lr_500800 !== null && 
         nwp_prcp_water !== null && nwp_bs_06km !== null) {
-      const cape_term = nwp_mu_cape / 2000;
-      const lr_term   = Math.abs(nwp_lr_500800) / 7;  // lapse rate 500-800hPa
-      const pw_term   = nwp_prcp_water / 15;
-      const shr_term  = nwp_bs_06km / 20;
-      nwp_ship_approx = Math.round(cape_term * lr_term * pw_term * shr_term * 100) / 100;
+        
+        // 1. CAPE Term: Basis-Energie (Normierung auf 2000 J/kg)
+        const cape_term = nwp_mu_cape / 2000;
+        
+        // 2. Lapse Rate Term: Je steiler (höherer negativer Wert), desto besser das Partikelwachstum
+        // nwp_lr_500800 ist bei dir negativ für labil, daher Math.abs
+        const lr_term = Math.abs(nwp_lr_500800) / 7.5;
+        
+        // 3. Scherungs-Term: Organisierte Zellen produzieren größeren Hagel
+        const shr_term = nwp_bs_06km / 20;
+        
+        // 4. Feuchte-Malus: Zu viel Wasser (PW) führt zu "warmem" Regen/Schmelzen.
+        // Ein PW von 20-30mm ist ideal für Hagel, >45mm oft zu tropisch (Schmelzgefahr).
+        const pw_factor = nwp_prcp_water > 40 ? 0.7 : (nwp_prcp_water < 15 ? 0.5 : 1.0);
+
+        // Berechnung
+        nwp_ship_mod = Math.round(cape_term * lr_term * shr_term * pw_factor * 100) / 100;
     }
 
     // ── Hagelberechnung ───────────────────────────────────────────────
@@ -658,7 +658,7 @@ export default async function handler(req, res) {
         stp:         nwp_stp,          // Significant Tornado Parameter
         scp:         nwp_scp,          // Supercell Composite Parameter
         vgp:         nwp_vgp,          // Vorticity Generation Parameter
-        ship_approx: nwp_ship_approx,  // Hagelpotenzial (ohne T500, Näherung)
+        ship:        nwp_ship_mod,     // Significant Hail Parameter
       },
       centroid_forecasts: allForecasts
         .map(f => ({
