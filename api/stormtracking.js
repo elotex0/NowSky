@@ -657,7 +657,6 @@ export default async function handler(req, res) {
       nwp_indices: {
         stp:         nwp_stp,          // Significant Tornado Parameter
         scp:         nwp_scp,          // Supercell Composite Parameter
-        vgp:         nwp_vgp,          // Vorticity Generation Parameter
         ship:        nwp_ship_mod,     // Significant Hail Parameter
       },
       centroid_forecasts: allForecasts
