@@ -417,6 +417,74 @@ export default async function handler(req, res) {
     const echo_bottom_large_hail = noFill(num(hymec, "echo_bottom_large_hail"));
     const hail_flag              = int(inner, "hail_flag");
 
+
+    // ── NWP-Modell parsen ─────────────────────────────────────────────────
+    const nwpBlock = block(inner, "nwp_model") ?? "";
+    const nwp_mu_cape    = num(nwpBlock, "nwp_mu_cape");
+    const nwp_mu_cin     = num(nwpBlock, "nwp_mu_cin");
+    const nwp_mu_lcl_hgt = num(nwpBlock, "nwp_mu_lcl_hgt");
+    const nwp_mu_lfc_hgt = num(nwpBlock, "nwp_mu_lfc_hgt");
+    const nwp_mu_el_hgt  = num(nwpBlock, "nwp_mu_el_hgt");
+    const nwp_bs_01km    = num(nwpBlock, "nwp_bs_01km");
+    const nwp_bs_06km    = num(nwpBlock, "nwp_bs_06km");
+    const nwp_bs_eff_mu  = num(nwpBlock, "nwp_bs_eff_mu");
+    const nwp_srh_1km_rm = num(nwpBlock, "nwp_srh_1km_rm");
+    const nwp_srh_3km_rm = num(nwpBlock, "nwp_srh_3km_rm");
+    const nwp_lr_500800  = num(nwpBlock, "nwp_lr_500800hPa"); // K/km, negativ = labil
+    const nwp_prcp_water = num(nwpBlock, "nwp_prcp_water");
+    const nwp_dcape      = num(nwpBlock, "nwp_dcape");
+
+    // ── Konvektionsindizes berechnen ──────────────────────────────────────
+    // Alle Formeln auf verfügbare Parameter beschränkt (kein T500 verfügbar)
+
+    // STP — Significant Tornado Parameter (Thompson et al. 2003, vereinfacht)
+    // STP = (CAPE/1500) * ((2000-LCL_m)/1000) * (SRH1km/150) * (BS06km/20)
+    // LCL-Capping: wenn LCL > 2000m → 0, wenn LCL < 1000m → 1.0
+    let nwp_stp = null;
+    if (nwp_mu_cape !== null && nwp_mu_lcl_hgt !== null &&
+        nwp_srh_1km_rm !== null && nwp_bs_06km !== null) {
+      const cape_term = nwp_mu_cape / 1500;
+      const lcl_m     = nwp_mu_lcl_hgt;
+      const lcl_term  = lcl_m >= 2000 ? 0 : Math.max(0, (2000 - lcl_m) / 1000);
+      const srh_term  = Math.max(0, nwp_srh_1km_rm) / 150;
+      const shr_term  = nwp_bs_06km / 20;
+      nwp_stp = Math.round(cape_term * lcl_term * srh_term * shr_term * 100) / 100;
+    }
+
+    // SCP — Supercell Composite Parameter (Thompson et al. 2004)
+    // SCP = (CAPE/1000) * (SRH3km/100) * (BS06km/20)
+    // DCAPE-Term weggelassen (optional, verschlechtert nicht)
+    let nwp_scp = null;
+    if (nwp_mu_cape !== null && nwp_srh_3km_rm !== null && nwp_bs_06km !== null) {
+      const cape_term = nwp_mu_cape / 1000;
+      const srh_term  = Math.max(0, nwp_srh_3km_rm) / 100;
+      const shr_term  = nwp_bs_06km / 20;
+      nwp_scp = Math.round(cape_term * srh_term * shr_term * 100) / 100;
+    }
+
+    // BRN — Bulk Richardson Number
+    // BRN = CAPE / (0.5 * (BS06km)^2)
+    // Interpretation: 10-45 = Superzellen-günstig, <10 = zu viel Scherung, >45 = Multizellen
+    let nwp_brn = null;
+    if (nwp_mu_cape !== null && nwp_bs_06km !== null && nwp_bs_06km > 0) {
+      nwp_brn = Math.round((nwp_mu_cape / (0.5 * nwp_bs_06km ** 2)) * 10) / 10;
+    }
+
+    // SHIP — Significant Hail Parameter (vereinfacht, ohne T500)
+    // Vollständiges SHIP = (CAPE * LR500800 * PW * BS06km * T500_faktor) / 42000000
+    // Ohne T500: normalisierter 4-Faktor-Ansatz skaliert auf typische SHIP-Werte
+    // SHIP_approx = (CAPE/2000) * (|LR_500800|/7) * (PW/15) * (BS06km/20)
+    // Gibt relative Hagelpotenzial-Abschätzung, kein klassisches SHIP!
+    let nwp_ship_approx = null;
+    if (nwp_mu_cape !== null && nwp_lr_500800 !== null &&
+        nwp_prcp_water !== null && nwp_bs_06km !== null) {
+      const cape_term = nwp_mu_cape / 2000;
+      const lr_term   = Math.abs(nwp_lr_500800) / 7;  // lapse rate 500-800hPa
+      const pw_term   = nwp_prcp_water / 15;
+      const shr_term  = nwp_bs_06km / 20;
+      nwp_ship_approx = Math.round(cape_term * lr_term * pw_term * shr_term * 100) / 100;
+    }
+
     // ── Hagelberechnung ───────────────────────────────────────────────
     let hail_cm = null;
 
@@ -567,6 +635,30 @@ export default async function handler(req, res) {
       echo_bottom_msl,
       covered_area,
       orte,
+      nwp: {
+        mu_cape:    nwp_mu_cape,
+        mu_cin:     nwp_mu_cin,
+        mu_lcl_hgt: nwp_mu_lcl_hgt,
+        mu_lfc_hgt: nwp_mu_lfc_hgt,
+        mu_el_hgt:  nwp_mu_el_hgt,
+        bs_01km:    nwp_bs_01km,
+        bs_06km:    nwp_bs_06km,
+        bs_eff_mu:  nwp_bs_eff_mu,
+        srh_1km_rm: nwp_srh_1km_rm,
+        srh_3km_rm: nwp_srh_3km_rm,
+        srh_1km_lm: num(nwpBlock, "nwp_srh_1km_lm"),
+        srh_3km_lm: num(nwpBlock, "nwp_srh_3km_lm"),
+        lr_500800hPa: nwp_lr_500800,
+        prcp_water:   nwp_prcp_water,
+        dcape:        nwp_dcape,
+      },
+      // Berechnete Indizes
+      nwp_indices: {
+        stp:         nwp_stp,          // Significant Tornado Parameter
+        scp:         nwp_scp,          // Supercell Composite Parameter
+        brn:         nwp_brn,          // Bulk Richardson Number
+        ship_approx: nwp_ship_approx,  // Hagelpotenzial (ohne T500, Näherung)
+      },
       centroid_forecasts: allForecasts
         .map(f => ({
           forecast_time:    f.forecast_time,
