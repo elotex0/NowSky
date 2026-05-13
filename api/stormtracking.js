@@ -462,12 +462,13 @@ export default async function handler(req, res) {
       nwp_scp = Math.round(cape_term * srh_term * shr_term * 100) / 100;
     }
 
-    // BRN — Bulk Richardson Number
-    // BRN = CAPE / (0.5 * (BS06km)^2)
-    // Interpretation: 10-45 = Superzellen-günstig, <10 = zu viel Scherung, >45 = Multizellen
-    let nwp_brn = null;
-    if (nwp_mu_cape !== null && nwp_bs_06km !== null && nwp_bs_06km > 0) {
-      nwp_brn = Math.round((nwp_mu_cape / (0.5 * nwp_bs_06km ** 2)) * 10) / 10;
+    // VGP — Vorticity Generation Parameter (Statt BRN)
+    // Fokus auf die Intensität der Zell-Organisation
+    let nwp_vgp = null;
+    if (nwp_mu_cape !== null && nwp_bs_06km !== null && nwp_mu_cape > 0) {
+      // Einheiten: sqrt(m²/s²) * s⁻¹ => m/s²
+      // Interpretation: > 0.4 m/s² = erhöhtes Risiko für Superzellen
+      nwp_vgp = Math.round(Math.sqrt(nwp_mu_cape) * (nwp_bs_06km / 6000) * 1000) / 1000;
     }
 
     // SHIP — Significant Hail Parameter (vereinfacht, ohne T500)
@@ -656,7 +657,7 @@ export default async function handler(req, res) {
       nwp_indices: {
         stp:         nwp_stp,          // Significant Tornado Parameter
         scp:         nwp_scp,          // Supercell Composite Parameter
-        brn:         nwp_brn,          // Bulk Richardson Number
+        vgp:         nwp_vgp,          // Vorticity Generation Parameter
         ship_approx: nwp_ship_approx,  // Hagelpotenzial (ohne T500, Näherung)
       },
       centroid_forecasts: allForecasts
