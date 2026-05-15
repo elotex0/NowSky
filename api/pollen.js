@@ -1,4 +1,6 @@
-import places from '../deutschland.geojson' assert { type: 'json' };
+import { readFileSync } from 'fs';
+import { join } from 'path';
+const places = JSON.parse(readFileSync(join(process.cwd(), 'deutschland.geojson'), 'utf-8'));
 
 // Vorab: Nur Features mit is_in UND Bundesland-Info filtern
 const KNOWN_STATES = new Set([
