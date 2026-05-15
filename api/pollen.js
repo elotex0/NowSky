@@ -1,4 +1,4 @@
-import places from './bundesland_places.geojson.json' assert { type: 'json' };
+import places from './deutschland.geojson' assert { type: 'json' };
 
 // Vorab: Nur Features mit is_in UND Bundesland-Info filtern
 const KNOWN_STATES = new Set([
