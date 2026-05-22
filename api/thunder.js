@@ -20,23 +20,49 @@ export default async function handler(request) {
   }
 
   try {
-    const result = await checkThunderstorm(lat, lon);
+    // Analyse & Vorhersage parallel abfragen
+    const [analyseResult, vorhersageResult] = await Promise.allSettled([
+      checkLayer(lat, lon, "dwd:Autowarn_Analyse", null),
+      checkLayer(lat, lon, "dwd:Autowarn_Vorhersage", "EC_GROUP IN ('Gewitter')"),
+    ]);
+
+    const analyse    = analyseResult.status    === 'fulfilled' ? analyseResult.value    : { thunderstorm: false, severity: null, features: [] };
+    const vorhersage = vorhersageResult.status === 'fulfilled' ? vorhersageResult.value : { thunderstorm: false, severity: null, features: [] };
 
     return jsonResponse({
       lat,
       lon,
-      thunderstorm: result.thunderstorm,
-      severity: result.severity
+
+      // Aktuell: Gewitter direkt über dem Ort?
+      current: {
+        thunderstorm: analyse.thunderstorm,
+        severity:     analyse.severity,
+      },
+
+      // Vorhersage: Liegt der Ort in einer Gewitterzugbahn?
+      forecast: {
+        inStormPath:  vorhersage.thunderstorm,
+        severity:     vorhersage.severity,
+        warnings:     vorhersage.features.map(f => ({
+          severity:    f.properties?.SEVERITY   ?? null,
+          type:        f.properties?.EVENT      ?? null,
+          validFrom:   f.properties?.ONSET      ?? null,
+          validUntil:  f.properties?.EXPIRES    ?? null,
+          headline:    f.properties?.HEADLINE   ?? null,
+          description: f.properties?.DESCRIPTION ?? null,
+          instruction: f.properties?.INSTRUCTION ?? null,
+        })),
+      },
     });
 
   } catch (err) {
-    console.error("Both DWD servers failed:", err);
+    console.error("Unexpected error:", err);
 
     return jsonResponse({
       lat,
       lon,
-      thunderstorm: false,
-      severity: null
+      current:  { thunderstorm: false, severity: null },
+      forecast: { inStormPath: false, severity: null, warnings: [] },
     });
   }
 }
@@ -45,33 +71,41 @@ export default async function handler(request) {
 /* ---------------- CORE LOGIC -------------------- */
 /* ------------------------------------------------ */
 
-async function checkThunderstorm(lat, lon) {
+/**
+ * Fragt einen WMS-Layer ab und gibt Gewitter-Features zurück.
+ *
+ * @param {number}      lat
+ * @param {number}      lon
+ * @param {string}      layer       - z.B. "dwd:Autowarn_Analyse" oder "dwd:Autowarn_Vorhersage"
+ * @param {string|null} cqlFilter   - optionaler CQL_FILTER, z.B. "EC_GROUP IN ('Gewitter')"
+ */
+async function checkLayer(lat, lon, layer, cqlFilter) {
   const delta = 0.01;
-  const bbox = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
+  const bbox  = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
 
   const servers = [
-    "https://maps.dwd.de/geoserver/dwd/wms",      // Primary
-    "https://brz-maps.dwd.de/geoserver/dwd/wms"   // Backup
+    "https://maps.dwd.de/geoserver/dwd/wms",
+    "https://brz-maps.dwd.de/geoserver/dwd/wms",
   ];
 
   const timeoutMs = 2500;
 
   for (const baseUrl of servers) {
     try {
-      const response = await fetchWithTimeout(baseUrl, bbox, timeoutMs);
-
-      const data = await response.json();
+      const response = await fetchWithTimeout(baseUrl, bbox, layer, cqlFilter, timeoutMs);
+      const data     = await response.json();
 
       if (!data.features || data.features.length === 0) {
-        return { thunderstorm: false, severity: null };
+        return { thunderstorm: false, severity: null, features: [] };
       }
 
-      const thunderFeatures = data.features.filter(
-        f => f.properties?.EC_GROUP === "Gewitter"
-      );
+      // Bei Analyse: nach EC_GROUP filtern (kein serverseitiger CQL-Filter)
+      const thunderFeatures = cqlFilter
+        ? data.features   // Server hat bereits gefiltert
+        : data.features.filter(f => f.properties?.EC_GROUP === "Gewitter");
 
       if (thunderFeatures.length === 0) {
-        return { thunderstorm: false, severity: null };
+        return { thunderstorm: false, severity: null, features: [] };
       }
 
       const severityOrder = ["minor", "moderate", "severe", "extrem"];
@@ -85,47 +119,51 @@ async function checkThunderstorm(lat, lon) {
 
       return {
         thunderstorm: true,
-        severity: maxSeverityIndex >= 0 ? severityOrder[maxSeverityIndex] : null
+        severity:     maxSeverityIndex >= 0 ? severityOrder[maxSeverityIndex] : null,
+        features:     thunderFeatures,
       };
 
     } catch (err) {
-      console.warn(`Server failed (${baseUrl}):`, err.message);
-      // → nächster Server
+      console.warn(`Server failed (${baseUrl}, ${layer}):`, err.message);
       continue;
     }
   }
 
-  // Beide Server fehlgeschlagen
-  throw new Error("All servers failed");
+  throw new Error(`All servers failed for layer ${layer}`);
 }
 
 /* ------------------------------------------------ */
 /* ---------------- FETCH HELPER ------------------ */
 /* ------------------------------------------------ */
 
-async function fetchWithTimeout(baseUrl, bbox, timeoutMs) {
+async function fetchWithTimeout(baseUrl, bbox, layer, cqlFilter, timeoutMs) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout    = setTimeout(() => controller.abort(), timeoutMs);
 
   const url = new URL(baseUrl);
-  url.searchParams.set("SERVICE", "WMS");
-  url.searchParams.set("VERSION", "1.1.1");
-  url.searchParams.set("REQUEST", "GetFeatureInfo");
-  url.searchParams.set("LAYERS", "dwd:Autowarn_Analyse");
-  url.searchParams.set("QUERY_LAYERS", "dwd:Autowarn_Analyse");
-  url.searchParams.set("BBOX", bbox);
-  url.searchParams.set("FEATURE_COUNT", "50");
-  url.searchParams.set("HEIGHT", "101");
-  url.searchParams.set("WIDTH", "101");
-  url.searchParams.set("INFO_FORMAT", "application/json");
-  url.searchParams.set("SRS", "EPSG:4326");
-  url.searchParams.set("X", "50");
-  url.searchParams.set("Y", "50");
+  url.searchParams.set("SERVICE",      "WMS");
+  url.searchParams.set("VERSION",      "1.1.1");
+  url.searchParams.set("REQUEST",      "GetFeatureInfo");
+  url.searchParams.set("LAYERS",       layer);
+  url.searchParams.set("QUERY_LAYERS", layer);
+  url.searchParams.set("BBOX",         bbox);
+  url.searchParams.set("FEATURE_COUNT","50");
+  url.searchParams.set("HEIGHT",       "101");
+  url.searchParams.set("WIDTH",        "101");
+  url.searchParams.set("INFO_FORMAT",  "application/json");
+  url.searchParams.set("SRS",          "EPSG:4326");
+  url.searchParams.set("X",            "50");
+  url.searchParams.set("Y",            "50");
+
+  // CQL_FILTER nur setzen wenn vorhanden (Vorhersage-Layer)
+  if (cqlFilter) {
+    url.searchParams.set("CQL_FILTER", cqlFilter);
+  }
 
   try {
     const response = await fetch(url.toString(), {
       signal: controller.signal,
-      cache: "no-store"
+      cache:  "no-store",
     });
 
     clearTimeout(timeout);
@@ -148,7 +186,7 @@ async function fetchWithTimeout(baseUrl, bbox, timeoutMs) {
 
 function corsHeaders() {
   return {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin":  "*",
     "Access-Control-Allow-Methods": "GET,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
@@ -158,7 +196,7 @@ function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type":  "application/json",
       "Cache-Control": "s-maxage=60, stale-while-revalidate=120",
       ...corsHeaders(),
     },
