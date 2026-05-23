@@ -21,43 +21,26 @@ export default async function handler(req, res) {
   const latNum = parseFloat(lat);
   const lonNum = parseFloat(lon);
 
-  // Werte aus GitHub Environment Variables
-  const API_URL = process.env.OPENUV_API_URL;
-  const API_TOKEN = process.env.OPENUV_ACCESS_TOKEN;
+  const API_URL = process.env.UV_API_URL;
 
-  if (!API_URL || !API_TOKEN) {
+  if (!API_URL) {
     return res.status(500).json({
-      error: "OPENUV_API_URL oder OPENUV_ACCESS_TOKEN fehlt",
+      error: "UV_API_URL fehlt",
     });
   }
 
-  const fmtDE = (isoStr) =>
-    new Date(isoStr).toLocaleString("de-DE", {
-      timeZone: "Europe/Berlin",
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }) + " Uhr";
-
   try {
-    // URL zusammenbauen
     const url =
-      `${API_URL}?lat=${encodeURIComponent(latNum)}` +
-      `&lng=${encodeURIComponent(lonNum)}`;
+      `${API_URL}?latitude=${encodeURIComponent(latNum)}` +
+      `&longitude=${encodeURIComponent(lonNum)}`;
 
     const response = await fetch(url, {
       method: "GET",
-      headers: {
-        "x-access-token": API_TOKEN,
-        "Content-Type": "application/json",
-      },
       signal: AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status} von OpenUV`);
+      throw new Error(`HTTP ${response.status} von UV API`);
     }
 
     const data = await response.json();
@@ -69,16 +52,9 @@ export default async function handler(req, res) {
       },
 
       uv: {
-        wert: data.result?.uv ?? null,
-        max: data.result?.uv_max ?? null,
-        zeit_max: data.result?.uv_max_time
-          ? fmtDE(data.result.uv_max_time)
-          : null,
+        jetzt: data.now?.uvi ?? null,
+        zeit: data.now?.time ?? null,
       },
-      
-      aktualisiert: data.result?.uv_time
-        ? fmtDE(data.result.uv_time)
-        : null,
     });
 
   } catch (err) {
