@@ -1,5 +1,5 @@
 // api/uv.js
-// Abruf: /api/uv?lat=48.5&lon=8.4
+// Abruf: /api/uv?lat={lat}&lon={lon}
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
