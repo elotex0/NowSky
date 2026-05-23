@@ -33,7 +33,7 @@ export default async function handler(req, res) {
   try {
     const url =
       `${API_URL}?latitude=${encodeURIComponent(latNum)}` +
-      `&longitude=${encodeURIComponent(lonNum)}`;
+      `&longitude=${encodeURIComponent(lonNum)}&timezone=Auto`;
 
     const response = await fetch(url, {
       method: "GET",
