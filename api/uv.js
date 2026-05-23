@@ -53,7 +53,7 @@ export default async function handler(req, res) {
       },
 
       uv: {
-        jetzt: data.now?.uvi ?? null,
+        jetzt: data.now?.uv_index ?? null,
         zeit: data.now?.time ?? null,
       },
     });
