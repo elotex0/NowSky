@@ -437,29 +437,48 @@ export default async function handler(req, res) {
     // ── Konvektionsindizes berechnen ──────────────────────────────────────
     // Alle Formeln auf verfügbare Parameter beschränkt (kein T500 verfügbar)
 
-    // STP — Significant Tornado Parameter (Thompson et al. 2003, vereinfacht)
-    // STP = (CAPE/1500) * ((2000-LCL_m)/1000) * (SRH1km/150) * (BS06km/20)
-    // LCL-Capping: wenn LCL > 2000m → 0, wenn LCL < 1000m → 1.0
+    // STP — Significant Tornado Parameter (Thompson et al. 2012, fixed layer)
+    // STP = (CAPE/1500) * ((2000-LCL)/1000) * (SRH1km/150) * (BS06km/20) * ((200+CIN)/150)
     let nwp_stp = null;
     if (nwp_mu_cape !== null && nwp_mu_lcl_hgt !== null &&
         nwp_srh_1km_rm !== null && nwp_bs_06km !== null) {
+
       const cape_term = nwp_mu_cape / 1500;
-      const lcl_m     = nwp_mu_lcl_hgt;
-      const lcl_term  = lcl_m >= 2000 ? 0 : Math.max(0, (2000 - lcl_m) / 1000);
-      const srh_term  = Math.max(0, nwp_srh_1km_rm) / 150;
-      const shr_term  = nwp_bs_06km / 20;
-      nwp_stp = Math.round(cape_term * lcl_term * srh_term * shr_term * 100) / 100;
+
+      // LCL-Term: 1.0 wenn < 1000m | 0.0 wenn > 2000m
+      const lcl_m    = nwp_mu_lcl_hgt;
+      const lcl_term = lcl_m < 1000 ? 1.0 : lcl_m > 2000 ? 0.0 : (2000 - lcl_m) / 1000;
+
+      const srh_term = Math.max(0, nwp_srh_1km_rm) / 150;
+
+      // SHR6-Term: 0.0 wenn < 12.5 m/s | cap 1.5 wenn > 30 m/s
+      const shr6_ms  = nwp_bs_06km; // sicherstellen dass in m/s!
+      const shr_term = shr6_ms < 12.5 ? 0.0 : shr6_ms > 30 ? 1.5 : shr6_ms / 20;
+
+      // CIN-Term: 1.0 wenn CIN > -50 | 0.0 wenn CIN < -200
+      let cin_term = 1.0;
+      if (nwp_mu_cin !== null) {
+        const cin = nwp_mu_cin; // negativ erwartet (z.B. -80 J/kg)
+        cin_term = cin > -50 ? 1.0 : cin < -200 ? 0.0 : (200 + cin) / 150;
+      }
+
+      nwp_stp = Math.round(cape_term * lcl_term * srh_term * shr_term * cin_term * 100) / 100;
     }
 
     // SCP — Supercell Composite Parameter (Thompson et al. 2004)
-    // SCP = (CAPE/1000) * (SRH3km/100) * (BS06km/20)
-    // DCAPE-Term weggelassen (optional, verschlechtert nicht)
+    // SCP = (CAPE/1000) * (SRH3km/50) * (BS06km/20)
+    // Eff.BulkShear: 0.0 wenn < 10 m/s | 1.0 wenn > 20 m/s
     let nwp_scp = null;
     if (nwp_mu_cape !== null && nwp_srh_3km_rm !== null && nwp_bs_06km !== null) {
+
       const cape_term = nwp_mu_cape / 1000;
-      const srh_term  = Math.max(0, nwp_srh_3km_rm) / 100;
-      const shr_term  = nwp_bs_06km / 20;
-      nwp_scp = Math.round(cape_term * srh_term * shr_term * 100) / 100;
+      const srh_term  = Math.max(0, nwp_srh_3km_rm) / 50;
+
+      // EffBS-Term mit Caps
+      const ebs_ms   = nwp_bs_06km;
+      const ebs_term = ebs_ms < 10 ? 0.0 : ebs_ms > 20 ? 1.0 : ebs_ms / 20;
+
+      nwp_scp = Math.round(cape_term * srh_term * ebs_term * 100) / 100;
     }
 
     // ── Hagelberechnung ───────────────────────────────────────────────
