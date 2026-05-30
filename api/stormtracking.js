@@ -481,50 +481,6 @@ export default async function handler(req, res) {
       nwp_scp = Math.round(cape_term * srh_term * ebs_term * 100) / 100;
     }
 
-    // SHIP — Significant Hail Parameter (Thompson et al. 2004, approx.)
-    // Benötigt: mu_cape, lr_500800hPa, t500 (approx.), prcp_water, bs_06km
-    let nwp_ship = null;
-    if (
-      nwp_mu_cape !== null &&
-      nwp_lr_500800 !== null &&
-      nwp_prcp_water !== null &&
-      nwp_bs_06km !== null
-    ) {
-      // T500 aus Lapserate approximieren
-      const T800_K   = 273.15;
-      const LAYER_KM = 3.5;
-      const t500_c   = (T800_K + nwp_lr_500800 * LAYER_KM) - 273.15;
-    
-      // Terme mit Caps (nach Thompson 2004)
-      const cape_term  = Math.max(nwp_mu_cape, 0) / 2000;
-    
-      // LR-Term: 0 wenn > −5.5 K/km (stabile Schicht = kein Hagelwachstum)
-      const lr_term    = nwp_lr_500800 <= -5.5 ? Math.abs(nwp_lr_500800) / 6.5 : 0;
-    
-      // T500-Term: 0 wenn > −5°C (zu warm = Hagel schmilzt)
-      const t500_term  = t500_c <= -5 ? Math.abs(t500_c) / 6.5 : 0;
-    
-      // PWAT-Term: 0 wenn > 45 mm (zu feucht = kein effizienter Hagelpfad)
-      const pwat_term  = nwp_prcp_water <= 45
-        ? (45 - nwp_prcp_water) / 45
-        : 0;
-    
-      // S06-Term: 0 wenn < 7 m/s | cap 1.5 wenn > 27 m/s
-      const s06_ms     = nwp_bs_06km;
-      const s06_term   = s06_ms < 7 ? 0 : s06_ms > 27 ? 1.5 : s06_ms / 18;
-    
-      nwp_ship = Math.round(cape_term * lr_term * t500_term * pwat_term * s06_term * 100) / 100;
-    }
-
-    // EHI — Energy-Helicity Index (Hart & Korotky 1991)
-    // EHI = (MUCAPE × SRH1km) / 160000
-    // > 1.0 = erhöhtes Tornadorisiko | > 2.0 = signifikant | > 3.0 = violent
-    let nwp_ehi = null;
-    if (nwp_mu_cape !== null && nwp_srh_1km_rm !== null) {
-      const srh = Math.max(0, nwp_srh_1km_rm); // negative SRH ignorieren
-      nwp_ehi = Math.round((nwp_mu_cape * srh) / 160000 * 100) / 100;
-    }
-
     // ── Hagelberechnung ───────────────────────────────────────────────
     let hail_cm = null;
 
@@ -696,8 +652,6 @@ export default async function handler(req, res) {
       nwp_indices: {
         stp:         nwp_stp,          // Significant Tornado Parameter
         scp:         nwp_scp,          // Supercell Composite Parameter
-        ship:        nwp_ship,         // Significant Hail Parameter
-        ehi:         nwp_ehi,          // Energy-Helicity Index
       },
       centroid_forecasts: allForecasts
         .map(f => ({
