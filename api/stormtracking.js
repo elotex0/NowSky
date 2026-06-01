@@ -3,35 +3,110 @@ import fs   from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import * as turf from "@turf/turf";
+import rbush from "rbush";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ── GeoJSON-Cache (einmal laden, dann im Speicher halten) ─────────────────────
-let _geojsonCache = null;
-const loadGeoJson = () => {
-  if (_geojsonCache) return _geojsonCache;
-  try {
-    const filePath = path.join(__dirname, "../deutschland.geojson");
-    _geojsonCache = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    return _geojsonCache;
-  } catch (e) {
-    console.error("GeoJSON laden fehlgeschlagen:", e.message);
-    return null;
-  }
+// ── Schneller String-Parser (indexOf statt Regex, ~3× schneller) ─────────────
+const textFast = (xml, tag) => {
+  const open = `<${tag}>`;
+  const s = xml.indexOf(open);
+  if (s === -1) return null;
+  const e = xml.indexOf(`</${tag}>`, s);
+  return e === -1 ? null : xml.slice(s + open.length, e).trim();
 };
+
+const numFast = (xml, tag) => {
+  const v = textFast(xml, tag);
+  return v !== null && v !== "" && !isNaN(v) ? parseFloat(v) : null;
+};
+
+// Regex-Fallback nur für Tags mit Attributen
+const textAttr = (xml, tag) => {
+  const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
+  return m ? m[1].trim() : null;
+};
+const numAttr = (xml, tag) => {
+  const v = textAttr(xml, tag);
+  return v !== null && v !== "" && !isNaN(v) ? parseFloat(v) : null;
+};
+const intAttr = (xml, tag) => {
+  const v = textAttr(xml, tag);
+  if (v === null || v === "") return null;
+  const n = parseInt(v);
+  return n === -1000000000 ? null : n;
+};
+
+const blockFast = (xml, tag) => {
+  const open = `<${tag}`;
+  const s = xml.indexOf(open);
+  if (s === -1) return null;
+  const closeTag = `</${tag}>`;
+  const bodyStart = xml.indexOf(">", s);
+  if (bodyStart === -1) return null;
+  const e = xml.indexOf(closeTag, bodyStart);
+  return e === -1 ? null : xml.slice(bodyStart + 1, e);
+};
+
+const allBlocksFast = (xml, tag) => {
+  const open = `<${tag}`;
+  const closeTag = `</${tag}>`;
+  const results = [];
+  let pos = 0;
+  while (true) {
+    const s = xml.indexOf(open, pos);
+    if (s === -1) break;
+    const bodyStart = xml.indexOf(">", s);
+    if (bodyStart === -1) break;
+    const e = xml.indexOf(closeTag, bodyStart);
+    if (e === -1) break;
+    results.push({ full: xml.slice(s, e + closeTag.length), inner: xml.slice(bodyStart + 1, e) });
+    pos = e + closeTag.length;
+  }
+  return results;
+};
+
+const attrFast = (tagStr, attrName) => {
+  const m = tagStr.match(new RegExp(`${attrName}="([^"]*)"`));
+  return m ? m[1] : null;
+};
+
+const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
+
+// ── GeoJSON async lesen + Spatial Index bauen ─────────────────────────────────
+const loadGeoJsonWithIndex = () => new Promise((resolve, reject) => {
+  const filePath = path.join(__dirname, "../deutschland.geojson");
+  const chunks = [];
+  fs.createReadStream(filePath, { encoding: "utf-8" })
+    .on("data", c => chunks.push(c))
+    .on("end", () => {
+      try {
+        const geojson = JSON.parse(chunks.join(""));
+
+        // Spatial Index aufbauen (rbush)
+        const tree = new rbush();
+        const items = [];
+        for (let i = 0; i < geojson.features.length; i++) {
+          const f = geojson.features[i];
+          try {
+            const bbox = turf.bbox(f);
+            if (isFinite(bbox[0]) && isFinite(bbox[1]) && isFinite(bbox[2]) && isFinite(bbox[3])) {
+              items.push({ minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3], idx: i });
+            }
+          } catch { /* Feature überspringen */ }
+        }
+        tree.load(items);
+        resolve({ geojson, spatialIndex: tree });
+      } catch (e) {
+        reject(e);
+      }
+    })
+    .on("error", reject);
+});
 
 // ── Mesozyklonen-Parser ───────────────────────────────────────────────────────
 const parseMesoCells = (xml) => {
-  const text = (xml, tag) => {
-    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
-    return m ? m[1].trim() : null;
-  };
-  const num = (xml, tag) => {
-    const v = text(xml, tag);
-    return v !== null && v !== "" && !isNaN(v) ? parseFloat(v) : null;
-  };
-
   const refTimeMatch =
     xml.match(/<time[^>]*time-coordinate="UTC"[^>]*>([^<]+)<\/time>/) ||
     xml.match(/<time[^>]*>([^<]+)<\/time>/);
@@ -49,31 +124,25 @@ const parseMesoCells = (xml) => {
     const attrs = m[1];
     const inner = m[2];
 
-    const idMatch = attrs.match(/ID="([^"]*)"/);
+    const idMatch  = attrs.match(/ID="([^"]*)"/);
     const event_id = idMatch ? parseInt(idMatch[1]) : null;
 
-    const latitude  = num(inner, "latitude");
-    const longitude = num(inner, "longitude");
+    const latitude  = numFast(inner, "latitude");
+    const longitude = numFast(inner, "longitude");
     const intensity = (() => {
-      const v = text(inner, "meso_intensity");
+      const v = textFast(inner, "meso_intensity");
       return v !== null ? parseInt(v) : null;
     })();
-    const mesocyclone_top  = num(inner, "mesocyclone_top");
-    const mesocyclone_base = num(inner, "mesocyclone_base");
-    const max_dbz          = num(inner, "max_dbz");
-    const base_speed       = num(inner, "mesocyclone_velocity_rotational_max_closest_to_ground");
+    const mesocyclone_top  = numFast(inner, "mesocyclone_top");
+    const mesocyclone_base = numFast(inner, "mesocyclone_base");
+    const max_dbz          = numFast(inner, "max_dbz");
+    const base_speed       = numFast(inner, "mesocyclone_velocity_rotational_max_closest_to_ground");
 
     cells.push({
-      dateStr,
-      timeStr,
-      event_id,
-      latitude,
-      longitude,
-      intensity,
-      mesocyclone_top,
-      mesocyclone_base,
-      max_dbz,
-      base_speed,
+      dateStr, timeStr, event_id,
+      latitude, longitude, intensity,
+      mesocyclone_top, mesocyclone_base,
+      max_dbz, base_speed,
     });
   }
 
@@ -84,8 +153,8 @@ const parseMesoCells = (xml) => {
 const fetchMesoCells = async () => {
   const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_latest.xml";
   const r   = await fetch(url, {
-    headers: { "User-Agent": "konrad3d-api/1.0" },
-    signal:  AbortSignal.timeout(12000),
+    headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
+    signal:  AbortSignal.timeout(8000),
   });
   if (!r.ok) throw new Error(`Mesozyklonen-Fetch fehlgeschlagen: HTTP ${r.status}`);
   return parseMesoCells(await r.text());
@@ -97,7 +166,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ── XML-Hilfsfunktionen ────────────────────────────────────────────────
+  // ── Filename-Builder ──────────────────────────────────────────────────────
   const buildFilename = (offsetMin) => {
     const t   = new Date(Date.now() - offsetMin * 60 * 1000);
     const pad = (n) => String(n).padStart(2, "0");
@@ -109,38 +178,7 @@ export default async function handler(req, res) {
     return `KONRAD3D_${yyyy}${mm}${dd}T${hh}${min}00`;
   };
 
-  const text = (xml, tag) => {
-    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
-    return m ? m[1].trim() : null;
-  };
-  const num = (xml, tag) => {
-    const v = text(xml, tag);
-    return v !== null && v !== "" && !isNaN(v) ? parseFloat(v) : null;
-  };
-  const int = (xml, tag) => {
-    const v = text(xml, tag);
-    if (v === null || v === "") return null;
-    const n = parseInt(v);
-    return n === -1000000000 ? null : n;
-  };
-  const block = (xml, tag) => {
-    const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`));
-    return m ? m[1] : null;
-  };
-  const allBlocks = (xml, tag) => {
-    const re = new RegExp(`<${tag}(?:[^>]*)>([\\s\\S]*?)<\\/${tag}>`, "g");
-    const results = [];
-    let m;
-    while ((m = re.exec(xml)) !== null) results.push({ full: m[0], inner: m[1] });
-    return results;
-  };
-  const attr = (tagStr, attrName) => {
-    const m = tagStr.match(new RegExp(`${attrName}="([^"]*)"`));
-    return m ? m[1] : null;
-  };
-  const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
-
-  // ── Geo-Hilfsfunktionen ───────────────────────────────────────────────
+  // ── Geo-Hilfsfunktionen ───────────────────────────────────────────────────
   const toRad = (d) => d * Math.PI / 180;
   const toDeg = (r) => r * 180 / Math.PI;
 
@@ -179,42 +217,54 @@ export default async function handler(req, res) {
 
   const bearingToDirection = (brng) => {
     const dirs = [
-      [22.5,  "nördlich"],
-      [67.5,  "nordöstlich"],
-      [112.5, "östlich"],
-      [157.5, "südöstlich"],
-      [202.5, "südlich"],
-      [247.5, "südwestlich"],
-      [292.5, "westlich"],
-      [337.5, "nordwestlich"],
+      [22.5,  "nördlich"],    [67.5,  "nordöstlich"],
+      [112.5, "östlich"],     [157.5, "südöstlich"],
+      [202.5, "südlich"],     [247.5, "südwestlich"],
+      [292.5, "westlich"],    [337.5, "nordwestlich"],
       [360,   "nördlich"],
     ];
     for (const [limit, label] of dirs) if (brng < limit) return label;
     return "nördlich";
   };
 
-  const findNearestPlace = (lat, lon, geojson, maxKm = 30) => {
-    if (!geojson?.features) return null;
+  const getCityName = (properties) =>
+    properties?.name || properties?.NAME || properties?.GEN ||
+    properties?.name_de || properties?.NAMELSAD || null;
+
+  // ── Ortserkennung mit Spatial Index ──────────────────────────────────────
+  const findNearestPlace = (lat, lon, geojson, spatialIndex, maxKm = 30) => {
+    if (!geojson?.features || !spatialIndex) return null;
+
+    const degPad = maxKm / 111;
+    const candidates = spatialIndex.search({
+      minX: lon - degPad, minY: lat - degPad,
+      maxX: lon + degPad, maxY: lat + degPad,
+    });
+
     let best = null;
-    for (const f of geojson.features) {
-      const name = f.properties?.name || f.properties?.NAME ||
-                   f.properties?.GEN  || f.properties?.name_de || null;
+    for (const item of candidates) {
+      const f    = geojson.features[item.idx];
+      const name = getCityName(f.properties);
       if (!name) continue;
+
       const geom = f.geometry;
+      let centroid = null;
       const getCentroid = (coords) => {
         let sumLon = 0, sumLat = 0;
         for (const [lo, la] of coords) { sumLon += lo; sumLat += la; }
         return { lat: sumLat / coords.length, lon: sumLon / coords.length };
       };
-      let centroid = null;
       if (geom.type === "Polygon")           centroid = getCentroid(geom.coordinates[0]);
       else if (geom.type === "MultiPolygon") centroid = getCentroid(geom.coordinates[0][0]);
+      else if (geom.type === "Point")        centroid = { lat: geom.coordinates[1], lon: geom.coordinates[0] };
       if (!centroid) continue;
+
       const dist = haversine(lat, lon, centroid.lat, centroid.lon);
       if (dist <= maxKm && (!best || dist < best.dist)) {
         best = { name, dist, lat: centroid.lat, lon: centroid.lon };
       }
     }
+
     if (!best) return null;
     const distKm = Math.round(best.dist * 10) / 10;
     const brng   = bearing(best.lat, best.lon, lat, lon);
@@ -223,114 +273,77 @@ export default async function handler(req, res) {
     return { text: `${distKm} km ${dir} von ${best.name}`, name: best.name, dist_km: distKm, direction: dir };
   };
 
-  // ── fetchXml — parallel statt sequenziell ────────────────────────────────
-  const fetchXml = async () => {
-    const results = await Promise.allSettled(
-      [5, 10, 15, 20].map(async (offset) => {
-        const filename = buildFilename(offset);
-        const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
-        const r = await fetch(url, {
-          headers: { "User-Agent": "konrad3d-api/1.0" },
-          signal: AbortSignal.timeout(12000),
-        });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return { xml: await r.text(), filename };
-      })
-    );
-    const first = results.find((r) => r.status === "fulfilled");
-    if (first) return first.value;
-    throw new Error("Keine aktuelle KONRAD3D-Datei verfügbar");
-  };
-
-  // ── getCityName ───────────────────────────────────────────────────────
-  const getCityName = (properties) =>
-    properties?.name || properties?.NAME || properties?.GEN ||
-    properties?.name_de || properties?.NAMELSAD || null;
-
-  // ── Turf-basierte Ortserkennung entlang des Forecast-Tracks ──────────
-  const findOrteAlongTrack = (trackPoints, geojson, ref_time) => {
-    if (!geojson?.features || trackPoints.length === 0) return [];
+  // ── Turf-basierte Ortserkennung mit Spatial Index ─────────────────────────
+  const findOrteAlongTrack = (trackPoints, geojson, spatialIndex, ref_time) => {
+    if (!geojson?.features || trackPoints.length === 0 || !spatialIndex) return [];
 
     const BUFFER_KM = 2.5;
     const refMs     = new Date(ref_time).getTime();
 
-    const trackMinLat = Math.min(...trackPoints.map(p => p.lat));
-    const trackMaxLat = Math.max(...trackPoints.map(p => p.lat));
-    const trackMinLon = Math.min(...trackPoints.map(p => p.lon));
-    const trackMaxLon = Math.max(...trackPoints.map(p => p.lon));
-    const PAD = 0.5;
-
     let trackBuffer;
-    if (trackPoints.length === 1) {
-      trackBuffer = turf.buffer(
-        turf.point([trackPoints[0].lon, trackPoints[0].lat]),
-        BUFFER_KM,
-        { units: "kilometers" }
-      );
-    } else {
-      const lines = [];
-      for (let i = 0; i < trackPoints.length - 1; i++) {
-        lines.push([
-          [trackPoints[i].lon,     trackPoints[i].lat],
-          [trackPoints[i + 1].lon, trackPoints[i + 1].lat],
-        ]);
+    try {
+      if (trackPoints.length === 1) {
+        trackBuffer = turf.buffer(
+          turf.point([trackPoints[0].lon, trackPoints[0].lat]),
+          BUFFER_KM, { units: "kilometers" }
+        );
+      } else {
+        const lines = [];
+        for (let i = 0; i < trackPoints.length - 1; i++) {
+          lines.push([
+            [trackPoints[i].lon,     trackPoints[i].lat],
+            [trackPoints[i + 1].lon, trackPoints[i + 1].lat],
+          ]);
+        }
+        trackBuffer = turf.buffer(
+          turf.multiLineString(lines), BUFFER_KM, { units: "kilometers" }
+        );
       }
-      const multiLine = turf.multiLineString(lines);
-      trackBuffer = turf.buffer(multiLine, BUFFER_KM, { units: "kilometers" });
-    }
+    } catch { return []; }
 
     const bufferBbox = turf.bbox(trackBuffer);
-    const orte       = [];
-    const seen       = new Set();
 
-    for (const f of geojson.features) {
+    // ← Spatial Index: nur Features im Bounding-Box des Track-Buffers holen
+    const candidates = spatialIndex.search({
+      minX: bufferBbox[0], minY: bufferBbox[1],
+      maxX: bufferBbox[2], maxY: bufferBbox[3],
+    });
+
+    const orte = [];
+    const seen = new Set();
+
+    for (const item of candidates) {
+      const f    = geojson.features[item.idx];
       const name = getCityName(f.properties);
       if (!name || seen.has(name)) continue;
-
-      const featBbox = turf.bbox(f);
-      if (
-        featBbox[2] < trackMinLon - PAD ||
-        featBbox[0] > trackMaxLon + PAD ||
-        featBbox[3] < trackMinLat - PAD ||
-        featBbox[1] > trackMaxLat + PAD
-      ) continue;
-
-      if (
-        featBbox[2] < bufferBbox[0] ||
-        featBbox[0] > bufferBbox[2] ||
-        featBbox[3] < bufferBbox[1] ||
-        featBbox[1] > bufferBbox[3]
-      ) continue;
 
       let centroidCoord;
       try {
         const c = turf.centroid(f);
         centroidCoord = c.geometry.coordinates;
       } catch {
-        centroidCoord = [
-          (featBbox[0] + featBbox[2]) / 2,
-          (featBbox[1] + featBbox[3]) / 2,
-        ];
+        const bbox = turf.bbox(f);
+        centroidCoord = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
       }
 
-      const refPoint = trackPoints[0];
+      const refPoint  = trackPoints[0];
       const quickDist = haversine(centroidCoord[1], centroidCoord[0], refPoint.lat, refPoint.lon);
       if (quickDist > 80) continue;
 
       let isAffected = false;
-
-      if (f.geometry.type === "Point") {
-        const pt    = turf.point(f.geometry.coordinates);
-        const place = f.properties?.place;
-        let radiusKm = 1.0;
-        if (place === "village") radiusKm = 1.5;
-        else if (place === "town") radiusKm = 2.0;
-        else if (place === "city") radiusKm = 3.0;
-        const bufferedPoint = turf.buffer(pt, radiusKm, { units: "kilometers" });
-        isAffected = turf.booleanIntersects(bufferedPoint, trackBuffer);
-      } else {
-        isAffected = turf.booleanIntersects(f, trackBuffer);
-      }
+      try {
+        if (f.geometry.type === "Point") {
+          const place    = f.properties?.place;
+          let radiusKm   = 1.0;
+          if (place === "village") radiusKm = 1.5;
+          else if (place === "town")  radiusKm = 2.0;
+          else if (place === "city")  radiusKm = 3.0;
+          const bufferedPoint = turf.buffer(turf.point(f.geometry.coordinates), radiusKm, { units: "kilometers" });
+          isAffected = turf.booleanIntersects(bufferedPoint, trackBuffer);
+        } else {
+          isAffected = turf.booleanIntersects(f, trackBuffer);
+        }
+      } catch { continue; }
 
       if (!isAffected) continue;
 
@@ -338,9 +351,8 @@ export default async function handler(req, res) {
       let bestDist = Infinity;
 
       for (let i = 0; i < trackPoints.length - 1; i++) {
-        const p = trackPoints[i];
-        const q = trackPoints[i + 1];
-
+        const p      = trackPoints[i];
+        const q      = trackPoints[i + 1];
         const segLen = haversine(p.lat, p.lon, q.lat, q.lon);
         if (segLen === 0) {
           const d = haversine(centroidCoord[1], centroidCoord[0], p.lat, p.lon);
@@ -360,7 +372,7 @@ export default async function handler(req, res) {
 
       const last  = trackPoints[trackPoints.length - 1];
       const dLast = haversine(centroidCoord[1], centroidCoord[0], last.lat, last.lon);
-      if (dLast < bestDist) { bestMs = last.ms; }
+      if (dLast < bestDist) bestMs = last.ms;
 
       seen.add(name);
       const minutes_until = Math.round((bestMs - refMs) / 60000);
@@ -374,154 +386,142 @@ export default async function handler(req, res) {
     return orte;
   };
 
-  // ── Feature parsen ────────────────────────────────────────────────────────
-  const parseFeature = (featureFull, geojson, refTime) => {
-    const featureTag = featureFull.match(/<feature([^>]*)>/)?.[0] ?? "";
-    const inner      = block(featureFull, "feature") ?? featureFull;
+  // ── fetchXml — parallel ───────────────────────────────────────────────────
+  const fetchXml = async () => {
+    const results = await Promise.allSettled(
+      [5, 10, 15, 20].map(async (offset) => {
+        const filename = buildFilename(offset);
+        const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
+        const r = await fetch(url, {
+          headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return { xml: await r.text(), filename };
+      })
+    );
+    const first = results.find((r) => r.status === "fulfilled");
+    if (first) return first.value;
+    throw new Error("Keine aktuelle KONRAD3D-Datei verfügbar");
+  };
 
-    const meta       = block(inner, "metadata") ?? "";
-    const identifier = text(meta, "identifier") ?? attr(featureTag, "identifier") ?? "0";
-    const ref_time   = (text(meta, "reference_time") ?? refTime ?? "").trim();
+  // ── Feature parsen ────────────────────────────────────────────────────────
+  const parseFeature = (featureFull, geojson, spatialIndex, refTime) => {
+    const featureTag = featureFull.match(/<feature([^>]*)>/)?.[0] ?? "";
+    const inner      = blockFast(featureFull, "feature") ?? featureFull;
+
+    const meta       = blockFast(inner, "metadata") ?? "";
+    const identifier = textFast(meta, "identifier") ?? attrFast(featureTag, "identifier") ?? "0";
+    const ref_time   = (textFast(meta, "reference_time") ?? refTime ?? "").trim();
 
     const dtMatch = ref_time.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):?(\d{2})/);
     const dateStr = dtMatch ? `${dtMatch[1]}${dtMatch[2]}${dtMatch[3]}` : "";
     const timeStr = dtMatch ? `${dtMatch[4]}${dtMatch[5]}` : "";
 
-    const geo              = block(inner, "geometry") ?? "";
-    const covered_area     = num(geo, "covered_area");
-    const area_growth_rate = num(geo, "area_growth_rate");
-    const echo_top_msl     = noFill(num(geo, "echo_top_msl"));
-    const echo_bottom_msl  = noFill(num(geo, "echo_bottom_msl"));
+    const geo              = blockFast(inner, "geometry") ?? "";
+    const covered_area     = numFast(geo, "covered_area");
+    const area_growth_rate = numFast(geo, "area_growth_rate");
+    const echo_top_msl     = noFill(numFast(geo, "echo_top_msl"));
+    const echo_bottom_msl  = noFill(numFast(geo, "echo_bottom_msl"));
 
-    const centroid3d = block(geo, "centroid_3d") ?? block(geo, "centroid3d") ?? "";
-    const geodetic   = block(centroid3d, "geodetic_coordinate") ?? centroid3d;
-    const lat        = num(geodetic, "latitude");
-    const lon        = num(geodetic, "longitude");
+    const centroid3d = blockFast(geo, "centroid_3d") ?? blockFast(geo, "centroid3d") ?? "";
+    const geodetic   = blockFast(centroid3d, "geodetic_coordinate") ?? centroid3d;
+    const lat        = numFast(geodetic, "latitude");
+    const lon        = numFast(geodetic, "longitude");
 
-    const intens         = block(inner, "intensity") ?? "";
-    const severity       = int(intens, "severity") ?? 0;
-    const vil_density    = num(intens, "cell_based_VIL_density");
-    const max_dbz        = num(intens, "max_value");
-    const max_wind_gust  = num(intens, "maximum_estimated_wind_gust");
-    const heavy_rain_pot = num(intens, "heavy_rain_potential");
+    const intens         = blockFast(inner, "intensity") ?? "";
+    const severity       = intAttr(intens, "severity") ?? 0;
+    const vil_density    = numFast(intens, "cell_based_VIL_density");
+    const max_dbz        = numFast(intens, "max_value");
+    const max_wind_gust  = numFast(intens, "maximum_estimated_wind_gust");
+    const heavy_rain_pot = numFast(intens, "heavy_rain_potential");
 
-    const light          = block(inner, "lightning") ?? "";
-    const lightning_rate = int(light, "lightning_rate") ?? 0;
+    const light          = blockFast(inner, "lightning") ?? "";
+    const lightning_rate = intAttr(light, "lightning_rate") ?? 0;
 
-    const hymec                  = block(inner, "hymec") ?? "";
-    const area_hail              = num(hymec, "area_hail")              ?? 0;
-    const area_large_hail        = num(hymec, "area_large_hail")        ?? 0;
-    const echo_top_hail          = noFill(num(hymec, "echo_top_hail"));
-    const echo_top_large_hail    = noFill(num(hymec, "echo_top_large_hail"));
-    const echo_bottom_hail       = noFill(num(hymec, "echo_bottom_hail"));
-    const echo_bottom_large_hail = noFill(num(hymec, "echo_bottom_large_hail"));
-    const hail_flag              = int(inner, "hail_flag");
+    const hymec                  = blockFast(inner, "hymec") ?? "";
+    const area_hail              = numFast(hymec, "area_hail")              ?? 0;
+    const area_large_hail        = numFast(hymec, "area_large_hail")        ?? 0;
+    const echo_top_hail          = noFill(numFast(hymec, "echo_top_hail"));
+    const echo_top_large_hail    = noFill(numFast(hymec, "echo_top_large_hail"));
+    const echo_bottom_hail       = noFill(numFast(hymec, "echo_bottom_hail"));
+    const echo_bottom_large_hail = noFill(numFast(hymec, "echo_bottom_large_hail"));
+    const hail_flag              = intAttr(inner, "hail_flag");
 
+    // ── NWP-Modell ────────────────────────────────────────────────────────
+    const nwpBlock       = blockFast(inner, "nwp_model") ?? "";
+    const nwp_mu_cape    = numFast(nwpBlock, "nwp_mu_cape");
+    const nwp_mu_cin     = numFast(nwpBlock, "nwp_mu_cin");
+    const nwp_mu_lcl_hgt = numFast(nwpBlock, "nwp_mu_lcl_hgt");
+    const nwp_mu_lfc_hgt = numFast(nwpBlock, "nwp_mu_lfc_hgt");
+    const nwp_mu_el_hgt  = numFast(nwpBlock, "nwp_mu_el_hgt");
+    const nwp_bs_01km    = numFast(nwpBlock, "nwp_bs_01km");
+    const nwp_bs_06km    = numFast(nwpBlock, "nwp_bs_06km");
+    const nwp_bs_eff_mu  = numFast(nwpBlock, "nwp_bs_eff_mu");
+    const nwp_srh_1km_rm = numFast(nwpBlock, "nwp_srh_1km_rm");
+    const nwp_srh_3km_rm = numFast(nwpBlock, "nwp_srh_3km_rm");
+    const nwp_lr_500800  = numAttr(nwpBlock, "nwp_lr_500800hPa");
+    const nwp_prcp_water = numFast(nwpBlock, "nwp_prcp_water");
+    const nwp_dcape      = numFast(nwpBlock, "nwp_dcape");
 
-    // ── NWP-Modell parsen ─────────────────────────────────────────────────
-    const nwpBlock = block(inner, "nwp_model") ?? "";
-    const nwp_mu_cape    = num(nwpBlock, "nwp_mu_cape");
-    const nwp_mu_cin     = num(nwpBlock, "nwp_mu_cin");
-    const nwp_mu_lcl_hgt = num(nwpBlock, "nwp_mu_lcl_hgt");
-    const nwp_mu_lfc_hgt = num(nwpBlock, "nwp_mu_lfc_hgt");
-    const nwp_mu_el_hgt  = num(nwpBlock, "nwp_mu_el_hgt");
-    const nwp_bs_01km    = num(nwpBlock, "nwp_bs_01km");
-    const nwp_bs_06km    = num(nwpBlock, "nwp_bs_06km");
-    const nwp_bs_eff_mu  = num(nwpBlock, "nwp_bs_eff_mu");
-    const nwp_srh_1km_rm = num(nwpBlock, "nwp_srh_1km_rm");
-    const nwp_srh_3km_rm = num(nwpBlock, "nwp_srh_3km_rm");
-    const nwp_lr_500800  = num(nwpBlock, "nwp_lr_500800hPa"); // K/km, negativ = labil
-    const nwp_prcp_water = num(nwpBlock, "nwp_prcp_water");
-    const nwp_dcape      = num(nwpBlock, "nwp_dcape");
-
-    // ── Konvektionsindizes berechnen ──────────────────────────────────────
-    // Alle Formeln auf verfügbare Parameter beschränkt (kein T500 verfügbar)
-
-    // STP — Significant Tornado Parameter (Thompson et al. 2012, fixed layer)
-    // STP = (CAPE/1500) * ((2000-LCL)/1000) * (SRH1km/150) * (BS06km/20) * ((200+CIN)/150)
+    // ── STP ───────────────────────────────────────────────────────────────
     let nwp_stp = null;
     if (nwp_mu_cape !== null && nwp_mu_lcl_hgt !== null &&
         nwp_srh_1km_rm !== null && nwp_bs_06km !== null) {
 
       const cape_term = nwp_mu_cape / 1500;
-
-      // LCL-Term: 1.0 wenn < 1000m | 0.0 wenn > 2000m
-      const lcl_m    = nwp_mu_lcl_hgt;
-      const lcl_term = lcl_m < 1000 ? 1.0 : lcl_m > 2000 ? 0.0 : (2000 - lcl_m) / 1000;
-
-      const srh_term = Math.max(0, nwp_srh_1km_rm) / 150;
-
-      // SHR6-Term: 0.0 wenn < 12.5 m/s | cap 1.5 wenn > 30 m/s
-      const shr6_ms  = nwp_bs_06km; // sicherstellen dass in m/s!
-      const shr_term = shr6_ms < 12.5 ? 0.0 : shr6_ms > 30 ? 1.5 : shr6_ms / 20;
-
-      // CIN-Term: 1.0 wenn CIN > -50 | 0.0 wenn CIN < -200
-      let cin_term = 1.0;
+      const lcl_m     = nwp_mu_lcl_hgt;
+      const lcl_term  = lcl_m < 1000 ? 1.0 : lcl_m > 2000 ? 0.0 : (2000 - lcl_m) / 1000;
+      const srh_term  = Math.max(0, nwp_srh_1km_rm) / 150;
+      const shr6_ms   = nwp_bs_06km;
+      const shr_term  = shr6_ms < 12.5 ? 0.0 : shr6_ms > 30 ? 1.5 : shr6_ms / 20;
+      let cin_term    = 1.0;
       if (nwp_mu_cin !== null) {
-        const cin = nwp_mu_cin; // negativ erwartet (z.B. -80 J/kg)
+        const cin = nwp_mu_cin;
         cin_term = cin > -50 ? 1.0 : cin < -200 ? 0.0 : (200 + cin) / 150;
       }
-
       nwp_stp = Math.round(cape_term * lcl_term * srh_term * shr_term * cin_term * 100) / 100;
     }
 
-    // SCP — Supercell Composite Parameter (Thompson et al. 2004)
-    // SCP = (CAPE/1000) * (SRH3km/50) * (BS06km/20)
-    // Eff.BulkShear: 0.0 wenn < 10 m/s | 1.0 wenn > 20 m/s
+    // ── SCP ───────────────────────────────────────────────────────────────
     let nwp_scp = null;
     if (nwp_mu_cape !== null && nwp_srh_3km_rm !== null && nwp_bs_06km !== null) {
-
       const cape_term = nwp_mu_cape / 1000;
       const srh_term  = Math.max(0, nwp_srh_3km_rm) / 50;
-
-      // EffBS-Term mit Caps
-      const ebs_ms   = nwp_bs_06km;
-      const ebs_term = ebs_ms < 10 ? 0.0 : ebs_ms > 20 ? 1.0 : ebs_ms / 20;
-
+      const ebs_ms    = nwp_bs_06km;
+      const ebs_term  = ebs_ms < 10 ? 0.0 : ebs_ms > 20 ? 1.0 : ebs_ms / 20;
       nwp_scp = Math.round(cape_term * srh_term * ebs_term * 100) / 100;
     }
 
-    // ── Hagelberechnung ───────────────────────────────────────────────
+    // ── Hagelberechnung ───────────────────────────────────────────────────
     let hail_cm = null;
-
     if (hail_flag !== null && hail_flag >= 1) {
       if (hail_flag === 1) {
         const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
-          ? (echo_top_hail - echo_bottom_hail) / 1000
-          : 0;
-        hail_cm = 0.5 + thickness * 0.1 + area_hail * 0.001;
-        hail_cm = Math.min(hail_cm, 1.9);
-
+          ? (echo_top_hail - echo_bottom_hail) / 1000 : 0;
+        hail_cm = Math.min(0.5 + thickness * 0.1 + area_hail * 0.001, 1.9);
       } else if (hail_flag === 2) {
         const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
-          ? (echo_top_hail - echo_bottom_hail) / 1000
-          : 0;
-        hail_cm = 1.0 + thickness * 0.2 + area_hail * 0.003;
-        hail_cm = Math.max(hail_cm, 1.0);
-        hail_cm = Math.min(hail_cm, 3.9);
-
+          ? (echo_top_hail - echo_bottom_hail) / 1000 : 0;
+        hail_cm = Math.max(1.0, Math.min(1.0 + thickness * 0.2 + area_hail * 0.003, 3.9));
       } else if (hail_flag === 3) {
         const thickness = (echo_top_large_hail !== null && echo_bottom_large_hail !== null)
           ? (echo_top_large_hail - echo_bottom_large_hail) / 1000
           : (echo_top_hail !== null && echo_bottom_hail !== null)
-            ? (echo_top_hail - echo_bottom_hail) / 1000
-            : 0;
+            ? (echo_top_hail - echo_bottom_hail) / 1000 : 0;
         const area = area_large_hail > 0 ? area_large_hail : area_hail;
-        hail_cm = 2.0 + thickness * 0.3 + area * 0.005;
-        hail_cm = Math.max(hail_cm, 2.0);
+        hail_cm = Math.max(2.0, 2.0 + thickness * 0.3 + area * 0.005);
       }
-
-      hail_cm = Math.round(hail_cm * 10) / 10;
+      if (hail_cm !== null) hail_cm = Math.round(hail_cm * 10) / 10;
     }
 
-    // ── Tracking ──────────────────────────────────────────────────────
-    const trackBlock = block(inner, "tracking") ?? "";
-    const cell_speed = num(trackBlock, "cell_speed");
+    // ── Tracking ──────────────────────────────────────────────────────────
+    const trackBlock     = blockFast(inner, "tracking") ?? "";
+    const cell_speed     = numFast(trackBlock, "cell_speed");
+    const severity_trend = numFast(trackBlock, "severity_trend") ?? numFast(inner, "severity_trend");
+    const mass_trend     = numFast(trackBlock, "mass_trend")     ?? numFast(inner, "mass_trend");
 
-    const severity_trend = num(trackBlock, "severity_trend") ?? num(inner, "severity_trend");
-    const mass_trend     = num(trackBlock, "mass_trend")     ?? num(inner, "mass_trend");
-
-    // ── Zellenentwicklung ─────────────────────────────────────────────
+    // ── Zellenentwicklung ─────────────────────────────────────────────────
     let development = null;
     if (area_growth_rate !== null || severity_trend !== null || mass_trend !== null) {
       let pos = 0, neg = 0;
@@ -542,20 +542,20 @@ export default async function handler(req, res) {
       else               development = { status: "gleichbleibend", color: "orange" };
     }
 
-    // ── Forecast-Punkte ───────────────────────────────────────────────
-    const forecastBlock     = block(inner, "forecast") ?? "";
-    const centroidForecasts = block(forecastBlock, "centroid_forecasts") ?? "";
-    const cfBlocks          = allBlocks(centroidForecasts, "centroid_forecast");
+    // ── Forecast-Punkte ───────────────────────────────────────────────────
+    const forecastBlock     = blockFast(inner, "forecast") ?? "";
+    const centroidForecasts = blockFast(forecastBlock, "centroid_forecasts") ?? "";
+    const cfBlocks          = allBlocksFast(centroidForecasts, "centroid_forecast");
 
     let forecast_lat = null;
     let forecast_lon = null;
     const allForecasts = [];
 
     for (const cf of cfBlocks) {
-      const forecast_time = attr(cf.full, "forecast_time");
-      const fg   = block(cf.inner, "geodetic_coordinate") ?? cf.inner;
-      const fLat = num(fg, "latitude");
-      const fLon = num(fg, "longitude");
+      const forecast_time = attrFast(cf.full, "forecast_time");
+      const fg   = blockFast(cf.inner, "geodetic_coordinate") ?? cf.inner;
+      const fLat = numFast(fg, "latitude");
+      const fLon = numFast(fg, "longitude");
       forecast_lat = fLat;
       forecast_lon = fLon;
       if (fLat && fLon) allForecasts.push({ forecast_time, lat: fLat, lon: fLon });
@@ -566,26 +566,20 @@ export default async function handler(req, res) {
     let perp_point2_lat = null, perp_point2_lon = null;
 
     if (lat && lon && forecast_lat && forecast_lon) {
-      const dLat = forecast_lat - lat;
-      const dLon = forecast_lon - lon;
-      lat3 = dLat;
-      lon3 = dLon;
-
+      lat3 = forecast_lat - lat;
+      lon3 = forecast_lon - lon;
       const trackBearing = bearing(lat, lon, forecast_lat, forecast_lon);
-      const trackDist = haversine(lat, lon, forecast_lat, forecast_lon);
-      const coneWidth = Math.max(25, trackDist * 0.5);
+      const trackDist    = haversine(lat, lon, forecast_lat, forecast_lon);
+      const coneWidth    = Math.max(25, trackDist * 0.5);
       const p1 = destPoint(forecast_lat, forecast_lon, (trackBearing + 90)  % 360, coneWidth);
       const p2 = destPoint(forecast_lat, forecast_lon, (trackBearing + 270) % 360, coneWidth);
-      perp_point1_lat = p1.lat;
-      perp_point1_lon = p1.lon;
-      perp_point2_lat = p2.lat;
-      perp_point2_lon = p2.lon;
+      perp_point1_lat = p1.lat; perp_point1_lon = p1.lon;
+      perp_point2_lat = p2.lat; perp_point2_lon = p2.lon;
     }
 
-    // ── Turf-basierte Ortserkennung ───────────────────────────────────
-    const refMs      = new Date(ref_time).getTime();
+    // ── Track-Punkte + Orte ───────────────────────────────────────────────
+    const refMs       = new Date(ref_time).getTime();
     const trackPoints = [];
-
     if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
     for (const f of allForecasts) {
       if (!f.forecast_time) continue;
@@ -593,15 +587,13 @@ export default async function handler(req, res) {
       if (!isNaN(ms)) trackPoints.push({ lat: f.lat, lon: f.lon, ms });
     }
 
-    const orte = (trackPoints.length > 0 && geojson)
-      ? findOrteAlongTrack(trackPoints, geojson, ref_time)
-      : [];
-
-    const position = (lat && lon && geojson) ? findNearestPlace(lat, lon, geojson) : null;
+    const orte    = (trackPoints.length > 0 && geojson)
+      ? findOrteAlongTrack(trackPoints, geojson, spatialIndex, ref_time) : [];
+    const position = (lat && lon && geojson)
+      ? findNearestPlace(lat, lon, geojson, spatialIndex) : null;
 
     return {
-      dateStr,
-      timeStr,
+      dateStr, timeStr,
       cell_id:                identifier,
       latitude:               lat,
       longitude:              lon,
@@ -621,37 +613,32 @@ export default async function handler(req, res) {
       development,
       forecast_latitude:      forecast_lat,
       forecast_longitude:     forecast_lon,
-      perp_point1_lat,
-      perp_point1_lon,
-      perp_point2_lat,
-      perp_point2_lon,
-      lon3,
-      lat3,
-      echo_top_msl,
-      echo_bottom_msl,
+      perp_point1_lat, perp_point1_lon,
+      perp_point2_lat, perp_point2_lon,
+      lon3, lat3,
+      echo_top_msl, echo_bottom_msl,
       covered_area,
       orte,
       nwp: {
-        mu_cape:    nwp_mu_cape,
-        mu_cin:     nwp_mu_cin,
-        mu_lcl_hgt: nwp_mu_lcl_hgt,
-        mu_lfc_hgt: nwp_mu_lfc_hgt,
-        mu_el_hgt:  nwp_mu_el_hgt,
-        bs_01km:    nwp_bs_01km,
-        bs_06km:    nwp_bs_06km,
-        bs_eff_mu:  nwp_bs_eff_mu,
-        srh_1km_rm: nwp_srh_1km_rm,
-        srh_3km_rm: nwp_srh_3km_rm,
-        srh_1km_lm: num(nwpBlock, "nwp_srh_1km_lm"),
-        srh_3km_lm: num(nwpBlock, "nwp_srh_3km_lm"),
+        mu_cape:      nwp_mu_cape,
+        mu_cin:       nwp_mu_cin,
+        mu_lcl_hgt:   nwp_mu_lcl_hgt,
+        mu_lfc_hgt:   nwp_mu_lfc_hgt,
+        mu_el_hgt:    nwp_mu_el_hgt,
+        bs_01km:      nwp_bs_01km,
+        bs_06km:      nwp_bs_06km,
+        bs_eff_mu:    nwp_bs_eff_mu,
+        srh_1km_rm:   nwp_srh_1km_rm,
+        srh_3km_rm:   nwp_srh_3km_rm,
+        srh_1km_lm:   numAttr(nwpBlock, "nwp_srh_1km_lm"),
+        srh_3km_lm:   numAttr(nwpBlock, "nwp_srh_3km_lm"),
         lr_500800hPa: nwp_lr_500800,
         prcp_water:   nwp_prcp_water,
         dcape:        nwp_dcape,
       },
-      // Berechnete Indizes
       nwp_indices: {
-        stp:         nwp_stp,          // Significant Tornado Parameter
-        scp:         nwp_scp,          // Supercell Composite Parameter
+        stp: nwp_stp,
+        scp: nwp_scp,
       },
       centroid_forecasts: allForecasts
         .map(f => ({
@@ -668,9 +655,10 @@ export default async function handler(req, res) {
 
   // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    const [{ xml, filename }, geojson, meso_cells] = await Promise.all([
+    // Alles parallel: XML-Fetch, GeoJSON + Index-Build, Meso-Fetch
+    const [{ xml, filename }, { geojson, spatialIndex }, meso_cells] = await Promise.all([
       fetchXml(),
-      Promise.resolve(loadGeoJson()),
+      loadGeoJsonWithIndex(),
       fetchMesoCells().catch((err) => {
         console.error("Mesozyklonen-Fetch fehlgeschlagen:", err.message);
         return [];
@@ -682,10 +670,17 @@ export default async function handler(req, res) {
       xml.match(/<cells[^>]+reference_time="([^"]+)"/)?.[1]?.trim() ??
       null;
 
-    const creation_date = xml.match(/<creation-date[^>]*>([^<]+)<\/creation-date>/)?.[1]?.trim() ?? null;
+    const creation_date =
+      xml.match(/<creation-date[^>]*>([^<]+)<\/creation-date>/)?.[1]?.trim() ?? null;
 
     const featureMatches = xml.match(/<feature[\s\S]*?<\/feature>/g) ?? [];
-    const cells = featureMatches.map((f) => parseFeature(f, geojson, reference_time));
+
+    // Alle Features parallel parsen
+    const cells = await Promise.all(
+      featureMatches.map((f) =>
+        Promise.resolve(parseFeature(f, geojson, spatialIndex, reference_time))
+      )
+    );
 
     return res.status(200).json({
       reference_time,
