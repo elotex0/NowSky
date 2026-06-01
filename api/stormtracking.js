@@ -176,7 +176,8 @@ const parseMesoCells = (xml) => {
       latitude, longitude, intensity,
       mesocyclone_top, mesocyclone_base,
       max_dbz, base_speed,
-      },
+      });
+    },
 
   return cells;
 };
