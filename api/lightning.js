@@ -22,8 +22,10 @@ export default async function handler(req, res) {
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     }) + " Uhr";
 
-  const nowSec     = Math.floor(Date.now() / 1000);
-  const cutoffSec  = nowSec - 5 * 60; // letzte 5 Minuten
+  const nowMs      = Date.now();
+  const nowSec     = Math.floor(nowMs / 1000);
+  // Auf letzte volle 5-Minuten-Marke abrunden (z.B. 12:31 → 12:30:00)
+  const cutoffSec  = Math.floor(nowMs / (5 * 60 * 1000)) * (5 * 60);
 
   try {
     const upstream = await fetch("https://ukwx.duckdns.org/lightning/europe", {
