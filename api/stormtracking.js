@@ -177,8 +177,6 @@ const parseMesoCells = (xml) => {
       mesocyclone_top, mesocyclone_base,
       max_dbz, base_speed,
       },
-    });
-  }
 
   return cells;
 };
