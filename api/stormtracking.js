@@ -237,15 +237,9 @@ const parseMesoCells = (xml) => {
     cells.push({
       dateStr, timeStr, event_id,
       latitude, longitude, intensity,
-      mesocyclone_top, mesocyclone_base, mesocyclone_echotop,
-      mesocyclone_diameter, mesocyclone_diameter_equiv,
-      mesocyclone_vil,
-      shear_mean, shear_max,
-      momentum_mean, momentum_max,
-      shear_vectors, shear_features,
-      mean_dbz, max_dbz,
-      velocity_max,
-      rot_max, rot_mean, rot_max_ground,
+      mesocyclone_top, mesocyclone_base,
+      max_dbz,
+      rot_max_ground,
       tornado: {
         score:   tornado_score,
         label:   tornado_label,
