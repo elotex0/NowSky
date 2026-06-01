@@ -184,7 +184,7 @@ const parseMesoCells = (xml) => {
 
 // ── Mesozyklonen-Fetch ────────────────────────────────────────────────────────
 const fetchMesoCells = async () => {
-  const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_20260531_1020.xml";
+  const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_latest.xml";
   const r   = await fetch(url, {
     headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
     signal:  AbortSignal.timeout(8000),
@@ -428,7 +428,7 @@ export default async function handler(req, res) {
     const results = await Promise.allSettled(
       [5, 10, 15, 20].map(async (offset) => {
         const filename = buildFilename(offset);
-        const url = `https://opendata.dwd.de/weather/radar/konrad3d/KONRAD3D_20260531T102000.xml`;
+        const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
         const r = await fetch(url, {
           headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
           signal: AbortSignal.timeout(8000),
