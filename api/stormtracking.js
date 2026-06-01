@@ -167,83 +167,15 @@ const parseMesoCells = (xml) => {
 
     const mesocyclone_top             = numFast(nwp, "mesocyclone_top");
     const mesocyclone_base            = numFast(nwp, "mesocyclone_base");
-    const mesocyclone_echotop         = numFast(nwp, "mesocyclone_echotop");
-    const mesocyclone_diameter        = numFast(nwp, "mesocyclone_diameter");
-    const mesocyclone_diameter_equiv  = numFast(nwp, "mesocyclone_diameter_equivalent");
-    const mesocyclone_vil             = numFast(nwp, "mesocyclone_vil");
-    const shear_mean                  = numFast(nwp, "mesocyclone_shear_mean");
-    const shear_max                   = numFast(nwp, "mesocyclone_shear_max");
-    const momentum_mean               = numFast(nwp, "mesocyclone_momentum_mean");
-    const momentum_max                = numFast(nwp, "mesocyclone_momentum_max");
-    const shear_vectors               = numFast(nwp, "mesocyclone_shear_vectors");
-    const shear_features              = numFast(nwp, "mesocyclone_shear_features");
-    const mean_dbz                    = numFast(nwp, "mean_dbz");
     const max_dbz                     = numFast(nwp, "max_dbz");
-    const velocity_max                = numFast(nwp, "mesocyclone_velocity_max");
-    const rot_max                     = numFast(nwp, "mesocyclone_velocity_rotational_max");
-    const rot_mean                    = numFast(nwp, "mesocyclone_velocity_rotational_mean");
-    const rot_max_ground              = numFast(nwp, "mesocyclone_velocity_rotational_max_closest_to_ground");
+    const base_speed                  = numFast(inner, "mesocyclone_velocity_rotational_max_closest_to_ground");
 
-    // ── Tornado-Wahrscheinlichkeit ─────────────────────────────────────────
-    // Punkte-System basierend auf bekannten Schwellenwerten
-    let tornado_score = 0;
-    const tornado_reasons = [];
-
-    // Bodennahe Rotation (wichtigstes Kriterium)
-    if (rot_max_ground !== null) {
-      if (rot_max_ground >= 20)      { tornado_score += 35; tornado_reasons.push("sehr hohe bodennahe Rotation (≥20 m/s)"); }
-      else if (rot_max_ground >= 15) { tornado_score += 25; tornado_reasons.push("hohe bodennahe Rotation (≥15 m/s)"); }
-      else if (rot_max_ground >= 10) { tornado_score += 12; tornado_reasons.push("mäßige bodennahe Rotation (≥10 m/s)"); }
-    }
-
-    // Meso-Basis tief = Rotation reicht nah an den Boden
-    if (mesocyclone_base !== null) {
-      if (mesocyclone_base < 1.0)      { tornado_score += 20; tornado_reasons.push("sehr tiefe Meso-Basis (<1 km)"); }
-      else if (mesocyclone_base < 2.0) { tornado_score += 12; tornado_reasons.push("tiefe Meso-Basis (<2 km)"); }
-      else if (mesocyclone_base < 3.0) { tornado_score += 5;  tornado_reasons.push("mittlere Meso-Basis (<3 km)"); }
-    }
-
-    // Scherung (organisierte Rotation)
-    if (shear_max !== null) {
-      if (shear_max >= 10)     { tornado_score += 15; tornado_reasons.push("hohe Scherung (≥10 m/s/km)"); }
-      else if (shear_max >= 7) { tornado_score += 8;  tornado_reasons.push("mäßige Scherung (≥7 m/s/km)"); }
-      else if (shear_max >= 5) { tornado_score += 3;  tornado_reasons.push("schwache Scherung (≥5 m/s/km)"); }
-    }
-
-    // rot_max == rot_max_ground → Rotation durchgehend bis Boden
-    if (rot_max !== null && rot_max_ground !== null && Math.abs(rot_max - rot_max_ground) < 1.0) {
-      tornado_score += 10;
-      tornado_reasons.push("Rotation durchgehend bis Boden");
-    }
-
-    // Intensität
-    if (intensity === 3)      { tornado_score += 10; tornado_reasons.push("starke Mesozyklone (Intensität 3)"); }
-    else if (intensity === 2) { tornado_score += 5;  tornado_reasons.push("mittlere Mesozyklone (Intensität 2)"); }
-
-    // Mehr bestätigende Radarscans = zuverlässiger
-    if (shear_features !== null && shear_features >= 3) {
-      tornado_score += 5; tornado_reasons.push(`${shear_features} Radar-Elevationen bestätigt`);
-    }
-
-    // Cap bei 100
-    tornado_score = Math.min(100, tornado_score);
-
-    let tornado_label;
-    if      (tornado_score >= 70) tornado_label = "hoch";
-    else if (tornado_score >= 40) tornado_label = "erhöht";
-    else if (tornado_score >= 15) tornado_label = "gering";
-    else                          tornado_label = "sehr gering";
 
     cells.push({
       dateStr, timeStr, event_id,
       latitude, longitude, intensity,
       mesocyclone_top, mesocyclone_base,
-      max_dbz,
-      rot_max_ground,
-      tornado: {
-        score:   tornado_score,
-        label:   tornado_label,
-        reasons: tornado_reasons,
+      max_dbz, base_speed,
       },
     });
   }
