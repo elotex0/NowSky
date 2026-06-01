@@ -8,13 +8,21 @@ import rbush from "rbush";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ── Schneller String-Parser (indexOf statt Regex, ~3× schneller) ─────────────
+// ── Schneller String-Parser (indexOf, unterstützt Tags mit und ohne Attribute) ─
 const textFast = (xml, tag) => {
-  const open = `<${tag}>`;
+  const open = `<${tag}`;
   const s = xml.indexOf(open);
   if (s === -1) return null;
-  const e = xml.indexOf(`</${tag}>`, s);
-  return e === -1 ? null : xml.slice(s + open.length, e).trim();
+  // Sicherstellen dass es wirklich dieser Tag ist (kein Prefix-Match wie <latitude_x>)
+  const charAfter = xml[s + open.length];
+  if (charAfter !== ">" && charAfter !== " " && charAfter !== "\t" && charAfter !== "\n" && charAfter !== "\r") return null;
+  const bodyStart = xml.indexOf(">", s);
+  if (bodyStart === -1) return null;
+  // Self-closing Tag (<tag />) → kein Inhalt
+  if (xml[bodyStart - 1] === "/") return null;
+  const closeTag = `</${tag}>`;
+  const e = xml.indexOf(closeTag, bodyStart);
+  return e === -1 ? null : xml.slice(bodyStart + 1, e).trim();
 };
 
 const numFast = (xml, tag) => {
@@ -22,7 +30,14 @@ const numFast = (xml, tag) => {
   return v !== null && v !== "" && !isNaN(v) ? parseFloat(v) : null;
 };
 
-// Regex-Fallback nur für Tags mit Attributen
+const intFast = (xml, tag) => {
+  const v = textFast(xml, tag);
+  if (v === null || v === "") return null;
+  const n = parseInt(v);
+  return n === -1000000000 ? null : n;
+};
+
+// Regex-Fallback für Tags wo textFast nicht reicht (z.B. Attribut-Wert lesen)
 const textAttr = (xml, tag) => {
   const m = xml.match(new RegExp(`<${tag}(?:[^>]*)>([^<]*)<\\/${tag}>`));
   return m ? m[1].trim() : null;
@@ -38,15 +53,22 @@ const intAttr = (xml, tag) => {
   return n === -1000000000 ? null : n;
 };
 
+const _isTagBoundary = (c) => c === ">" || c === " " || c === "\t" || c === "\n" || c === "\r" || c === "/";
+
 const blockFast = (xml, tag) => {
   const open = `<${tag}`;
-  const s = xml.indexOf(open);
-  if (s === -1) return null;
   const closeTag = `</${tag}>`;
-  const bodyStart = xml.indexOf(">", s);
-  if (bodyStart === -1) return null;
-  const e = xml.indexOf(closeTag, bodyStart);
-  return e === -1 ? null : xml.slice(bodyStart + 1, e);
+  let pos = 0;
+  while (true) {
+    const s = xml.indexOf(open, pos);
+    if (s === -1) return null;
+    if (!_isTagBoundary(xml[s + open.length])) { pos = s + 1; continue; }
+    const bodyStart = xml.indexOf(">", s);
+    if (bodyStart === -1) return null;
+    if (xml[bodyStart - 1] === "/") return null; // self-closing
+    const e = xml.indexOf(closeTag, bodyStart);
+    return e === -1 ? null : xml.slice(bodyStart + 1, e);
+  }
 };
 
 const allBlocksFast = (xml, tag) => {
@@ -55,10 +77,17 @@ const allBlocksFast = (xml, tag) => {
   const results = [];
   let pos = 0;
   while (true) {
-    const s = xml.indexOf(open, pos);
-    if (s === -1) break;
+    let s = -1;
+    let searchPos = pos;
+    while (true) {
+      const idx = xml.indexOf(open, searchPos);
+      if (idx === -1) return results;
+      if (_isTagBoundary(xml[idx + open.length])) { s = idx; break; }
+      searchPos = idx + 1;
+    }
     const bodyStart = xml.indexOf(">", s);
     if (bodyStart === -1) break;
+    if (xml[bodyStart - 1] === "/") { pos = bodyStart + 1; continue; }
     const e = xml.indexOf(closeTag, bodyStart);
     if (e === -1) break;
     results.push({ full: xml.slice(s, e + closeTag.length), inner: xml.slice(bodyStart + 1, e) });
@@ -430,14 +459,14 @@ export default async function handler(req, res) {
     const lon        = numFast(geodetic, "longitude");
 
     const intens         = blockFast(inner, "intensity") ?? "";
-    const severity       = intAttr(intens, "severity") ?? 0;
+    const severity       = intFast(intens, "severity") ?? 0;
     const vil_density    = numFast(intens, "cell_based_VIL_density");
     const max_dbz        = numFast(intens, "max_value");
     const max_wind_gust  = numFast(intens, "maximum_estimated_wind_gust");
     const heavy_rain_pot = numFast(intens, "heavy_rain_potential");
 
     const light          = blockFast(inner, "lightning") ?? "";
-    const lightning_rate = intAttr(light, "lightning_rate") ?? 0;
+    const lightning_rate = intFast(light, "lightning_rate") ?? 0;
 
     const hymec                  = blockFast(inner, "hymec") ?? "";
     const area_hail              = numFast(hymec, "area_hail")              ?? 0;
@@ -446,7 +475,7 @@ export default async function handler(req, res) {
     const echo_top_large_hail    = noFill(numFast(hymec, "echo_top_large_hail"));
     const echo_bottom_hail       = noFill(numFast(hymec, "echo_bottom_hail"));
     const echo_bottom_large_hail = noFill(numFast(hymec, "echo_bottom_large_hail"));
-    const hail_flag              = intAttr(inner, "hail_flag");
+    const hail_flag              = intFast(inner, "hail_flag");
 
     // ── NWP-Modell ────────────────────────────────────────────────────────
     const nwpBlock       = blockFast(inner, "nwp_model") ?? "";
@@ -630,8 +659,8 @@ export default async function handler(req, res) {
         bs_eff_mu:    nwp_bs_eff_mu,
         srh_1km_rm:   nwp_srh_1km_rm,
         srh_3km_rm:   nwp_srh_3km_rm,
-        srh_1km_lm:   numAttr(nwpBlock, "nwp_srh_1km_lm"),
-        srh_3km_lm:   numAttr(nwpBlock, "nwp_srh_3km_lm"),
+        srh_1km_lm:   numFast(nwpBlock, "nwp_srh_1km_lm"),
+        srh_3km_lm:   numFast(nwpBlock, "nwp_srh_3km_lm"),
         lr_500800hPa: nwp_lr_500800,
         prcp_water:   nwp_prcp_water,
         dcape:        nwp_dcape,
