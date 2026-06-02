@@ -202,7 +202,7 @@ const parseMesoCells = (xml) => {
       latitude, longitude, intensity,
       mesocyclone_top, mesocyclone_base,
       max_dbz, rotational_max, base_speed, shear_max,
-      elevations, min_elevation, has_low_sweep, has_surface_sweep,,
+      elevations, min_elevation, has_low_sweep, has_surface_sweep,
       tornado,
     });
   }
