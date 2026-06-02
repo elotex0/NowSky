@@ -26,40 +26,52 @@ export default async function handler(request) {
 
     // Punkt-in-Polygon prüfen
     const hitting = features.filter(f =>
-      f.geometry?.type === 'Polygon' && pointInPolygon(lat, lon, f.geometry.coordinates[0])
+      f.geometry?.type === 'Polygon' &&
+      pointInPolygon(lat, lon, f.geometry.coordinates[0])
     );
 
-    const thunderstorm = hitting.length > 0;
     const severityOrder = ['minor', 'moderate', 'severe', 'extreme'];
-    let maxSev = -1;
-    for (const f of hitting) {
-      const idx = severityOrder.indexOf(f.properties?.SEVERITY?.toLowerCase());
-      if (idx > maxSev) maxSev = idx;
-    }
+
+    const getSeverity = (featureList) => {
+      let max = -1;
+      for (const f of featureList) {
+        const idx = severityOrder.indexOf(f.properties?.SEVERITY?.toLowerCase());
+        if (idx > max) max = idx;
+      }
+      return max >= 0 ? severityOrder[max] : null;
+    };
 
     return jsonResponse({
       lat,
       lon,
-      since,
-      thunderstorm,
-      severity: maxSev >= 0 ? severityOrder[maxSev] : null,
-      warnings: hitting.map(f => ({
-        severity:   f.properties?.SEVERITY  ?? null,
-        event:      f.properties?.EC_II     ?? null,
-        created:    f.properties?.CREATED   ?? null,
-        onset:      f.properties?.ONSET     ?? null,
-        expires:    f.properties?.EXPIRES   ?? null,
-        areaColor:  f.properties?.EC_AREA_COLOR ?? null,
-      })),
+
+      current: {
+        thunderstorm: hitting.length > 0,
+        severity:     getSeverity(hitting),
+      },
+
+      forecast: {
+        inStormPath: hitting.length > 0,
+        severity:    getSeverity(hitting),
+        warnings: hitting.map(f => ({
+          severity:    f.properties?.SEVERITY    ?? null,
+          type:        f.properties?.EVENT       ?? null,
+          validFrom:   f.properties?.ONSET       ?? null,
+          validUntil:  f.properties?.EXPIRES     ?? null,
+          headline:    f.properties?.HEADLINE    ?? null,
+          description: f.properties?.DESCRIPTION ?? null,
+          instruction: f.properties?.INSTRUCTION ?? null,
+        })),
+      },
     });
 
   } catch (err) {
     console.error('Error:', err);
     return jsonResponse({
-      lat, lon,
-      thunderstorm: false,
-      severity: null,
-      warnings: [],
+      lat,
+      lon,
+      current:  { thunderstorm: false, severity: null },
+      forecast: { inStormPath: false, severity: null, warnings: [] },
     });
   }
 }
@@ -75,7 +87,6 @@ function getLast5MinUTC() {
   return now.toISOString().slice(0, 19) + 'Z';
 }
 
-// Ray-casting Algorithmus: Punkt in Polygon?
 function pointInPolygon(lat, lon, ring) {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
