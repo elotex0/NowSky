@@ -3,12 +3,8 @@ export const config = {
 };
 
 export default async function handler(request) {
-  // CORS Preflight
   if (request.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 200,
-      headers: corsHeaders(),
-    });
+    return new Response(null, { status: 200, headers: corsHeaders() });
   }
 
   const { searchParams } = new URL(request.url);
@@ -20,175 +16,97 @@ export default async function handler(request) {
   }
 
   try {
-    // Analyse & Vorhersage parallel abfragen
-    const [analyseResult, vorhersageResult] = await Promise.allSettled([
-      checkLayer(lat, lon, "dwd:Autowarn_Analyse", null),
-      checkLayer(lat, lon, "dwd:Autowarn_Vorhersage", "EC_GROUP IN ('Gewitter')"),
-    ]);
+    const since = getLast5MinUTC();
+    const filter = `CREATED>=${since} AND EC_GROUP='Gewitter'`;
+    const url = `https://maps.dwd.de/geoserver/dwd/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=dwd:Autowarn_Vorhersage&outputFormat=application/json&CQL_FILTER=${encodeURIComponent(filter)}`;
 
-    const analyse    = analyseResult.status    === 'fulfilled' ? analyseResult.value    : { thunderstorm: false, severity: null, features: [] };
-    const vorhersage = vorhersageResult.status === 'fulfilled' ? vorhersageResult.value : { thunderstorm: false, severity: null, features: [] };
+    const response = await fetchWithTimeout(url, 4000);
+    const data = await response.json();
+    const features = data.features || [];
+
+    // Punkt-in-Polygon prüfen
+    const hitting = features.filter(f =>
+      f.geometry?.type === 'Polygon' && pointInPolygon(lat, lon, f.geometry.coordinates[0])
+    );
+
+    const thunderstorm = hitting.length > 0;
+    const severityOrder = ['minor', 'moderate', 'severe', 'extreme'];
+    let maxSev = -1;
+    for (const f of hitting) {
+      const idx = severityOrder.indexOf(f.properties?.SEVERITY?.toLowerCase());
+      if (idx > maxSev) maxSev = idx;
+    }
 
     return jsonResponse({
       lat,
       lon,
-
-      // Aktuell: Gewitter direkt über dem Ort?
-      current: {
-        thunderstorm: analyse.thunderstorm,
-        severity:     analyse.severity,
-      },
-
-      // Vorhersage: Liegt der Ort in einer Gewitterzugbahn?
-      forecast: {
-        inStormPath:  vorhersage.thunderstorm,
-        severity:     vorhersage.severity,
-        warnings:     vorhersage.features.map(f => ({
-          severity:    f.properties?.SEVERITY   ?? null,
-          type:        f.properties?.EVENT      ?? null,
-          validFrom:   f.properties?.ONSET      ?? null,
-          validUntil:  f.properties?.EXPIRES    ?? null,
-          headline:    f.properties?.HEADLINE   ?? null,
-          description: f.properties?.DESCRIPTION ?? null,
-          instruction: f.properties?.INSTRUCTION ?? null,
-        })),
-      },
+      since,
+      thunderstorm,
+      severity: maxSev >= 0 ? severityOrder[maxSev] : null,
+      warnings: hitting.map(f => ({
+        severity:   f.properties?.SEVERITY  ?? null,
+        event:      f.properties?.EC_II     ?? null,
+        created:    f.properties?.CREATED   ?? null,
+        onset:      f.properties?.ONSET     ?? null,
+        expires:    f.properties?.EXPIRES   ?? null,
+        areaColor:  f.properties?.EC_AREA_COLOR ?? null,
+      })),
     });
 
   } catch (err) {
-    console.error("Unexpected error:", err);
-
+    console.error('Error:', err);
     return jsonResponse({
-      lat,
-      lon,
-      current:  { thunderstorm: false, severity: null },
-      forecast: { inStormPath: false, severity: null, warnings: [] },
+      lat, lon,
+      thunderstorm: false,
+      severity: null,
+      warnings: [],
     });
   }
 }
 
 /* ------------------------------------------------ */
-/* ---------------- CORE LOGIC -------------------- */
+/* ---------------- HELPERS ----------------------- */
 /* ------------------------------------------------ */
 
-/**
- * Fragt einen WMS-Layer ab und gibt Gewitter-Features zurück.
- *
- * @param {number}      lat
- * @param {number}      lon
- * @param {string}      layer       - z.B. "dwd:Autowarn_Analyse" oder "dwd:Autowarn_Vorhersage"
- * @param {string|null} cqlFilter   - optionaler CQL_FILTER, z.B. "EC_GROUP IN ('Gewitter')"
- */
-async function checkLayer(lat, lon, layer, cqlFilter) {
-  const delta = 0.01;
-  const bbox  = `${lon - delta},${lat - delta},${lon + delta},${lat + delta}`;
-
-  const servers = [
-    "https://maps.dwd.de/geoserver/dwd/wms",
-    "https://brz-maps.dwd.de/geoserver/dwd/wms",
-  ];
-
-  const timeoutMs = 2500;
-
-  for (const baseUrl of servers) {
-    try {
-      const response = await fetchWithTimeout(baseUrl, bbox, layer, cqlFilter, timeoutMs);
-      const data     = await response.json();
-
-      if (!data.features || data.features.length === 0) {
-        return { thunderstorm: false, severity: null, features: [] };
-      }
-
-      // Bei Analyse: nach EC_GROUP filtern (kein serverseitiger CQL-Filter)
-      const thunderFeatures = cqlFilter
-        ? data.features   // Server hat bereits gefiltert
-        : data.features.filter(f => f.properties?.EC_GROUP === "Gewitter");
-
-      if (thunderFeatures.length === 0) {
-        return { thunderstorm: false, severity: null, features: [] };
-      }
-
-      const severityOrder = ["minor", "moderate", "severe", "extrem"];
-      let maxSeverityIndex = -1;
-
-      for (const f of thunderFeatures) {
-        const sev = f.properties?.SEVERITY?.toLowerCase();
-        const idx = severityOrder.indexOf(sev);
-        if (idx > maxSeverityIndex) maxSeverityIndex = idx;
-      }
-
-      return {
-        thunderstorm: true,
-        severity:     maxSeverityIndex >= 0 ? severityOrder[maxSeverityIndex] : null,
-        features:     thunderFeatures,
-      };
-
-    } catch (err) {
-      console.warn(`Server failed (${baseUrl}, ${layer}):`, err.message);
-      continue;
-    }
-  }
-
-  throw new Error(`All servers failed for layer ${layer}`);
+function getLast5MinUTC() {
+  const now = new Date();
+  now.setUTCSeconds(0, 0);
+  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
+  return now.toISOString().slice(0, 19) + 'Z';
 }
 
-/* ------------------------------------------------ */
-/* ---------------- FETCH HELPER ------------------ */
-/* ------------------------------------------------ */
+// Ray-casting Algorithmus: Punkt in Polygon?
+function pointInPolygon(lat, lon, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    const intersect = ((yi > lat) !== (yj > lat)) &&
+      (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
 
-async function fetchWithTimeout(baseUrl, bbox, layer, cqlFilter, timeoutMs) {
+async function fetchWithTimeout(url, timeoutMs) {
   const controller = new AbortController();
-  const timeout    = setTimeout(() => controller.abort(), timeoutMs);
-
-  const url = new URL(baseUrl);
-  url.searchParams.set("SERVICE",      "WMS");
-  url.searchParams.set("VERSION",      "1.1.1");
-  url.searchParams.set("REQUEST",      "GetFeatureInfo");
-  url.searchParams.set("LAYERS",       layer);
-  url.searchParams.set("QUERY_LAYERS", layer);
-  url.searchParams.set("BBOX",         bbox);
-  url.searchParams.set("FEATURE_COUNT","50");
-  url.searchParams.set("HEIGHT",       "101");
-  url.searchParams.set("WIDTH",        "101");
-  url.searchParams.set("INFO_FORMAT",  "application/json");
-  url.searchParams.set("SRS",          "EPSG:4326");
-  url.searchParams.set("X",            "50");
-  url.searchParams.set("Y",            "50");
-
-  // CQL_FILTER nur setzen wenn vorhanden (Vorhersage-Layer)
-  if (cqlFilter) {
-    url.searchParams.set("CQL_FILTER", cqlFilter);
-  }
-
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url.toString(), {
-      signal: controller.signal,
-      cache:  "no-store",
-    });
-
+    const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
     clearTimeout(timeout);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response;
-
   } catch (err) {
     clearTimeout(timeout);
     throw err;
   }
 }
 
-/* ------------------------------------------------ */
-/* ---------------- UTILITIES --------------------- */
-/* ------------------------------------------------ */
-
 function corsHeaders() {
   return {
-    "Access-Control-Allow-Origin":  "*",
-    "Access-Control-Allow-Methods": "GET,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    'Access-Control-Allow-Origin':  '*',
+    'Access-Control-Allow-Methods': 'GET,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
   };
 }
 
@@ -196,8 +114,8 @@ function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
-      "Content-Type":  "application/json",
-      "Cache-Control": "s-maxage=60, stale-while-revalidate=120",
+      'Content-Type':  'application/json',
+      'Cache-Control': 'no-store',
       ...corsHeaders(),
     },
   });
