@@ -172,17 +172,20 @@ const parseMesoCells = (xml) => {
     const base_speed         = numFast(nwp, "mesocyclone_velocity_rotational_max_closest_to_ground");
     const shear_max          = numFast(nwp, "mesocyclone_shear_max");
 
-    // ── Radar-Sweeps: niedrigste Elevation bestimmen ──────────────────────
-    const elevationAngles = [];
+  
+    // ── Radar-Sweeps: alle Stationen mit ihren Elevationen ───────────────────
+    const elevations = [];
     const elevBlocks = allBlocksFast(inner, "elevation");
     for (const el of elevBlocks) {
-      el.inner.split(",").forEach(v => {
-        const n = parseFloat(v.trim());
-        if (!isNaN(n)) elevationAngles.push(n);
-      });
+      const site   = attrFast(el.full, "site");
+      const angles = el.inner.split(",").map(v => parseFloat(v.trim())).filter(n => !isNaN(n));
+      if (site && angles.length > 0) elevations.push({ site, angles });
     }
-    const min_elevation    = elevationAngles.length > 0 ? Math.min(...elevationAngles) : null;
-    const has_low_sweep    = min_elevation !== null && min_elevation <= 1.5;
+    
+    // Für Tornado-Check: niedrigste Elevation über alle Stationen
+    const allAngles     = elevations.flatMap(e => e.angles);
+    const min_elevation = allAngles.length > 0 ? Math.min(...allAngles) : null;
+    const has_low_sweep = min_elevation !== null && min_elevation <= 1.5;
     const has_surface_sweep = min_elevation !== null && min_elevation <= 0.5;
 
     // ── Tornado: true / false ─────────────────────────────────────────────
@@ -199,7 +202,7 @@ const parseMesoCells = (xml) => {
       latitude, longitude, intensity,
       mesocyclone_top, mesocyclone_base,
       max_dbz, rotational_max, base_speed, shear_max,
-      min_elevation, has_low_sweep, has_surface_sweep,
+      elevations, min_elevation, has_low_sweep, has_surface_sweep,,
       tornado,
     });
   }
