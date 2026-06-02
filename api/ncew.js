@@ -1,11 +1,3 @@
-// Letzte 5-Minuten-Marke in UTC als ISO-String
-function getLast5MinUTC() {
-  const now = new Date();
-  now.setUTCSeconds(0, 0);
-  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
-  return now.toISOString().slice(0, 19) + "Z";
-}
-
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -13,9 +5,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    const since = getLast5MinUTC();
-    const filter = `CREATED>=${since} AND EC_GROUP='Gewitter'`;
-    const url = `https://maps.dwd.de/geoserver/dwd/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=dwd:Autowarn_Vorhersage&outputFormat=application/json&CQL_FILTER=${encodeURIComponent(filter)}`;
+    const url = `https://maps.dwd.de/geoserver/dwd/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=dwd%3ANCEW_EU&outputFormat=application%2Fjson`;
 
     const response = await fetch(url);
     if (!response.ok) {
@@ -31,26 +21,21 @@ export default async function handler(req, res) {
       if (f.geometry?.type === "Polygon") {
         polygon = f.geometry.coordinates[0].map(([lon, lat]) => ({ lat, lon }));
       }
-
       return {
-        id: p.ID,
-        group: p.EC_GROUP,
-        severity: p.SEVERITY,
-        event: p.EC_II,
-        created: p.CREATED,
-        onset: p.ONSET,
-        expires: p.EXPIRES,
-        source: p.SOURCE,
-        areaColor: p.EC_AREA_COLOR,
+        polygonId: p.POLYGON_ID,
+        objectId: p.OBJECT_ID,
+        producerId: p.PRODUCER_ID,
+        producerName: p.PRODUCER_NAME,
+        analyseDate: p.ANALYSE_DATE,
+        validDate: p.VALID_DATE,
         polygon,
+        bbox: f.bbox,
       };
     });
 
     return res.status(200).json({
       timestamp: new Date().toISOString(),
-      since,
       anzahl: daten.length,
-      type: "Gewitter",
       daten,
     });
   } catch (err) {
