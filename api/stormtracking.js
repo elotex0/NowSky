@@ -209,7 +209,7 @@ const parseMesoCells = (xml) => {
 
 // ── Mesozyklonen-Fetch ────────────────────────────────────────────────────────
 const fetchMesoCells = async () => {
-  const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_meso_20260602_1620.xml";
+  const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_20260602_1620.xml";
   const r   = await fetch(url, {
     headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
     signal:  AbortSignal.timeout(8000),
