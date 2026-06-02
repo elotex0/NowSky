@@ -24,44 +24,24 @@ export default async function handler(request) {
     const data = await response.json();
     const features = data.features || [];
 
-    // Punkt-in-Polygon prüfen
     const hitting = features.filter(f =>
       f.geometry?.type === 'Polygon' &&
       pointInPolygon(lat, lon, f.geometry.coordinates[0])
     );
 
     const severityOrder = ['minor', 'moderate', 'severe', 'extreme'];
-
-    const getSeverity = (featureList) => {
-      let max = -1;
-      for (const f of featureList) {
-        const idx = severityOrder.indexOf(f.properties?.SEVERITY?.toLowerCase());
-        if (idx > max) max = idx;
-      }
-      return max >= 0 ? severityOrder[max] : null;
-    };
+    let max = -1;
+    for (const f of hitting) {
+      const idx = severityOrder.indexOf(f.properties?.SEVERITY?.toLowerCase());
+      if (idx > max) max = idx;
+    }
 
     return jsonResponse({
       lat,
       lon,
-
       current: {
         thunderstorm: hitting.length > 0,
-        severity:     getSeverity(hitting),
-      },
-
-      forecast: {
-        inStormPath: hitting.length > 0,
-        severity:    getSeverity(hitting),
-        warnings: hitting.map(f => ({
-          severity:    f.properties?.SEVERITY    ?? null,
-          type:        f.properties?.EVENT       ?? null,
-          validFrom:   f.properties?.ONSET       ?? null,
-          validUntil:  f.properties?.EXPIRES     ?? null,
-          headline:    f.properties?.HEADLINE    ?? null,
-          description: f.properties?.DESCRIPTION ?? null,
-          instruction: f.properties?.INSTRUCTION ?? null,
-        })),
+        severity:     max >= 0 ? severityOrder[max] : null,
       },
     });
 
@@ -70,15 +50,10 @@ export default async function handler(request) {
     return jsonResponse({
       lat,
       lon,
-      current:  { thunderstorm: false, severity: null },
-      forecast: { inStormPath: false, severity: null, warnings: [] },
+      current: { thunderstorm: false, severity: null },
     });
   }
 }
-
-/* ------------------------------------------------ */
-/* ---------------- HELPERS ----------------------- */
-/* ------------------------------------------------ */
 
 function getLast5MinUTC() {
   const now = new Date();
