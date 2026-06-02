@@ -165,26 +165,51 @@ const parseMesoCells = (xml) => {
 
     const nwp = blockFast(inner, "nowcast-parameters") ?? inner;
 
-    const mesocyclone_top             = numFast(nwp, "mesocyclone_top");
-    const mesocyclone_base            = numFast(nwp, "mesocyclone_base");
-    const max_dbz                     = numFast(nwp, "max_dbz");
-    const base_speed                  = numFast(inner, "mesocyclone_velocity_rotational_max_closest_to_ground");
+    const mesocyclone_top    = numFast(nwp, "mesocyclone_top");
+    const mesocyclone_base   = numFast(nwp, "mesocyclone_base");
+    const max_dbz            = numFast(nwp, "max_dbz");
+    const rotational_max     = numFast(nwp, "mesocyclone_velocity_rotational_max");
+    const base_speed         = numFast(nwp, "mesocyclone_velocity_rotational_max_closest_to_ground");
+    const shear_max          = numFast(nwp, "mesocyclone_shear_max");
 
+    // ── Radar-Sweeps: niedrigste Elevation bestimmen ──────────────────────
+    const elevationAngles = [];
+    const elevBlocks = allBlocksFast(inner, "elevation");
+    for (const el of elevBlocks) {
+      el.inner.split(",").forEach(v => {
+        const n = parseFloat(v.trim());
+        if (!isNaN(n)) elevationAngles.push(n);
+      });
+    }
+    const min_elevation    = elevationAngles.length > 0 ? Math.min(...elevationAngles) : null;
+    const has_low_sweep    = min_elevation !== null && min_elevation <= 1.5;
+    const has_surface_sweep = min_elevation !== null && min_elevation <= 0.5;
+
+    // ── Tornado: true / false ─────────────────────────────────────────────
+    const tornado = (
+      intensity !== null && intensity >= 3 &&
+      mesocyclone_base !== null && mesocyclone_base < 1.5 &&
+      rotational_max !== null && rotational_max > 20 &&
+      base_speed !== null && base_speed > 8 &&
+      has_low_sweep
+    );
 
     cells.push({
       dateStr, timeStr, event_id,
       latitude, longitude, intensity,
       mesocyclone_top, mesocyclone_base,
-      max_dbz, base_speed,
-      });
-    }
+      max_dbz, rotational_max, base_speed, shear_max,
+      min_elevation, has_low_sweep, has_surface_sweep,
+      tornado,
+    });
+  }
 
   return cells;
 };
 
 // ── Mesozyklonen-Fetch ────────────────────────────────────────────────────────
 const fetchMesoCells = async () => {
-  const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_latest.xml";
+  const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_meso_20260602_1620.xml";
   const r   = await fetch(url, {
     headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
     signal:  AbortSignal.timeout(8000),
