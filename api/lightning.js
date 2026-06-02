@@ -37,7 +37,7 @@ export default async function handler(req, res) {
     };
   
     const nowSec    = Math.floor(Date.now() / 1000);
-    const cutoffSec = nowSec - 10 * 60; // letzte 10 Minuten
+    const cutoffSec = nowSec - 17 * 60; // letzte 10 Minuten
   
     try {
       const upstream = await fetch("https://ukwx.duckdns.org/lightning/europe", {
