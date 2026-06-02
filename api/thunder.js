@@ -18,7 +18,7 @@ export default async function handler(request) {
   try {
     const since = getLast5MinUTC();
     const filter = `CREATED>=${since} AND EC_GROUP='Gewitter'`;
-    const url = `https://maps.dwd.de/geoserver/dwd/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=dwd:Autowarn_Vorhersage&outputFormat=application/json&CQL_FILTER=${encodeURIComponent(filter)}`;
+    const url = `https://maps.dwd.de/geoserver/dwd/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=dwd:Autowarn_Analyse&outputFormat=application/json&CQL_FILTER=${encodeURIComponent(filter)}`;
 
     const response = await fetchWithTimeout(url, 4000);
     const data = await response.json();
