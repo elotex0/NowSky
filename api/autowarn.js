@@ -14,7 +14,7 @@ export default async function handler(req, res) {
 
   try {
     const since = getLast5MinUTC();
-    const filter = `ONSET>=${since} AND EC_GROUP='Gewitter'`;
+    const filter = `CREATED>=${since} AND EC_GROUP='Gewitter'`;
     const url = `https://maps.dwd.de/geoserver/dwd/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=dwd:Autowarn_Vorhersage&outputFormat=application/json&CQL_FILTER=${encodeURIComponent(filter)}`;
 
     const response = await fetch(url);
