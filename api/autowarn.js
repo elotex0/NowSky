@@ -29,7 +29,7 @@ export default async function handler(req, res) {
     const xml = await response.text();
 
     // =====================
-    // XML -> JSON
+    // XML Parser
     // =====================
     const parser = new XMLParser({
       ignoreAttributes: false,
@@ -50,52 +50,79 @@ export default async function handler(req, res) {
       placemarks = [placemarks];
     }
 
-    const daten = placemarks.map((p) => {
-      // Mittelpunkt
-      let point = null;
+    // =====================
+    // Helper: HTML Felder extrahieren
+    // =====================
+    const getField = (html, key) => {
+      const match = html?.match(
+        new RegExp(
+          `${key}</span>:</strong>\\s*<span class="atr-value">([^<]+)`
+        )
+      );
+      return match ? match[1] : null;
+    };
 
-      if (p?.MultiGeometry?.Point?.coordinates) {
-        const [lon, lat] =
-          p.MultiGeometry.Point.coordinates
-            .split(",")
-            .map(Number);
+    // =====================
+    // Daten bauen
+    // =====================
+    const daten = placemarks
+      .map((p) => {
+        const html = p?.description || "";
 
-        point = { lat, lon };
-      }
+        const group = getField(html, "EC_GROUP");
 
-      // Polygon
-      let polygon = [];
+        // 👉 NUR GEWITTER
+        if (group !== "Gewitter") return null;
 
-      const coords =
-        p?.MultiGeometry?.Polygon?.outerBoundaryIs?.LinearRing
-          ?.coordinates;
+        // Mittelpunkt
+        let point = null;
 
-      if (coords) {
-        polygon = coords
-          .trim()
-          .split(/\s+/)
-          .map((c) => {
-            const [lon, lat] = c.split(",").map(Number);
+        if (p?.MultiGeometry?.Point?.coordinates) {
+          const [lon, lat] =
+            p.MultiGeometry.Point.coordinates
+              .split(",")
+              .map(Number);
 
-            return {
-              lat,
-              lon
-            };
-          });
-      }
+          point = { lat, lon };
+        }
 
-      return {
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        center: point,
-        polygon
-      };
-    });
+        // Polygon
+        let polygon = [];
 
+        const coords =
+          p?.MultiGeometry?.Polygon?.outerBoundaryIs?.LinearRing
+            ?.coordinates;
+
+        if (coords) {
+          polygon = coords
+            .trim()
+            .split(/\s+/)
+            .map((c) => {
+              const [lon, lat] = c.split(",").map(Number);
+              return { lat, lon };
+            });
+        }
+
+        return {
+          id: p.id,
+          group,
+          severity: getField(html, "SEVERITY"),
+          event: getField(html, "EVENT"),
+          created: getField(html, "CREATED"),
+          expires: getField(html, "EXPIRES"),
+          center: point,
+          polygon
+        };
+      })
+      .filter(Boolean);
+
+    // =====================
+    // Response
+    // =====================
     return res.status(200).json({
       timestamp: new Date().toISOString(),
       anzahl: daten.length,
+      type: "Gewitter",
       daten
     });
 
