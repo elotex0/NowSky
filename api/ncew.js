@@ -1,3 +1,4 @@
+// pages/api/lightning.js (Next.js)
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -5,11 +6,11 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    const url = `https://maps.dwd.de/geoserver/dwd/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=dwd%3ANCEW_EU&outputFormat=application%2Fjson`;
-
-    const response = await fetch(url);
+    const response = await fetch(
+      "https://www.wetterdienst.de/warnwetter/lightning.php"
+    );
     if (!response.ok) {
-      return res.status(502).json({ error: "DWD konnte nicht geladen werden" });
+      return res.status(502).json({ error: "Wetterdienst nicht erreichbar" });
     }
 
     const data = await response.json();
