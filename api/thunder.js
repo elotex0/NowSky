@@ -2,6 +2,16 @@ export const config = {
   runtime: 'edge',
 };
 
+const DWD_URL = 'https://app-prod-static.warnwetter.de/v16/gewitter_monitor.json';
+
+// DWD Gewittermonitor level → SEVERITY string
+const LEVEL_SEVERITY = {
+  2: 'minor',
+  3: 'moderate',
+  4: 'severe',
+  5: 'extreme',
+};
+
 export default async function handler(request) {
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 200, headers: corsHeaders() });
@@ -11,40 +21,41 @@ export default async function handler(request) {
   const lat = parseFloat(searchParams.get('lat'));
   const lon = parseFloat(searchParams.get('lon'));
 
-  if (!lat || !lon) {
+  if (isNaN(lat) || isNaN(lon)) {
     return jsonResponse({ error: 'lat and lon required' }, 400);
   }
 
   try {
-    const since = getLast5MinUTC();
-    const filter = `CREATED>=${since} AND EC_GROUP='Gewitter'`;
-    const url = `https://maps.dwd.de/geoserver/dwd/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=dwd:Autowarn_Analyse&outputFormat=application/json&CQL_FILTER=${encodeURIComponent(filter)}`;
-
-    const response = await fetchWithTimeout(url, 4000);
+    const response = await fetchWithTimeout(DWD_URL, 4000);
     const data = await response.json();
-    const features = data.features || [];
 
-    const hitting = features.filter(f =>
-      f.geometry?.type === 'Polygon' &&
-      pointInPolygon(lat, lon, f.geometry.coordinates[0])
+    const gebiete = data.gebiete;
+    if (!gebiete || !Array.isArray(gebiete)) {
+      throw new Error('No gebiete in response');
+    }
+
+    // Find all Gebiete whose polygon contains the requested point
+    // DWD polygon format: flat array [lat0, lon0, lat1, lon1, ...]
+    const hitting = gebiete.filter(g =>
+      g.polygon && pointInPolygon(lat, lon, g.polygon)
     );
 
-    const severityOrder = ['minor', 'moderate', 'severe', 'extreme'];
-    let max = -1;
-    for (const f of hitting) {
-      const idx = severityOrder.indexOf(f.properties?.SEVERITY?.toLowerCase());
-      if (idx > max) max = idx;
+    // Pick the highest level among all matching Gebiete
+    let maxLevel = -1;
+    for (const g of hitting) {
+      if ((g.level ?? 0) > maxLevel) maxLevel = g.level;
     }
+
+    const severity = LEVEL_SEVERITY[maxLevel] ?? null;
 
     return jsonResponse({
       lat,
       lon,
       current: {
         thunderstorm: hitting.length > 0,
-        severity:     max >= 0 ? severityOrder[max] : null,
+        severity,
       },
     });
-
   } catch (err) {
     console.error('Error:', err);
     return jsonResponse({
@@ -55,23 +66,28 @@ export default async function handler(request) {
   }
 }
 
-function getLast5MinUTC() {
-  const now = new Date();
-  now.setTime(now.getTime() - 60_000); // 60s Puffer
-  now.setUTCSeconds(0, 0);
-  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
-  return now.toISOString().slice(0, 19) + 'Z';
-}
-
-function pointInPolygon(lat, lon, ring) {
+/**
+ * Point-in-polygon for DWD flat polygon arrays.
+ * flat = [lat0, lon0, lat1, lon1, ...]
+ * Ray-casting algorithm — lon = x axis, lat = y axis.
+ */
+function pointInPolygon(lat, lon, flat) {
+  const n = Math.floor(flat.length / 2);
   let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i];
-    const [xj, yj] = ring[j];
-    const intersect = ((yi > lat) !== (yj > lat)) &&
-      (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const latI = flat[i * 2];
+    const lonI = flat[i * 2 + 1];
+    const latJ = flat[j * 2];
+    const lonJ = flat[j * 2 + 1];
+
+    const intersect =
+      (latI > lat) !== (latJ > lat) &&
+      lon < ((lonJ - lonI) * (lat - latI)) / (latJ - latI) + lonI;
+
     if (intersect) inside = !inside;
   }
+
   return inside;
 }
 
@@ -79,7 +95,10 @@ async function fetchWithTimeout(url, timeoutMs) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+    const response = await fetch(url, {
+      signal: controller.signal,
+      cache: 'no-store',
+    });
     clearTimeout(timeout);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response;
