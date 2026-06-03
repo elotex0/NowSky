@@ -1,4 +1,3 @@
-```js
 // /api/rain.js
 
 export default async function handler(req, res) {
@@ -196,4 +195,3 @@ function buildPerMinuteForecast(rain) {
         rain.duration = endIdx - startIdx + 1;
     }
 }
-```
