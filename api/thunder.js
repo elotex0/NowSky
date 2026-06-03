@@ -57,6 +57,7 @@ export default async function handler(request) {
 
 function getLast5MinUTC() {
   const now = new Date();
+  now.setTime(now.getTime() - 60_000); // 60s Puffer
   now.setUTCSeconds(0, 0);
   now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
   return now.toISOString().slice(0, 19) + 'Z';
