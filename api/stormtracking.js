@@ -191,7 +191,7 @@ const parseMesoCells = (xml) => {
     // ── Tornado: true / false ─────────────────────────────────────────────
     const tornado = (
       intensity !== null && intensity >= 3 &&
-      mesocyclone_base !== null && mesocyclone_base < 1.5 &&
+      mesocyclone_base !== null && mesocyclone_base < 0.7 &&
       base_speed !== null && base_speed > 8 &&
       has_low_sweep
     );
