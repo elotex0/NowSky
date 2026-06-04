@@ -6,8 +6,8 @@ export default async function handler(req, res) {
 
   try {
     const [nowcastRes, gewitterRes] = await Promise.all([
-      fetch("https://https://app-prod-static.warnwetter.de/v16/warnings_nowcast.json"),
-      fetch("https://https://app-prod-static.warnwetter.de/v16/gewitter_monitor.json"),
+      fetch("https://app-prod-static.warnwetter.de/v16/warnings_nowcast.json"),
+      fetch("https://app-prod-static.warnwetter.de/v16/gewitter_monitor.json"),
     ]);
 
     if (!nowcastRes.ok || !gewitterRes.ok) {
