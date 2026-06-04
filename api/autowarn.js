@@ -31,15 +31,18 @@ export default async function handler(req, res) {
       second: "2-digit",
     });
 
-    // Gebiete aus warnings_nowcast: nur id + polygon
+    // Gebiete aus warnings_nowcast: id + polygon + description + level
     const nowcastGebiete = (nowcastData.warnings ?? []).map((w) => ({
       id: w.warnId ?? w.id,
+      level: w.level,
+      description: w.descriptionText ?? w.description ?? null,
       polygon: w.regions?.[0]?.polygon ?? [],
     }));
 
-    // Gebiete aus gewitter_monitor: nur id + polygon
+    // Gebiete aus gewitter_monitor: id + polygon + level
     const gewitterGebiete = (gewitterData.gebiete ?? []).map((g) => ({
       id: g.id,
+      level: g.level,
       polygon: g.polygon ?? [],
     }));
 
