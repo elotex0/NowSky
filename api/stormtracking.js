@@ -189,12 +189,49 @@ const parseMesoCells = (xml) => {
     const has_surface_sweep = min_elevation !== null && min_elevation <= 0.5;
 
     // ── Tornado: true / false ─────────────────────────────────────────────
-    const tornado = (
-      intensity !== null && intensity >= 3 &&
-      mesocyclone_base !== null && mesocyclone_base < 0.7 &&
-      base_speed !== null && base_speed > 8 &&
-      has_low_sweep
-    );
+   const tornado = (() => {
+  // ── 1. Basis: Mesozyklonenbasis muss sehr tief sein ──────────────────────
+  // Trapp et al. 2005: Tornadowahrscheinlichkeit steigt stark unter 1 km,
+  // nochmal deutlich unter 500 m
+  if (mesocyclone_base === null || mesocyclone_base >= 1.0) return false;
+
+  // ── 2. DWD Severity: mindestens 3 ────────────────────────────────────────
+  // DWD-Paper (Hengstebeck 2018): Severity ≥ 3 entspricht
+  // 5km Durchmesser, 3km Tiefe, ≥10⁻³ s⁻¹ Shear oder ≥15 m/s Rotation
+  if (intensity === null || intensity < 2) return false;
+
+  // ── 3. Bodennahe Rotation ─────────────────────────────────────────────────
+  // base_speed = rotational velocity closest to ground → wichtigster Wert
+  if (base_speed === null || base_speed < 8) return false;
+
+  // ── 4. Radar-Abdeckung: mindestens ein Sweep ≤ 1.5° ──────────────────────
+  // Ohne Low-Sweep kann bodennahe Rotation gar nicht erfasst sein
+  if (!has_low_sweep) return false;
+
+  // ── 5. Shear-Check: Azimuthal Shear als Kernkriterium ────────────────────
+  // shear_max in DWD-Daten entspricht mesocyclone_shear_max [10⁻³ s⁻¹]
+  // Tornadic threshold laut DWD: ≥ 10⁻³ s⁻¹, starke Tornados > 15
+  // Wir nutzen es als Qualitätsfilter: schwache Shear → kein Tornado
+  const shearOk = shear_max !== null && shear_max >= 8;
+
+  // ── 6. Multi-Radar-Bonus: mehrere Standorte mit 0.5° ─────────────────────
+  // Wenn mehrere Radare die Bodenrotation bestätigen → viel zuverlässiger
+  const lowSweepSites = elevations.filter(e => e.angles.some(a => a <= 1.5)).length;
+  const surfaceSites  = elevations.filter(e => e.angles.some(a => a <= 0.5)).length;
+  const multiRadarConfirmed = surfaceSites >= 2 || lowSweepSites >= 3;
+
+  // ── 7. Entscheidungslogik ─────────────────────────────────────────────────
+  // Starkes Signal: tiefe Basis + gute Shear → reicht allein
+  if (mesocyclone_base < 0.5 && shearOk && base_speed >= 10) return true;
+
+  // Mittleres Signal: 0.5–1.0 km Basis braucht Multi-Radar-Bestätigung
+  if (mesocyclone_base < 1.0 && shearOk && multiRadarConfirmed) return true;
+
+  // Intensity 3+ mit oberflächennahem Sweep von mehreren Radaren
+  if (intensity >= 3 && has_surface_sweep && multiRadarConfirmed && base_speed >= 10) return true;
+
+  return false;
+})();
 
     cells.push({
       dateStr, timeStr, event_id,
