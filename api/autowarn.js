@@ -4,22 +4,27 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // Nur diese Event-Typen durchlassen
+  const GEWITTER_EVENTS = new Set([
+    "gewitter",
+    "starkes gewitter",
+    "schweres gewitter",
+    "extremes gewitter",
+  ]);
+
   try {
     const [nowcastRes, gewitterRes] = await Promise.all([
       fetch("https://app-prod-static.warnwetter.de/v16/warnings_nowcast.json"),
       fetch("https://app-prod-static.warnwetter.de/v16/gewitter_monitor.json"),
     ]);
-
     if (!nowcastRes.ok || !gewitterRes.ok) {
       return res.status(502).json({ error: "DWD-Daten konnten nicht geladen werden" });
     }
-
     const [nowcastData, gewitterData] = await Promise.all([
       nowcastRes.json(),
       gewitterRes.json(),
     ]);
 
-    // Zeit als deutsche Uhrzeit formatieren
     const rawTime = nowcastData.time ?? gewitterData.time ?? Date.now();
     const deutscheZeit = new Date(rawTime).toLocaleString("de-DE", {
       timeZone: "Europe/Berlin",
@@ -31,15 +36,20 @@ export default async function handler(req, res) {
       second: "2-digit",
     });
 
-    // Gebiete aus warnings_nowcast: id + polygon + description + level
-    const nowcastGebiete = (nowcastData.warnings ?? []).map((w) => ({
-      id: w.warnId ?? w.id,
-      level: w.level,
-      description: w.descriptionText ?? w.description ?? null,
-      polygon: w.regions?.[0]?.polygon ?? [],
-    }));
+    // Nur Gewitter-Warnungen aus nowcast
+    const nowcastGebiete = (nowcastData.warnings ?? [])
+      .filter((w) => {
+        const event = (w.event ?? "").trim().toLowerCase();
+        return GEWITTER_EVENTS.has(event);
+      })
+      .map((w) => ({
+        id: w.warnId ?? w.id,
+        level: w.level,
+        event: w.event,
+        description: w.descriptionText ?? w.description ?? null,
+        polygon: w.regions?.[0]?.polygon ?? [],
+      }));
 
-    // Gebiete aus gewitter_monitor: id + polygon + level
     const gewitterGebiete = (gewitterData.gebiete ?? []).map((g) => ({
       id: g.id,
       level: g.level,
