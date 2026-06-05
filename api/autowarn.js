@@ -13,6 +13,7 @@ export default async function handler(req, res) {
     "starkregen",
     "heftiger starkregen",
     "extrem heftiger starkregen"
+    ],
 
   try {
     const [nowcastRes, gewitterRes] = await Promise.all([
