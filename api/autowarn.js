@@ -39,6 +39,12 @@ export default async function handler(req, res) {
       second: "2-digit",
     });
 
+    const toDE = (ts) => new Date(ts).toLocaleString("de-DE", {
+      timeZone: "Europe/Berlin",
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+
     // Nur Gewitter-Warnungen aus nowcast
     const nowcastGebiete = (nowcastData.warnings ?? [])
       .filter((w) => {
@@ -49,6 +55,8 @@ export default async function handler(req, res) {
         id: w.warnId ?? w.id,
         level: w.level,
         event: w.event,
+        start: w.start ? toDE(w.start) : null,
+        end: w.end ? toDE(w.end) : null,
         description: w.descriptionText ?? w.description ?? null,
         polygon: w.regions?.[0]?.polygon ?? [],
       }));
