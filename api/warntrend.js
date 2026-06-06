@@ -5,20 +5,37 @@ async function loadStations() {
     "https://www.dwd.de/DE/leistungen/met_verfahren_mosmix/mosmix_stationskatalog.cfg?view=nasPublication&nn=16102"
   );
   const text = await res.text();
-  const lines = text.split("\n");
   const stations = [];
-  for (const line of lines) {
-    if (!line.trim() || line.startsWith("D") || line.startsWith("-")) continue;
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 6) continue;
-    const id = parts[0];
-    const icao = parts[1] === "----" ? null : parts[1];
-    const elev = parseFloat(parts[parts.length - 1]);
-    const lon = parseFloat(parts[parts.length - 2]);
-    const lat = parseFloat(parts[parts.length - 3]);
-    const name = parts.slice(2, parts.length - 3).join(" ");
-    if (!isFinite(lat) || !isFinite(lon)) continue;
-    stations.push({ id, icao, name, lat, lon, elev });
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    // Überspringe Leerzeilen, Header und Trennlinien
+    if (!trimmed || trimmed.startsWith("D ") || trimmed.startsWith("-")) continue;
+
+    // Fixed-width Format:
+    // Spalte 0-4:   ID (5 Zeichen)
+    // Spalte 6-9:   ICAO (4 Zeichen)
+    // Spalte 11-30: Name (20 Zeichen)
+    // Spalte 32-37: LAT
+    // Spalte 40-46: LON
+    // Spalte 48-52: ELEV
+    const id   = line.slice(0, 5).trim();
+    const icao = line.slice(6, 10).trim();
+    const name = line.slice(11, 31).trim();
+    const lat  = parseFloat(line.slice(32, 38).trim());
+    const lon  = parseFloat(line.slice(39, 46).trim());
+    const elev = parseFloat(line.slice(47, 53).trim());
+
+    if (!id || !isFinite(lat) || !isFinite(lon)) continue;
+
+    stations.push({
+      id,
+      icao: icao === "----" ? null : icao,
+      name,
+      lat,
+      lon,
+      elev,
+    });
   }
   return stations;
 }
@@ -87,7 +104,8 @@ export default async function handler(req, res) {
 
     if (nearby.length === 0) {
       return res.status(200).json({
-        anfrage: { lat, lon },
+        zeit: toDE(Date.now()),
+        anfrage: { lat, lon, radiusKm: 5 },
         stationen: [],
         message: "Keine Stationen innerhalb von 5 km gefunden",
       });
@@ -105,7 +123,7 @@ export default async function handler(req, res) {
           const warnForecast = data.warningForecast ?? null;
           let warntrend = null;
 
-          if (warnForecast && warnForecast.data) {
+          if (warnForecast?.data) {
             const startMs = warnForecast.start;
             const stepMs = warnForecast.timeStep;
             const threshold = data.warningForecastThreshold ?? 7;
