@@ -86,7 +86,7 @@ export default async function handler(req, res) {
     const nearby = stations
       .map((s) => ({ ...s, distanzKm: haversine(lat, lon, s.lat, s.lon) }))
       .filter((s) => s.distanzKm <= 10)
-      .sort((a, b) => a.distanzKm - b.distanzKm);
+      .sort((a, b) => a.distanzKm - b.distanzKm)
       .slice(0, 1);
     
 
