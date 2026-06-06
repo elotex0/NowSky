@@ -135,16 +135,23 @@ export default async function handler(req, res) {
               schrittMs: stepMs,
               kategorien: Object.entries(warnForecast.data).map(([key, werte]) => {
                 const idx = werte.findIndex((v) => v >= threshold);
+            
+                // NEU: werte als Objekte mit Zeitstempel
+                const werteZeit = werte.map((wert, i) => ({
+                  zeit: toDE(startMs + i * stepMs),
+                  zeitMs: startMs + i * stepMs,
+                  wert,
+                }));
+            
                 return {
                   key: parseInt(key),
                   name: WARN_TYPE_NAMES[parseInt(key)] ?? `Typ ${key}`,
-                  werte,
+                  werte: werteZeit,              // ← jetzt mit Zeitstempeln
                   ersteWarnungIndex: idx,
                   ersteWarnungZeit: idx >= 0 ? toDE(startMs + idx * stepMs) : null,
                 };
               }),
             };
-          }
 
           const warnungen = (data.warnings ?? []).map((w) => ({
             id: w.warnId ?? w.id ?? null,
