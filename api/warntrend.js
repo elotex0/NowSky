@@ -1,6 +1,5 @@
 import fetch from "node-fetch";
 
-// DD.MM -> Dezimalgrad  (z.B. 49.38 -> 49.6333, -8.40 -> -8.6667)
 function ddmmToDecimal(value) {
   const sign = value < 0 ? -1 : 1;
   const abs = Math.abs(value);
@@ -28,13 +27,12 @@ async function loadStations() {
     if (!match) continue;
 
     const [, id, icao, name, latStr, lonStr, elevStr] = match;
-
     stations.push({
       id,
       icao: icao === "----" ? null : icao,
       name: name.trim(),
-      lat: ddmmToDecimal(parseFloat(latStr)),  // ← konvertiert
-      lon: ddmmToDecimal(parseFloat(lonStr)),  // ← konvertiert
+      lat: ddmmToDecimal(parseFloat(latStr)),
+      lon: ddmmToDecimal(parseFloat(lonStr)),
       elev: parseFloat(elevStr),
     });
   }
@@ -55,32 +53,18 @@ function haversine(lat1, lon1, lat2, lon2) {
 }
 
 const WARN_TYPE_NAMES = {
-  0: "Gewitter",
-  1: "Sturm",
-  2: "Regen",
-  3: "Schnee",
-  4: "Nebel",
-  5: "Frost",
-  6: "Glätte/Glatteis",
-  7: "Tauwetter",
-  8: "Hitze",
-  9: "UV",
-  10: "Hochwasser",
-  11: "Lawinen",
-  12: "Sturmflut",
-  13: "Wasserstand",
-  14: "Binnensee",
+  0: "Gewitter", 1: "Sturm", 2: "Regen", 3: "Schnee",
+  4: "Nebel", 5: "Frost", 6: "Glätte/Glatteis", 7: "Tauwetter",
+  8: "Hitze", 9: "UV", 10: "Hochwasser", 11: "Lawinen",
+  12: "Sturmflut", 13: "Wasserstand", 14: "Binnensee",
 };
 
 function toDE(ts) {
   if (!ts) return null;
   return new Date(ts).toLocaleString("de-DE", {
     timeZone: "Europe/Berlin",
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
   });
 }
 
@@ -129,29 +113,30 @@ export default async function handler(req, res) {
             const startMs = warnForecast.start;
             const stepMs = warnForecast.timeStep;
             const threshold = data.warningForecastThreshold ?? 7;
+
             warntrend = {
               start: toDE(startMs),
               startMs,
               schrittMs: stepMs,
               kategorien: Object.entries(warnForecast.data).map(([key, werte]) => {
                 const idx = werte.findIndex((v) => v >= threshold);
-            
-                // NEU: werte als Objekte mit Zeitstempel
+
                 const werteZeit = werte.map((wert, i) => ({
                   zeit: toDE(startMs + i * stepMs),
                   zeitMs: startMs + i * stepMs,
                   wert,
                 }));
-            
+
                 return {
                   key: parseInt(key),
                   name: WARN_TYPE_NAMES[parseInt(key)] ?? `Typ ${key}`,
-                  werte: werteZeit,              // ← jetzt mit Zeitstempeln
+                  werte: werteZeit,
                   ersteWarnungIndex: idx,
                   ersteWarnungZeit: idx >= 0 ? toDE(startMs + idx * stepMs) : null,
                 };
               }),
             };
+          }
 
           const warnungen = (data.warnings ?? []).map((w) => ({
             id: w.warnId ?? w.id ?? null,
@@ -165,11 +150,27 @@ export default async function handler(req, res) {
           }));
 
           const uvi = data.uvi
-            ? { start: toDE(data.uvi.start), schrittMs: data.uvi.timeStep, werte: data.uvi.data?.uvi ?? [] }
+            ? {
+                start: toDE(data.uvi.start),
+                schrittMs: data.uvi.timeStep,
+                werte: (data.uvi.data?.uvi ?? []).map((wert, i) => ({
+                  zeit: toDE(data.uvi.start + i * data.uvi.timeStep),
+                  zeitMs: data.uvi.start + i * data.uvi.timeStep,
+                  wert,
+                })),
+              }
             : null;
 
           const tbi = data.tbi
-            ? { start: toDE(data.tbi.start), schrittMs: data.tbi.timeStep, werte: data.tbi.data?.tbi ?? [] }
+            ? {
+                start: toDE(data.tbi.start),
+                schrittMs: data.tbi.timeStep,
+                werte: (data.tbi.data?.tbi ?? []).map((wert, i) => ({
+                  zeit: toDE(data.tbi.start + i * data.tbi.timeStep),
+                  zeitMs: data.tbi.start + i * data.tbi.timeStep,
+                  wert,
+                })),
+              }
             : null;
 
           return {
