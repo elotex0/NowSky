@@ -9,34 +9,40 @@ async function loadStations() {
 
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
+
     // Überspringe Leerzeilen, Header und Trennlinien
-    if (!trimmed || trimmed.startsWith("D ") || trimmed.startsWith("-")) continue;
+    if (!trimmed) continue;
+    if (/^[-\s]+$/.test(trimmed)) continue;          // Trennlinie (---)
+    if (/^[A-Z]{2}\s/.test(trimmed)) continue;       // Headerzeile wie "ID   ICAO ..."
+    if (/^[A-Za-z]{1,3}\s/.test(trimmed) && !/^\d/.test(trimmed)) continue; // sonstige Metazeilen
 
-    // Fixed-width Format:
-    // Spalte 0-4:   ID (5 Zeichen)
-    // Spalte 6-9:   ICAO (4 Zeichen)
-    // Spalte 11-30: Name (20 Zeichen)
-    // Spalte 32-37: LAT
-    // Spalte 40-46: LON
-    // Spalte 48-52: ELEV
-    const id   = line.slice(0, 5).trim();
-    const icao = line.slice(6, 10).trim();
-    const name = line.slice(11, 31).trim();
-    const lat  = parseFloat(line.slice(32, 38).trim());
-    const lon  = parseFloat(line.slice(39, 46).trim());
-    const elev = parseFloat(line.slice(47, 53).trim());
+    // Stationszeilen beginnen immer mit 5-stelliger numerischer ID
+    if (!/^\d{5}/.test(trimmed)) continue;
 
-    if (!id || !isFinite(lat) || !isFinite(lon)) continue;
+    // Regex: ID  ICAO-oder-----  Name  LAT  LON  ELEV
+    const match = line.match(
+      /^(\d{5})\s+([A-Z]{4}|----)\s+(.+?)\s{2,}(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+)/
+    );
+
+    if (!match) continue;
+
+    const [, id, icao, name, latStr, lonStr, elevStr] = match;
+    const lat  = parseFloat(latStr);
+    const lon  = parseFloat(lonStr);
+    const elev = parseFloat(elevStr);
+
+    if (!isFinite(lat) || !isFinite(lon)) continue;
 
     stations.push({
       id,
       icao: icao === "----" ? null : icao,
-      name,
+      name: name.trim(),
       lat,
       lon,
       elev,
     });
   }
+
   return stations;
 }
 
