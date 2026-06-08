@@ -190,48 +190,43 @@ const parseMesoCells = (xml) => {
 
     // ── Tornado: true / false ─────────────────────────────────────────────
    const tornado = (() => {
-  // ── 1. Basis: Mesozyklonenbasis muss sehr tief sein ──────────────────────
-  // Trapp et al. 2005: Tornadowahrscheinlichkeit steigt stark unter 1 km,
-  // nochmal deutlich unter 500 m
-  if (mesocyclone_base === null || mesocyclone_base >= 1.0) return false;
-
-  // ── 2. DWD Severity: mindestens 3 ────────────────────────────────────────
-  // DWD-Paper (Hengstebeck 2018): Severity ≥ 3 entspricht
-  // 5km Durchmesser, 3km Tiefe, ≥10⁻³ s⁻¹ Shear oder ≥15 m/s Rotation
-  if (intensity === null || intensity < 2) return false;
-
-  // ── 3. Bodennahe Rotation ─────────────────────────────────────────────────
-  // base_speed = rotational velocity closest to ground → wichtigster Wert
-  if (base_speed === null || base_speed < 8) return false;
-
-  // ── 4. Radar-Abdeckung: mindestens ein Sweep ≤ 1.5° ──────────────────────
-  // Ohne Low-Sweep kann bodennahe Rotation gar nicht erfasst sein
-  if (!has_low_sweep) return false;
-
-  // ── 5. Shear-Check: Azimuthal Shear als Kernkriterium ────────────────────
-  // shear_max in DWD-Daten entspricht mesocyclone_shear_max [10⁻³ s⁻¹]
-  // Tornadic threshold laut DWD: ≥ 10⁻³ s⁻¹, starke Tornados > 15
-  // Wir nutzen es als Qualitätsfilter: schwache Shear → kein Tornado
-  const shearOk = shear_max !== null && shear_max >= 8;
-
-  // ── 6. Multi-Radar-Bonus: mehrere Standorte mit 0.5° ─────────────────────
-  // Wenn mehrere Radare die Bodenrotation bestätigen → viel zuverlässiger
-  const lowSweepSites = elevations.filter(e => e.angles.some(a => a <= 1.5)).length;
-  const surfaceSites  = elevations.filter(e => e.angles.some(a => a <= 0.5)).length;
-  const multiRadarConfirmed = surfaceSites >= 2 || lowSweepSites >= 3;
-
-  // ── 7. Entscheidungslogik ─────────────────────────────────────────────────
-  // Starkes Signal: tiefe Basis + gute Shear → reicht allein
-  if (mesocyclone_base < 0.5 && shearOk && base_speed >= 10) return true;
-
-  // Mittleres Signal: 0.5–1.0 km Basis braucht Multi-Radar-Bestätigung
-  if (mesocyclone_base < 1.0 && shearOk && multiRadarConfirmed) return true;
-
-  // Intensity 3+ mit oberflächennahem Sweep von mehreren Radaren
-  if (intensity >= 3 && has_surface_sweep && multiRadarConfirmed && base_speed >= 10) return true;
-
-  return false;
-})();
+    // ── 1. Mesozyklonenbasis: nur unter 500m tornadorelvant ──────────────────
+    // Trapp et al. 2005: signifikante Tornadowahrscheinlichkeit erst unter 500m
+    // (vorher 1.0 km → viel zu weit gefasst)
+    if (mesocyclone_base === null || mesocyclone_base >= 0.5) return false;
+  
+    // ── 2. Intensity: mindestens 3 (vorher 2) ────────────────────────────────
+    // Hengstebeck 2018: Severity 3 = klar organisierte Rotation,
+    // Severity 2 erfasst zu viele schwache, nicht-tornadische Mesozyklonen
+    if (intensity === null || intensity < 3) return false;
+  
+    // ── 3. Bodennahe Rotation: strenger (vorher 8 m/s) ───────────────────────
+    // Thompson et al. 2017: tornadic supercells zeigen base_speed ≥ 15 m/s
+    // 8 m/s ist typisch für nicht-tornadische Mesozyklonen
+    if (base_speed === null || base_speed < 15) return false;
+  
+    // ── 4. Shear: Pflichtkriterium, nicht optional (vorher nur "shearOk") ────
+    // shear_max < 10×10⁻³ s⁻¹ = nicht-tornadische Rotation laut DWD-Metrik
+    if (shear_max === null || shear_max < 10) return false;
+  
+    // ── 5. Radar-Abdeckung: Surface-Sweep Pflicht (vorher low_sweep) ─────────
+    // Ohne ≤ 0.5° Sweep ist bodennahe Rotation strukturell nicht sichtbar –
+    // low_sweep (≤ 1.5°) allein reicht nicht als Nachweis
+    if (!has_surface_sweep) return false;
+  
+    // ── 6. rotational_max als Qualitätsfilter ────────────────────────────────
+    // Schwache Gesamtrotation bei starker Bodenrotation = inkonsistent,
+    // meist Artefakt. rotational_max sollte base_speed übersteigen.
+    if (rotational_max === null || rotational_max < base_speed) return false;
+  
+    // ── 7. Multi-Radar-Bestätigung: immer Pflicht (vorher nur Bonus) ─────────
+    // Einzelradar-Signal ohne Bestätigung = hohe Artefaktrate (Bean 2021)
+    const surfaceSites = elevations.filter(e => e.angles.some(a => a <= 0.5)).length;
+    const lowSweepSites = elevations.filter(e => e.angles.some(a => a <= 1.5)).length;
+    if (surfaceSites < 2 && lowSweepSites < 3) return false;
+  
+    return true;
+  })();
 
     cells.push({
       dateStr, timeStr, event_id,
