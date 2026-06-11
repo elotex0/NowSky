@@ -16,7 +16,7 @@ export default async function handler(req, res) {
 
   try {
     const now = new Date();
-    const cutoff = new Date(now.getTime() - 60 * 60 * 1000); // exakt jetzt minus 60 Minuten
+    const cutoffSec = Math.floor(now.getTime() / 1000) - 60 * 60; // Unix-Sekunden, exakt jetzt minus 60 min
 
     const liveRes = await fetch("https://ukwx.duckdns.org/lightning/europe", {
       headers: { "User-Agent": "lightning-api" },
@@ -28,26 +28,20 @@ export default async function handler(req, res) {
     const allPoints = liveData.points ?? [];
 
     // Nur Deutschland + Zeitfilter letzte 60 min
-    const filtered = allPoints.filter((p) => {
-      if (!inGermany(p)) return false;
-      // Zeitstempel: p.time erwartet (Unix-Sekunden oder ISO-String)
-      const ts = typeof p.time === "number"
-        ? new Date(p.time * 1000)
-        : new Date(p.time);
-      return ts >= cutoff;
-    });
+    // Zeitfeld ist "t" (Unix-Sekunden)
+    const filtered = allPoints.filter((p) =>
+      inGermany(p) && p.t >= cutoffSec
+    );
 
     const points = filtered.map((p) => ({
       lat: p.lat,
       lon: p.lon,
-      time: typeof p.time === "number"
-        ? new Date(p.time * 1000).toISOString()
-        : new Date(p.time).toISOString(),
+      time: new Date(p.t * 1000).toISOString(),
     }));
 
     return res.status(200).json({
       meta: {
-        von: cutoff.toISOString(),
+        von: new Date(cutoffSec * 1000).toISOString(),
         bis: now.toISOString(),
         anzahl: points.length,
       },
