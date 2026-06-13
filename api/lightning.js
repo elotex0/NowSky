@@ -16,7 +16,7 @@ export default async function handler(req, res) {
 
   try {
     const now = new Date();
-    const cutoffSec = Math.floor(now.getTime() / 1000) - 60 * 60; // Unix-Sekunden, exakt jetzt minus 60 min
+    const cutoffSec = Math.floor(now.getTime() / 1000) - 60 * 5; // Unix-Sekunden, exakt jetzt minus 60 min
 
     const liveRes = await fetch("https://ukwx.duckdns.org/lightning/europe", {
       headers: { "User-Agent": "lightning-api" },
