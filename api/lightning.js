@@ -7,7 +7,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   // Deutschland Bounding Box
-  const DE_BBOX = { latMin: 47.4, latMax: 55.05, lonMin: 6.0, lonMax: 15.05 };
+  const DE_BBOX = { latMin: 44.0, latMax: 56.5, lonMin: 1.5, lonMax: 25.0 };
   const inGermany = (p) =>
     p.lat >= DE_BBOX.latMin && p.lat <= DE_BBOX.latMax &&
     p.lon >= DE_BBOX.lonMin && p.lon <= DE_BBOX.lonMax;
