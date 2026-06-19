@@ -200,10 +200,11 @@ const parseMesoCells = (xml) => {
     // Severity 2 erfasst zu viele schwache, nicht-tornadische Mesozyklonen
     if (intensity === null || intensity < 3) return false;
   
-    // ── 3. Bodennahe Rotation: strenger (vorher 8 m/s) ───────────────────────
-    // Thompson et al. 2017: tornadic supercells zeigen base_speed ≥ 15 m/s
-    // 8 m/s ist typisch für nicht-tornadische Mesozyklonen
-    if (base_speed === null || base_speed < 15) return false;
+    // ── 3. Bodennahe Rotation (angepasst: 11 statt 15 m/s) ───────────────────
+    // 15 m/s ist Thompson et al. 2017's Schwelle für signifikante (EF2+)
+    // Tornados; für die überwiegend schwachen Tornados in DE zu hoch –
+    // schließt plausible Fälle aus (z.B. 12 m/s bei sonst erfüllten Kriterien).
+    if (base_speed === null || base_speed < 11) return false;
   
     // ── 4. Shear: Pflichtkriterium, nicht optional (vorher nur "shearOk") ────
     // shear_max < 10×10⁻³ s⁻¹ = nicht-tornadische Rotation laut DWD-Metrik
@@ -224,6 +225,16 @@ const parseMesoCells = (xml) => {
     const surfaceSites = elevations.filter(e => e.angles.some(a => a <= 0.5)).length;
     const lowSweepSites = elevations.filter(e => e.angles.some(a => a <= 1.5)).length;
     if (surfaceSites < 2 && lowSweepSites < 3) return false;
+
+    // ── 8. Rotationskonzentration: max/mean-Verhältnis ───────────────────────
+    // Markowski & Richardson 2010: tornadische Mesozyklonen zeigen einen eng
+    // organisierten Rotationskern statt diffuser Gesamtrotation. Ein niedriges
+    // Verhältnis von rotational_max zu rotational_mean deutet auf eine breite,
+    // unorganisierte Rotation hin (kein enger Kern) statt auf einen echten
+    // Tornado-Vortex. Schwelle 1.8 trennt konzentrierte von diffusen Fällen.
+    if (rotational_mean === null || rotational_mean <= 0) return false;
+    const rotation_concentration = rotational_max / rotational_mean;
+    if (rotation_concentration < 1.8) return false;
   
     return true;
   })();
