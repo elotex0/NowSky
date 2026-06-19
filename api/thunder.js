@@ -54,7 +54,7 @@ export default async function handler(request) {
   }
 
   // --- forecast (Nowcast warnings) ---
-  let forecast = [];
+  let forecast = { thunderstorm: false, severity: null };
   try {
     const response = await fetchWithTimeout(DWD_FORECAST_URL, 4000);
     const data = await response.json();
@@ -65,19 +65,21 @@ export default async function handler(request) {
 
     const now = Date.now();
 
-    forecast = warnings
-      .filter(w => Array.isArray(w.regions) && (w.end ?? 0) > now)
-      .filter(w =>
-        w.regions.some(r => r.polygon && pointInPolygon(lat, lon, r.polygon))
-      )
-      .map(w => ({
-        level: w.level ?? null,
-        severity: LEVEL_SEVERITY[w.level] ?? null,
-        event: w.event ?? null,
-        start: w.start ?? null,
-        end: w.end ?? null,
-      }))
-      .sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+    const hitting = warnings.filter(w =>
+      (w.end ?? 0) > now &&
+      Array.isArray(w.regions) &&
+      w.regions.some(r => r.polygon && pointInPolygon(lat, lon, r.polygon))
+    );
+
+    let maxLevel = -1;
+    for (const w of hitting) {
+      if ((w.level ?? 0) > maxLevel) maxLevel = w.level;
+    }
+
+    forecast = {
+      thunderstorm: hitting.length > 0,
+      severity: LEVEL_SEVERITY[maxLevel] ?? null,
+    };
   } catch (err) {
     console.error('Nowcast error:', err);
   }
