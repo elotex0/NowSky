@@ -3,6 +3,7 @@ export const config = {
 };
 
 const DWD_URL = 'https://app-prod-static.warnwetter.de/v16/gewitter_monitor.json';
+const DWD_FORECAST_URL = 'https://app-prod-static.warnwetter.de/v16/warnings_nowcast.json';
 
 // DWD Gewittermonitor level → SEVERITY string
 const LEVEL_SEVERITY = {
@@ -25,45 +26,68 @@ export default async function handler(request) {
     return jsonResponse({ error: 'lat and lon required' }, 400);
   }
 
+  // --- current (Gewittermonitor) ---
+  let current = { thunderstorm: false, severity: null };
   try {
     const response = await fetchWithTimeout(DWD_URL, 4000);
     const data = await response.json();
-
     const gebiete = data.gebiete;
     if (!gebiete || !Array.isArray(gebiete)) {
       throw new Error('No gebiete in response');
     }
 
-    // Find all Gebiete whose polygon contains the requested point
-    // DWD polygon format: flat array [lat0, lon0, lat1, lon1, ...]
     const hitting = gebiete.filter(g =>
       g.polygon && pointInPolygon(lat, lon, g.polygon)
     );
 
-    // Pick the highest level among all matching Gebiete
     let maxLevel = -1;
     for (const g of hitting) {
       if ((g.level ?? 0) > maxLevel) maxLevel = g.level;
     }
 
-    const severity = LEVEL_SEVERITY[maxLevel] ?? null;
-
-    return jsonResponse({
-      lat,
-      lon,
-      current: {
-        thunderstorm: hitting.length > 0,
-        severity,
-      },
-    });
+    current = {
+      thunderstorm: hitting.length > 0,
+      severity: LEVEL_SEVERITY[maxLevel] ?? null,
+    };
   } catch (err) {
-    console.error('Error:', err);
-    return jsonResponse({
-      lat,
-      lon,
-      current: { thunderstorm: false, severity: null },
-    });
+    console.error('Gewittermonitor error:', err);
   }
+
+  // --- forecast (Nowcast warnings) ---
+  let forecast = [];
+  try {
+    const response = await fetchWithTimeout(DWD_FORECAST_URL, 4000);
+    const data = await response.json();
+    const warnings = data.warnings;
+    if (!warnings || !Array.isArray(warnings)) {
+      throw new Error('No warnings in response');
+    }
+
+    const now = Date.now();
+
+    forecast = warnings
+      .filter(w => Array.isArray(w.regions) && (w.end ?? 0) > now)
+      .filter(w =>
+        w.regions.some(r => r.polygon && pointInPolygon(lat, lon, r.polygon))
+      )
+      .map(w => ({
+        level: w.level ?? null,
+        severity: LEVEL_SEVERITY[w.level] ?? null,
+        event: w.event ?? null,
+        start: w.start ?? null,
+        end: w.end ?? null,
+      }))
+      .sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+  } catch (err) {
+    console.error('Nowcast error:', err);
+  }
+
+  return jsonResponse({
+    lat,
+    lon,
+    current,
+    forecast,
+  });
 }
 
 /**
@@ -74,20 +98,16 @@ export default async function handler(request) {
 function pointInPolygon(lat, lon, flat) {
   const n = Math.floor(flat.length / 2);
   let inside = false;
-
   for (let i = 0, j = n - 1; i < n; j = i++) {
     const latI = flat[i * 2];
     const lonI = flat[i * 2 + 1];
     const latJ = flat[j * 2];
     const lonJ = flat[j * 2 + 1];
-
     const intersect =
       (latI > lat) !== (latJ > lat) &&
       lon < ((lonJ - lonI) * (lat - latI)) / (latJ - latI) + lonI;
-
     if (intersect) inside = !inside;
   }
-
   return inside;
 }
 
