@@ -187,7 +187,7 @@ const isTornado = ({
 }) => {
   if (mesocyclone_base === null || mesocyclone_base >= 0.5) return false;
   if (!has_surface_sweep) return false;
-  if (intensity === null || intensity < 3) return false;
+  if (intensity === null || intensity < 2) return false;
   if (base_speed === null || base_speed < 8) return false;
   if (shear_max === null || shear_max < 7) return false;
   if (siteCount < 2) return false; // ≥2 unabhängige Radarstationen erfassen das Signal überhaupt (Bean 2021)
