@@ -134,6 +134,141 @@ const loadGeoJsonWithIndex = () => new Promise((resolve, reject) => {
     .on("error", reject);
 });
 
+// ── Tornado-Scoring: gewichtete Punkte statt starrer UND-Kette ────────────────
+//
+// Hintergrund: eine Kette aus 8-9 zwingenden UND-Bedingungen senkt bei einem
+// seltenen Ereignis wie einem Tornado die Trefferquote auf echte Fälle
+// drastisch ab, sobald nur ein einziger Parameter knapp unter einem Cutoff
+// liegt (z.B. base_speed = 10.8 statt 11) – obwohl alle anderen Kriterien
+// erfüllt sind. Für ein Warnsystem ist ein verpasster echter Tornado
+// (False Negative) in der Regel teurer als ein zusätzlicher False Positive.
+// Deshalb: nur strukturell zwingende Bedingungen bleiben harte Gates, der
+// Rest fließt graduell in einen Score 0-16 ein.
+//
+// Wissenschaftliche Einordnung:
+// - Stumpf et al. 1998 (NSSL MDA): Mesozyklonen sind 1–10 km Durchmesser-
+//   Vortices; die WSR-88D-Architektur (Erkennung über mehrere Elevationen,
+//   Shear/Rotationsgeschwindigkeit) ist konzeptionell die Vorlage für den
+//   hier verwendeten DWD-Algorithmus.
+// - Wapler, Hengstebeck & Groenemeijer (2016), "Mesocyclones in Central
+//   Europe as seen by radar": DWD-eigene 3-Jahres-Studie über Deutschland.
+//   Zu allen 6 F2-Tornados im Untersuchungszeitraum wurde eine
+//   korrespondierende Mesozyklone im Radar detektiert. Severity-Level 3
+//   wird dort als "deep and moderately strong mesocyclonic rotation"
+//   definiert – stützt intensity ≥ 3 als Schwelle für ernstzunehmende
+//   Rotation, anstatt schon ab intensity ≥ 2 voll zu werten.
+// - Trapp et al. 2005a: nur ~26 % aller detektierten Mesozyklonen sind
+//   tatsächlich tornadisch (deutlich niedriger als die früher angenommenen
+//   30–50 %, Burgess et al. 1993) → die Basisrate ist niedrig, das Modell
+//   darf nicht jede einzelne Bedingung zur Pflicht machen, sonst sinkt die
+//   Trefferquote auf die ohnehin seltenen echten Fälle weiter.
+// - Thompson et al. 2017: 15 m/s als US-Schwelle für signifikante (EF2+)
+//   Tornados. Die in Mitteleuropa überwiegend schwächeren Tornados (meist
+//   EF0–EF1) rechtfertigen einen niedrigeren Einstiegswert; hier gestuft ab
+//   8 m/s, volle Punktzahl erst ab 15 m/s.
+// - Markowski & Richardson (2010): tornadische Mesozyklonen zeigen einen
+//   eng organisierten Rotationskern statt diffuser Gesamtrotation
+//   (rotational_max/rotational_mean-Verhältnis).
+// - Fallstudie Turnage (WSR-88D, Grady County Tornado): der Mesozyklonen-
+//   Durchmesser im 0.5°-Sweep schrumpfte von 8 km auf 3 km unmittelbar vor
+//   der Tornadogenese – kompakte Zirkulation als unterstützendes, nicht
+//   hartes Kriterium. Ein breiter Durchmesser schließt einen Tornado nicht
+//   aus (eine Superzelle kann einen breiten Gesamtwirbel mit einem hier
+//   nicht direkt sichtbaren, engen Kern haben), verliert aber Bonus-Punkte.
+// - Bean 2021: Einzelradar-Signale ohne Bestätigung durch eine zweite
+//   Station haben eine erhöhte Artefaktrate.
+//
+// Harte Gates (keine Punktzahl kann das aufwiegen, weil strukturell
+// zwingend):
+//   1. Mesozyklonenbasis muss bodennah sein (< 500 m) — Trapp et al. 2005:
+//      signifikante Tornadowahrscheinlichkeit erst unterhalb dieser Höhe.
+//   2. Es muss ein Sweep ≤ 0.5° vorliegen — ohne den ist bodennahe Rotation
+//      schlicht nicht messbar, unabhängig davon wie stark sie wäre.
+//
+// Alle übrigen Kriterien sind additiv (max. 16 Punkte). Schwellen für die
+// Risikostufen sind bewusst moderat gewählt (high ab 55 %), um die niedrige
+// Tornado-Basisrate nicht durch zu viele kumulierte Mindestanforderungen
+// komplett auszublenden. Bei Zugriff auf eine eigene Sammlung historischer,
+// bestätigter Fälle (z.B. über ESWD/ESSL-Meldungen) sollten diese Schwellen
+// und Gewichte daran nachkalibriert werden statt sie nur aus der Literatur
+// zu schätzen.
+const scoreTornado = ({
+  mesocyclone_base, has_surface_sweep, intensity, base_speed, shear_max,
+  rotational_max, rotational_mean, diameter_equiv, surfaceSites, lowSweepSites,
+}) => {
+  // ── Harte Gates ─────────────────────────────────────────────────────────
+  if (mesocyclone_base === null || mesocyclone_base >= 0.5) {
+    return { score: 0, max: 0, tornado: false, risk: "none", reasons: ["Basis ≥ 500m"] };
+  }
+  if (!has_surface_sweep) {
+    return { score: 0, max: 0, tornado: false, risk: "none", reasons: ["kein Surface-Sweep (≤0.5°)"] };
+  }
+
+  let score = 0;
+  const max = 16;
+  const reasons = [];
+
+  // 1) Intensity (0-3) — Wapler/Hengstebeck/Groenemeijer 2016
+  if (intensity >= 4)       score += 3;
+  else if (intensity === 3) score += 2;
+  else if (intensity === 2) { score += 1; reasons.push("Intensity nur 2"); }
+  else                       reasons.push("Intensity < 2");
+
+  // 2) Bodennahe Rotation (0-4) — Thompson et al. 2017, gestuft für
+  //    mitteleuropäische (meist schwächere) Tornados
+  if (base_speed === null)    reasons.push("base_speed fehlt");
+  else if (base_speed >= 15)  score += 4;
+  else if (base_speed >= 11)  score += 3;
+  else if (base_speed >= 8)   { score += 1; reasons.push(`base_speed ${base_speed.toFixed(1)} < 11`); }
+  else                         reasons.push(`base_speed ${base_speed.toFixed(1)} < 8`);
+
+  // 3) Shear (0-2) — DWD-Metrik, < 10×10⁻³ s⁻¹ gilt als nicht-tornadisch
+  if (shear_max === null)   reasons.push("shear_max fehlt");
+  else if (shear_max >= 10) score += 2;
+  else if (shear_max >= 7)  { score += 1; reasons.push(`shear_max ${shear_max.toFixed(1)} < 10`); }
+  else                       reasons.push(`shear_max ${shear_max.toFixed(1)} < 7`);
+
+  // 4) Multi-Radar-Bestätigung (0-2) — Bean 2021
+  if (surfaceSites >= 2)        score += 2;
+  else if (lowSweepSites >= 3)  { score += 1; reasons.push("nur Einzelradar auf Surface-Level"); }
+  else                           reasons.push("keine Multi-Radar-Bestätigung");
+
+  // 5) Rotationskonzentration max/mean (0-2) — Markowski & Richardson 2010
+  if (rotational_mean !== null && rotational_mean > 0) {
+    const c = rotational_max / rotational_mean;
+    if (c >= 1.8)      score += 2;
+    else if (c >= 1.4) { score += 1; reasons.push(`Konzentration ${c.toFixed(2)} < 1.8`); }
+    else                 reasons.push(`Konzentration ${c.toFixed(2)} < 1.4`);
+  } else {
+    reasons.push("rotational_mean fehlt");
+  }
+
+  // 6) Konsistenz-Check (0-1) — Artefakt-Filter: schwache Gesamtrotation bei
+  //    starker Bodenrotation ist meteorologisch inkonsistent
+  if (rotational_max !== null && base_speed !== null && rotational_max >= base_speed) score += 1;
+  else reasons.push("rotational_max < base_speed (inkonsistent)");
+
+  // 7) Durchmesser-Kompaktheit (0-2) — Stumpf et al. 1998, Turnage-Fallstudie.
+  //    diameter_equiv (NICHT mesocyclone_diameter, das ist nur die
+  //    Such-Ellipse) ist der äquivalente Durchmesser der realen Rotation.
+  if (diameter_equiv === null)  reasons.push("diameter_equiv fehlt");
+  else if (diameter_equiv <= 4) score += 2;
+  else if (diameter_equiv <= 8) score += 1;
+  else                           reasons.push(`Durchmesser ${diameter_equiv.toFixed(1)}km breit`);
+
+  const pct  = score / max;
+  const risk = pct >= 0.55 ? "high" : pct >= 0.40 ? "moderate" : pct >= 0.25 ? "low" : "none";
+
+  return {
+    score,
+    max,
+    tornado: pct >= 0.55,
+    risk,
+    score_pct: Math.round(pct * 100),
+    reasons,
+  };
+};
+
 // ── Mesozyklonen-Parser ───────────────────────────────────────────────────────
 const parseMesoCells = (xml) => {
   const refTimeMatch =
@@ -169,10 +304,14 @@ const parseMesoCells = (xml) => {
     const mesocyclone_base   = numFast(nwp, "mesocyclone_base");
     const max_dbz            = numFast(nwp, "max_dbz");
     const rotational_max     = numFast(nwp, "mesocyclone_velocity_rotational_max");
+    const rotational_mean    = numFast(nwp, "mesocyclone_velocity_rotational_mean");
     const base_speed         = numFast(nwp, "mesocyclone_velocity_rotational_max_closest_to_ground");
     const shear_max          = numFast(nwp, "mesocyclone_shear_max");
+    // diameter_equiv ist der äquivalente Durchmesser der tatsächlichen
+    // Rotation – NICHT mesocyclone_diameter, das ist nur die Such-Ellipse
+    // (major_axis/minor_axis) und damit konstant für den Detektionsbereich.
+    const diameter_equiv     = numFast(nwp, "mesocyclone_diameter_equivalent");
 
-  
     // ── Radar-Sweeps: alle Stationen mit ihren Elevationen ───────────────────
     const elevations = [];
     const elevBlocks = allBlocksFast(inner, "elevation");
@@ -181,71 +320,33 @@ const parseMesoCells = (xml) => {
       const angles = el.inner.split(",").map(v => parseFloat(v.trim())).filter(n => !isNaN(n));
       if (site && angles.length > 0) elevations.push({ site, angles });
     }
-    
+
     // Für Tornado-Check: niedrigste Elevation über alle Stationen
     const allAngles     = elevations.flatMap(e => e.angles);
     const min_elevation = allAngles.length > 0 ? Math.min(...allAngles) : null;
     const has_low_sweep = min_elevation !== null && min_elevation <= 1.5;
     const has_surface_sweep = min_elevation !== null && min_elevation <= 0.5;
 
-    // ── Tornado: true / false ─────────────────────────────────────────────
-   const tornado = (() => {
-    // ── 1. Mesozyklonenbasis: nur unter 500m tornadorelvant ──────────────────
-    // Trapp et al. 2005: signifikante Tornadowahrscheinlichkeit erst unter 500m
-    // (vorher 1.0 km → viel zu weit gefasst)
-    if (mesocyclone_base === null || mesocyclone_base >= 0.5) return false;
-  
-    // ── 2. Intensity: mindestens 3 (vorher 2) ────────────────────────────────
-    // Hengstebeck 2018: Severity 3 = klar organisierte Rotation,
-    // Severity 2 erfasst zu viele schwache, nicht-tornadische Mesozyklonen
-    if (intensity === null || intensity < 3) return false;
-  
-    // ── 3. Bodennahe Rotation (angepasst: 11 statt 15 m/s) ───────────────────
-    // 15 m/s ist Thompson et al. 2017's Schwelle für signifikante (EF2+)
-    // Tornados; für die überwiegend schwachen Tornados in DE zu hoch –
-    // schließt plausible Fälle aus (z.B. 12 m/s bei sonst erfüllten Kriterien).
-    if (base_speed === null || base_speed < 11) return false;
-  
-    // ── 4. Shear: Pflichtkriterium, nicht optional (vorher nur "shearOk") ────
-    // shear_max < 10×10⁻³ s⁻¹ = nicht-tornadische Rotation laut DWD-Metrik
-    if (shear_max === null || shear_max < 10) return false;
-  
-    // ── 5. Radar-Abdeckung: Surface-Sweep Pflicht (vorher low_sweep) ─────────
-    // Ohne ≤ 0.5° Sweep ist bodennahe Rotation strukturell nicht sichtbar –
-    // low_sweep (≤ 1.5°) allein reicht nicht als Nachweis
-    if (!has_surface_sweep) return false;
-  
-    // ── 6. rotational_max als Qualitätsfilter ────────────────────────────────
-    // Schwache Gesamtrotation bei starker Bodenrotation = inkonsistent,
-    // meist Artefakt. rotational_max sollte base_speed übersteigen.
-    if (rotational_max === null || rotational_max < base_speed) return false;
-  
-    // ── 7. Multi-Radar-Bestätigung: immer Pflicht (vorher nur Bonus) ─────────
-    // Einzelradar-Signal ohne Bestätigung = hohe Artefaktrate (Bean 2021)
-    const surfaceSites = elevations.filter(e => e.angles.some(a => a <= 0.5)).length;
+    const surfaceSites  = elevations.filter(e => e.angles.some(a => a <= 0.5)).length;
     const lowSweepSites = elevations.filter(e => e.angles.some(a => a <= 1.5)).length;
-    if (surfaceSites < 2 && lowSweepSites < 3) return false;
 
-    // ── 8. Rotationskonzentration: max/mean-Verhältnis ───────────────────────
-    // Markowski & Richardson 2010: tornadische Mesozyklonen zeigen einen eng
-    // organisierten Rotationskern statt diffuser Gesamtrotation. Ein niedriges
-    // Verhältnis von rotational_max zu rotational_mean deutet auf eine breite,
-    // unorganisierte Rotation hin (kein enger Kern) statt auf einen echten
-    // Tornado-Vortex. Schwelle 1.8 trennt konzentrierte von diffusen Fällen.
-    if (rotational_mean === null || rotational_mean <= 0) return false;
-    const rotation_concentration = rotational_max / rotational_mean;
-    if (rotation_concentration < 1.8) return false;
-  
-    return true;
-  })();
+    // ── Tornado-Risiko: Scoring statt starrer UND-Kette ──────────────────────
+    const tornadoResult = scoreTornado({
+      mesocyclone_base, has_surface_sweep, intensity, base_speed, shear_max,
+      rotational_max, rotational_mean, diameter_equiv, surfaceSites, lowSweepSites,
+    });
 
     cells.push({
       dateStr, timeStr, event_id,
       latitude, longitude, intensity,
       mesocyclone_top, mesocyclone_base,
-      max_dbz, rotational_max, base_speed, shear_max,
+      max_dbz, rotational_max, rotational_mean, base_speed, shear_max, diameter_equiv,
       elevations, min_elevation, has_low_sweep, has_surface_sweep,
-      tornado,
+      tornado:           tornadoResult.tornado,
+      tornado_risk:       tornadoResult.risk,
+      tornado_score:      tornadoResult.score_pct, // 0-100
+      tornado_score_raw:  tornadoResult.score,      // 0-16, für Debugging
+      tornado_reasons:    tornadoResult.reasons,
     });
   }
 
@@ -798,7 +899,9 @@ export default async function handler(req, res) {
       }
       cell.mesocyclone     = best ? { ...best, dist_km: Math.round(bestDist * 10) / 10 } : null;
       cell.is_supercell    = best !== null;
-      cell.tornado         = best ? best.tornado : null;
+      cell.tornado         = best ? best.tornado      : null;
+      cell.tornado_risk    = best ? best.tornado_risk  : "none";
+      cell.tornado_score   = best ? best.tornado_score : null; // 0-100
     }
 
     return res.status(200).json({
