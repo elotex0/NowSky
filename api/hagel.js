@@ -48,7 +48,7 @@ function readAllAttrs(node) {
 async function decodeDwdComposite(bytes) {
   await ensureH5Ready();
 
-  const virtualFilename = `composite_${Date.now()}_${Math.random().toString(36).slice(2)}.hd5`;
+  const virtualFilename = `/tmp/composite_${Date.now()}_${Math.random().toString(36).slice(2)}.hd5`;
   const { FS } = h5wasm;
   FS.writeFile(virtualFilename, bytes);
 
