@@ -6,7 +6,6 @@
     "tar-stream": "^2.2.0",
     "geotiff": "^2.0.0",
     "adm-zip": "^0.5.10",
-    "fast-xml-parser": "^4.3.2",
     "node-fetch": "^3.3.2",
     "h5wasm": "^0.8.8",
     "proj4": "^2.19.10",
