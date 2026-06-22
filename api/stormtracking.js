@@ -433,16 +433,15 @@ export default async function handler(req, res) {
     // Meso hat (0 oder 1, siehe Datenbeispiel). Bei 1 wird die Position der
     // Zelle (centroid_3d) als Meso-Position übernommen.
     const mesoBlock           = blockFast(inner, "mesocyclone") ?? "";
-    const meso_assigned_count = intFast(mesoBlock, "number_assigned_mesocyclones") ?? 0;
-    const has_mesocyclone     = meso_assigned_count >= 1;
-    const konrad_mesocyclone  = has_mesocyclone ? {
-      severity_index:    intFast(mesoBlock, "mesocyclone_severity_index"),
+    const meso_severity   = intFast(mesoBlock, "mesocyclone_severity_index") ?? 0;
+    const has_mesocyclone = meso_severity >= 1;
+    const konrad_mesocyclone = has_mesocyclone ? {
+      severity_index:    meso_severity,
       diameter_equiv_km: noFill(numFast(mesoBlock, "mesocyclone_diameter_equivalent")),
       height_top_m:      noFill(numFast(mesoBlock, "mesocyclone_height_top")),
       height_base_m:     noFill(numFast(mesoBlock, "mesocyclone_height_base")),
       rotational_max_ms: noFill(numFast(mesoBlock, "mesocyclone_velocity_rotational_max")),
     } : null;
-
     // ── NWP-Modell ────────────────────────────────────────────────────────
     const nwpBlock       = blockFast(inner, "nwp_model") ?? "";
     const nwp_mu_cape    = numFast(nwpBlock, "nwp_mu_cape");
