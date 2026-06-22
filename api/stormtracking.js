@@ -134,163 +134,6 @@ const loadGeoJsonWithIndex = () => new Promise((resolve, reject) => {
     .on("error", reject);
 });
 
-// ── Tornado-Erkennung: harte Gates statt additivem Score ──────────────────────
-//
-// Frühere Version (additiver Score 0-16, nur 2 harte Gates, Schwelle 55%)
-// hatte zu viele False Positives: einzelne starke Werte (z.B. hoher
-// base_speed) konnten ein sonst schwaches/unbestätigtes Signal über die
-// Schwelle heben. Jetzt: 8 harte, strukturell begründete Gates – ALLE
-// müssen erfüllt sein, kein Aufwiegen durch Punkte mehr möglich.
-//
-// Kalibriert u.a. an einem bestätigten Tornado-Fall (2026-06-19, 23:10 UTC,
-// 53.92/7.09): mesocyclone_base 0.16km, intensity 3, base_speed 12.2 m/s,
-// shear_max 12.9, rotational_max/mean = 18.6/8.3 = 2.24, nur 1 Station mit
-// Sweep ≤0.5° (asb) + 1 weitere Station auf 2.5° (boo), diameter_equiv
-// 13.2km (breit). Daraus folgt explizit:
-//
-// - Durchmesser (diameter_equiv) ist KEIN Gate. Der bestätigte Fall hatte
-//   einen breiten Gesamtwirbel (13.2km) – die Metrik löst den eigentlichen
-//   engen Rotationskern oft nicht auf (Stumpf et al. 1998, Turnage-
-//   Fallstudie: kompakter Kern ist unterstützend, aber ein breiter
-//   Gesamtwirbel schließt einen Tornado nicht aus, da eine Superzelle
-//   einen breiten äußeren Wirbel um einen hier nicht sichtbaren engen Kern
-//   haben kann). Bleibt rein informativ im Output.
-// - Multi-Radar-Bestätigung (Bean 2021: Einzelradar-Artefaktrisiko) wird
-//   über die GESAMTZAHL beteiligter Stationen geprüft (unabhängig von
-//   deren Elevation), nicht über die Zahl der Stationen mit Surface-Sweep
-//   speziell – im bestätigten Fall hatte nur 1 Station einen Sweep ≤0.5°,
-//   eine zweite (boo) aber auf 2.5°, was als Cross-Validation ausreicht.
-//
-// Wissenschaftliche Einordnung der Gates:
-// - Trapp et al. 2005: signifikante Tornadowahrscheinlichkeit erst bei
-//   Mesozyklonenbasis < 500m.
-// - ohne Sweep ≤0.5° ist bodennahe Rotation schlicht nicht messbar.
-// - Wapler, Hengstebeck & Groenemeijer 2016 (DWD 3-Jahres-Studie): Level 3
-//   ("deep, moderately strong mesocyclonic rotation") als Mindestschwelle
-//   für ernstzunehmende Rotation.
-// - Thompson et al. 2017, für Mitteleuropa (meist EF0-EF1) abgesenkt:
-//   base_speed ≥ 8 m/s als Mindestwert bodennaher Rotation.
-// - DWD-Metrik: shear_max ≥ 7×10⁻³ s⁻¹ als unterer Rand für relevante Shear.
-// - Bean 2021: ≥ 2 beteiligte Radarstationen zur Artefaktfilterung.
-// - Markowski & Richardson 2010: tornadische Mesozyklonen zeigen einen eng
-//   organisierten Rotationskern statt diffuser Gesamtrotation
-//   (rotational_max/rotational_mean ≥ 1.4).
-// - Konsistenz-Check: rotational_max < base_speed ist meteorologisch
-//   inkonsistent (Artefakt-Filter).
-//
-// Bei Zugriff auf eine eigene Sammlung historischer, bestätigter Fälle
-// (z.B. ESWD/ESSL-Meldungen) sollten diese Schwellen weiter nachkalibriert
-// werden.
-const isTornado = ({
-  mesocyclone_base, has_surface_sweep, intensity, base_speed, shear_max,
-  rotational_max, rotational_mean, siteCount,
-}) => {
-  if (mesocyclone_base === null || mesocyclone_base >= 0.5) return false;
-  if (!has_surface_sweep) return false;
-  if (intensity === null || intensity < 2) return false;
-  if (base_speed === null || base_speed < 8) return false;
-  if (shear_max === null || shear_max < 7) return false;
-  if (siteCount < 2) return false; // ≥2 unabhängige Radarstationen erfassen das Signal überhaupt (Bean 2021)
-  if (rotational_mean === null || rotational_mean <= 0) return false;
-  if ((rotational_max / rotational_mean) < 1.4) return false;
-  if (rotational_max === null || rotational_max < base_speed) return false;
-  return true;
-};
-
-// ── Mesozyklonen-Parser (externe DWD-Meso-API, eigene Geometrie) ─────────────
-const parseMesoCells = (xml) => {
-  const refTimeMatch =
-    xml.match(/<time[^>]*time-coordinate="UTC"[^>]*>([^<]+)<\/time>/) ||
-    xml.match(/<time[^>]*>([^<]+)<\/time>/);
-  const refTime = refTimeMatch ? refTimeMatch[1].trim() : null;
-
-  const dtMatch = refTime?.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):?(\d{2})/);
-  const dateStr = dtMatch ? `${dtMatch[1]}${dtMatch[2]}${dtMatch[3]}` : "";
-  const timeStr = dtMatch ? `${dtMatch[4]}${dtMatch[5]}`             : "";
-
-  const eventRe = /<event\b([^>]*)>([\s\S]*?)<\/event>/g;
-  const cells   = [];
-  let m;
-
-  while ((m = eventRe.exec(xml)) !== null) {
-    const attrs = m[1];
-    const inner = m[2];
-
-    const idMatch  = attrs.match(/ID="([^"]*)"/);
-    const event_id = idMatch ? parseInt(idMatch[1]) : null;
-
-    const latitude  = numFast(inner, "latitude");
-    const longitude = numFast(inner, "longitude");
-    const intensity = (() => {
-      const v = textFast(inner, "meso_intensity");
-      return v !== null ? parseInt(v) : null;
-    })();
-
-    const nwp = blockFast(inner, "nowcast-parameters") ?? inner;
-
-    const mesocyclone_top    = numFast(nwp, "mesocyclone_top");
-    const mesocyclone_base   = numFast(nwp, "mesocyclone_base");
-    const max_dbz            = numFast(nwp, "max_dbz");
-    const rotational_max     = numFast(nwp, "mesocyclone_velocity_rotational_max");
-    const rotational_mean    = numFast(nwp, "mesocyclone_velocity_rotational_mean");
-    const base_speed         = numFast(nwp, "mesocyclone_velocity_rotational_max_closest_to_ground");
-    const shear_max          = numFast(nwp, "mesocyclone_shear_max");
-    // diameter_equiv ist der äquivalente Durchmesser der tatsächlichen
-    // Rotation – NICHT mesocyclone_diameter, das ist nur die Such-Ellipse
-    // (major_axis/minor_axis) und damit konstant für den Detektionsbereich.
-    // Bleibt rein informativ, ist KEIN Tornado-Kriterium (siehe Kommentar oben).
-    const diameter_equiv     = numFast(nwp, "mesocyclone_diameter_equivalent");
-
-    // ── Radar-Sweeps: alle Stationen mit ihren Elevationen ───────────────────
-    const elevations = [];
-    const elevBlocks = allBlocksFast(inner, "elevation");
-    for (const el of elevBlocks) {
-      const site   = attrFast(el.full, "site");
-      const angles = el.inner.split(",").map(v => parseFloat(v.trim())).filter(n => !isNaN(n));
-      if (site && angles.length > 0) elevations.push({ site, angles });
-    }
-
-    // Für Tornado-Check: niedrigste Elevation über alle Stationen
-    const allAngles     = elevations.flatMap(e => e.angles);
-    const min_elevation = allAngles.length > 0 ? Math.min(...allAngles) : null;
-    const has_low_sweep = min_elevation !== null && min_elevation <= 1.5;
-    const has_surface_sweep = min_elevation !== null && min_elevation <= 0.5;
-
-    // Gesamtzahl distinkter beteiligter Radarstationen (unabhängig von Elevation)
-    // — Bean 2021 Artefaktfilter: mind. 2 unabhängige Stationen müssen das
-    // Signal überhaupt erfasst haben.
-    const siteCount = new Set(elevations.map(e => e.site)).size;
-
-    // ── Tornado-Check: harte Gates, kein additiver Score mehr ────────────────
-    const tornado = isTornado({
-      mesocyclone_base, has_surface_sweep, intensity, base_speed, shear_max,
-      rotational_max, rotational_mean, siteCount,
-    });
-
-    cells.push({
-      dateStr, timeStr, event_id,
-      latitude, longitude, intensity,
-      mesocyclone_top, mesocyclone_base,
-      max_dbz, rotational_max, rotational_mean, base_speed, shear_max, diameter_equiv,
-      elevations, min_elevation, has_low_sweep, has_surface_sweep, siteCount,
-      tornado,
-    });
-  }
-
-  return cells;
-};
-
-// ── Mesozyklonen-Fetch ────────────────────────────────────────────────────────
-const fetchMesoCells = async () => {
-  const url = "https://opendata.dwd.de/weather/radar/mesocyclones/meso_latest.xml";
-  const r   = await fetch(url, {
-    headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
-    signal:  AbortSignal.timeout(8000),
-  });
-  if (!r.ok) throw new Error(`Mesozyklonen-Fetch fehlgeschlagen: HTTP ${r.status}`);
-  return parseMesoCells(await r.text());
-};
-
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -800,14 +643,12 @@ export default async function handler(req, res) {
 
   // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    // Alles parallel: XML-Fetch, GeoJSON + Index-Build, Meso-Fetch
-    const [{ xml, filename }, { geojson, spatialIndex }, meso_cells] = await Promise.all([
+    // KONRAD3D-XML + GeoJSON/Index parallel laden. Die externe DWD-Meso-API
+    // (meso_latest.xml) wird nicht mehr abgefragt – Mesozyklonen-Daten
+    // kommen ausschließlich aus KONRAD3D selbst (konrad_mesocyclone).
+    const [{ xml, filename }, { geojson, spatialIndex }] = await Promise.all([
       fetchXml(),
       loadGeoJsonWithIndex(),
-      fetchMesoCells().catch((err) => {
-        console.error("Mesozyklonen-Fetch fehlgeschlagen:", err.message);
-        return [];
-      }),
     ]);
 
     const reference_time =
@@ -827,22 +668,13 @@ export default async function handler(req, res) {
       )
     );
 
-    // ── Mesozyklone mit KONRAD3D-Zelle verknüpfen ────────────────────────────
+    // ── Mesozyklone aus KONRAD3D übernehmen ──────────────────────────────────
     // Quelle der Wahrheit: has_mesocyclone (number_assigned_mesocyclones aus
     // der KONRAD3D-Zelle selbst). Ist das 0, gibt es für diese Zelle keine
-    // Meso – Punkt, kein Distanz-Matching gegen die externe API mehr.
-    // Ist es 1, bekommt die Meso die lat/lon der Zelle (KONRAD3D liefert
-    // dafür keine eigene Geometrie). Die externe DWD-Meso-API wird dann nur
-    // noch herangezogen, um Zusatzdaten (Sweeps, shear, Tornado-Gates) zu
-    // ergänzen, falls ein räumliches Match existiert – überschreibt dabei
-    // NICHT die Position.
-    const haversineH = (lat1, lon1, lat2, lon2) => {
-      const R = 6371, toR = d => d * Math.PI / 180;
-      const dLat = toR(lat2 - lat1), dLon = toR(lon2 - lon1);
-      const a = Math.sin(dLat/2)**2 + Math.cos(toR(lat1))*Math.cos(toR(lat2))*Math.sin(dLon/2)**2;
-      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    };
-
+    // Meso. Ist es 1, bekommt die Meso die lat/lon der Zelle (KONRAD3D
+    // liefert dafür keine eigene Geometrie). Kein Abgleich mehr gegen die
+    // externe DWD-Meso-API – Tornado-Flag ist daher ohne deren Zusatzdaten
+    // (Sweeps, shear etc.) nicht mehr bestimmbar und bleibt null.
     for (const cell of cells) {
       if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
         cell.mesocyclone  = null;
@@ -851,25 +683,15 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // Zelle hat laut KONRAD3D eine zugewiesene Meso → externe API nur
-      // für Zusatzdaten (Tornado-Gates) heranziehen, falls in Reichweite.
-      let best = null, bestDist = Infinity;
-      for (const m of meso_cells) {
-        if (!m.latitude || !m.longitude) continue;
-        const d = haversineH(cell.latitude, cell.longitude, m.latitude, m.longitude);
-        if (d < bestDist && d <= 25) { best = m; bestDist = d; }
-      }
-
       cell.mesocyclone = {
-        ...(best ?? {}),
         ...cell.konrad_mesocyclone,
         latitude:  cell.latitude,
         longitude: cell.longitude,
-        dist_km:   best ? Math.round(bestDist * 10) / 10 : null,
-        source:    best ? "konrad3d+meso_api" : "konrad3d_only",
+        dist_km:   null,
+        source:    "konrad3d_only",
       };
       cell.is_supercell = true;
-      cell.tornado       = best ? best.tornado : null;
+      cell.tornado       = null;
     }
 
     return res.status(200).json({
@@ -877,7 +699,6 @@ export default async function handler(req, res) {
       creation_date,
       file: filename + ".xml",
       stormtracking_cells: cells,
-      meso_cells,
     });
 
   } catch (err) {
