@@ -197,7 +197,7 @@ const isTornado = ({
   return true;
 };
 
-// ── Mesozyklonen-Parser ───────────────────────────────────────────────────────
+// ── Mesozyklonen-Parser (externe DWD-Meso-API, eigene Geometrie) ─────────────
 const parseMesoCells = (xml) => {
   const refTimeMatch =
     xml.match(/<time[^>]*time-coordinate="UTC"[^>]*>([^<]+)<\/time>/) ||
@@ -526,7 +526,7 @@ export default async function handler(req, res) {
     const results = await Promise.allSettled(
       [5, 10, 15, 20].map(async (offset) => {
         const filename = buildFilename(offset);
-        const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
+        const url = `https://opendata.dwd.de/weather/radar/konrad3d/KONRAD3D_20260622T062000.xml`;
         const r = await fetch(url, {
           headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
           signal: AbortSignal.timeout(8000),
@@ -582,6 +582,23 @@ export default async function handler(req, res) {
     const echo_bottom_hail       = noFill(numFast(hymec, "echo_bottom_hail"));
     const echo_bottom_large_hail = noFill(numFast(hymec, "echo_bottom_large_hail"));
     const hail_flag              = intFast(inner, "hail_flag");
+
+    // ── KONRAD3D-eigene Mesozyklonen-Zuordnung ──────────────────────────────
+    // Das KONRAD3D-Format hat KEINE eigene Geometrie für die Meso – nur
+    // ein Assignment-Flag + aggregierte Attribute. number_assigned_mesocyclones
+    // ist hier die Quelle der Wahrheit dafür, ob diese Zelle überhaupt eine
+    // Meso hat (0 oder 1, siehe Datenbeispiel). Bei 1 wird die Position der
+    // Zelle (centroid_3d) als Meso-Position übernommen.
+    const mesoBlock           = blockFast(inner, "mesocyclone") ?? "";
+    const meso_assigned_count = intFast(mesoBlock, "number_assigned_mesocyclones") ?? 0;
+    const has_mesocyclone     = meso_assigned_count >= 1;
+    const konrad_mesocyclone  = has_mesocyclone ? {
+      severity_index:    intFast(mesoBlock, "mesocyclone_severity_index"),
+      diameter_equiv_km: noFill(numFast(mesoBlock, "mesocyclone_diameter_equivalent")),
+      height_top_m:      noFill(numFast(mesoBlock, "mesocyclone_height_top")),
+      height_base_m:     noFill(numFast(mesoBlock, "mesocyclone_height_base")),
+      rotational_max_ms: noFill(numFast(mesoBlock, "mesocyclone_velocity_rotational_max")),
+    } : null;
 
     // ── NWP-Modell ────────────────────────────────────────────────────────
     const nwpBlock       = blockFast(inner, "nwp_model") ?? "";
@@ -754,6 +771,8 @@ export default async function handler(req, res) {
       echo_top_msl, echo_bottom_msl,
       covered_area,
       orte,
+      has_mesocyclone,
+      konrad_mesocyclone,
       nwp: {
         mu_cape:      nwp_mu_cape,
         mu_cin:       nwp_mu_cin,
@@ -809,6 +828,14 @@ export default async function handler(req, res) {
     );
 
     // ── Mesozyklone mit KONRAD3D-Zelle verknüpfen ────────────────────────────
+    // Quelle der Wahrheit: has_mesocyclone (number_assigned_mesocyclones aus
+    // der KONRAD3D-Zelle selbst). Ist das 0, gibt es für diese Zelle keine
+    // Meso – Punkt, kein Distanz-Matching gegen die externe API mehr.
+    // Ist es 1, bekommt die Meso die lat/lon der Zelle (KONRAD3D liefert
+    // dafür keine eigene Geometrie). Die externe DWD-Meso-API wird dann nur
+    // noch herangezogen, um Zusatzdaten (Sweeps, shear, Tornado-Gates) zu
+    // ergänzen, falls ein räumliches Match existiert – überschreibt dabei
+    // NICHT die Position.
     const haversineH = (lat1, lon1, lat2, lon2) => {
       const R = 6371, toR = d => d * Math.PI / 180;
       const dLat = toR(lat2 - lat1), dLon = toR(lon2 - lon1);
@@ -817,16 +844,32 @@ export default async function handler(req, res) {
     };
 
     for (const cell of cells) {
-      if (!cell.latitude || !cell.longitude) { cell.mesocyclone = null; continue; }
+      if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
+        cell.mesocyclone  = null;
+        cell.is_supercell = false;
+        cell.tornado      = null;
+        continue;
+      }
+
+      // Zelle hat laut KONRAD3D eine zugewiesene Meso → externe API nur
+      // für Zusatzdaten (Tornado-Gates) heranziehen, falls in Reichweite.
       let best = null, bestDist = Infinity;
       for (const m of meso_cells) {
         if (!m.latitude || !m.longitude) continue;
         const d = haversineH(cell.latitude, cell.longitude, m.latitude, m.longitude);
         if (d < bestDist && d <= 25) { best = m; bestDist = d; }
       }
-      cell.mesocyclone  = best ? { ...best, dist_km: Math.round(bestDist * 10) / 10 } : null;
-      cell.is_supercell = best !== null;
-      cell.tornado      = best ? best.tornado : null;
+
+      cell.mesocyclone = {
+        ...(best ?? {}),
+        ...cell.konrad_mesocyclone,
+        latitude:  cell.latitude,
+        longitude: cell.longitude,
+        dist_km:   best ? Math.round(bestDist * 10) / 10 : null,
+        source:    best ? "konrad3d+meso_api" : "konrad3d_only",
+      };
+      cell.is_supercell = true;
+      cell.tornado       = best ? best.tornado : null;
     }
 
     return res.status(200).json({
