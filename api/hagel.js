@@ -5,7 +5,6 @@
 //          hail_cm = null  → undetect (kein Niederschlag)
 //          hail_cm = -1    → nodata / außerhalb Messbereich
 //
-// npm install h5wasm proj4
 
 import * as h5wasm from "h5wasm/node";
 import proj4 from "proj4";
