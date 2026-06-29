@@ -103,27 +103,29 @@ async function findLatestGermanyRunId(daySlot) {
         return cached.runId;
     }
 
+    // NOTE: deliberately no `where` clause here - combining multiple equality filters with
+    // an orderBy requires a Firestore composite index to be created in the Firebase console
+    // first. Since we don't have (or want to require) console access to that project, we just
+    // sort by createdAt (which needs no special index, same as the public HOCO test page does)
+    // and pull a larger recent batch, then do all the region/type/status/day-slot filtering
+    // here in JS.
     const structuredQuery = {
         from: [{ collectionId: "hoco_requests" }],
-        where: {
-            compositeFilter: {
-                op: "AND",
-                filters: [
-                    { fieldFilter: { field: { fieldPath: "region" }, op: "EQUAL", value: { stringValue: REGION } } },
-                    { fieldFilter: { field: { fieldPath: "type" }, op: "EQUAL", value: { stringValue: "automated" } } },
-                    { fieldFilter: { field: { fieldPath: "status" }, op: "EQUAL", value: { stringValue: "completed" } } },
-                ],
-            },
-        },
         orderBy: [{ field: { fieldPath: "createdAt" }, direction: "DESCENDING" }],
-        limit: 30, // pull a small recent batch, then filter by day slot client-side below
+        limit: 200, // larger batch since we're filtering client-side now instead of in the query
     };
 
     const docs = await runFirestoreQuery(structuredQuery);
 
-    // Run IDs look like "AUTO-<timestamp>-Germany-Day0-1". Match the exact day slot suffix
-    // so e.g. "Day0-1" doesn't accidentally match "Day1-2".
-    const match = docs.find((doc) => doc.id.endsWith(`-${REGION}-${daySlot}`));
+    // Run IDs look like "AUTO-<timestamp>-Germany-Day0-1". Filter by region/type/status fields
+    // AND match the exact day slot suffix so e.g. "Day0-1" doesn't accidentally match "Day1-2".
+    const match = docs.find(
+        (doc) =>
+            doc.region === REGION &&
+            doc.type === "automated" &&
+            doc.status === "completed" &&
+            doc.id.endsWith(`-${REGION}-${daySlot}`)
+    );
 
     if (!match) {
         return null;
