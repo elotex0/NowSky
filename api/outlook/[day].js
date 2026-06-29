@@ -156,23 +156,45 @@ async function resolveDownloadUrl(runId) {
         throw new Error(`No downloadTokens found in storage metadata for ${runId}`);
     }
 
-    return `${metadataUrl}?alt=media&token=${token}`;
+    return {
+        url: `${metadataUrl}?alt=media&token=${token}`,
+        timeCreated: metadata.timeCreated || null, // ISO8601 UTC string, e.g. "2026-06-29T13:08:32.727Z"
+    };
 }
 
-// Fetches and caches the GeoJSON for a given run.
+// Formats an ISO8601 UTC timestamp string as German local time (Europe/Berlin, handles
+// CET/CEST automatically), e.g. "29.06.2026, 15:08:32".
+function formatGermanTime(isoString) {
+    if (!isoString) return null;
+    const date = new Date(isoString);
+    if (Number.isNaN(date.getTime())) return null;
+
+    return new Intl.DateTimeFormat("de-DE", {
+        timeZone: "Europe/Berlin",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+    }).format(date);
+}
+
+// Fetches and caches the GeoJSON for a given run, plus the storage object's timeCreated.
 async function fetchRunGeojson(runId) {
     const cached = geojsonCache.get(runId);
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
         return cached.data;
     }
 
-    const downloadUrl = await resolveDownloadUrl(runId);
+    const { url: downloadUrl, timeCreated } = await resolveDownloadUrl(runId);
     const geoResponse = await fetch(downloadUrl);
     if (!geoResponse.ok) {
         throw new Error(`GeoJSON fetch failed (${geoResponse.status}) for ${runId}`);
     }
 
-    const data = await geoResponse.json();
+    const geojson = await geoResponse.json();
+    const data = { geojson, timeCreated };
     geojsonCache.set(runId, { data, fetchedAt: Date.now() });
     return data;
 }
@@ -277,10 +299,10 @@ export default async function handler(req, res) {
             return jsonError(res, 404, `No completed AUTO-HOCO run found for Germany ${daySlot}.`);
         }
 
-        const geojsonData = await fetchRunGeojson(runId);
+        const { geojson, timeCreated } = await fetchRunGeojson(runId);
 
         // GeoJSON point order is [lon, lat].
-        const match = findHighestRiskMatch(geojsonData, [lonNum, latNum]);
+        const match = findHighestRiskMatch(geojson, [lonNum, latNum]);
 
         return res.status(200).json({
             day: daySlot,
@@ -291,6 +313,8 @@ export default async function handler(req, res) {
             inRiskArea: !!match,
             risk: match ? match.risk : 0,
             label: match ? match.label : null,
+            timeCreated, // ISO8601 UTC, e.g. "2026-06-29T13:08:32.727Z"
+            timeCreatedDE: formatGermanTime(timeCreated), // e.g. "29.06.2026, 15:08:32"
         });
     } catch (err) {
         console.error("outlook handler error:", err);
