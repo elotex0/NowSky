@@ -158,7 +158,7 @@ async function resolveDownloadUrl(runId) {
 
     return {
         url: `${metadataUrl}?alt=media&token=${token}`,
-        timeCreated: metadata.timeCreated || null, // ISO8601 UTC string, e.g. "2026-06-29T13:08:32.727Z"
+        updated: metadata.updated || null, // ISO8601 UTC string, e.g. "2026-06-29T13:08:32.727Z"
     };
 }
 
@@ -194,7 +194,7 @@ async function fetchRunGeojson(runId) {
     }
 
     const geojson = await geoResponse.json();
-    const data = { geojson, timeCreated };
+    const data = { geojson, updated };
     geojsonCache.set(runId, { data, fetchedAt: Date.now() });
     return data;
 }
@@ -299,7 +299,7 @@ export default async function handler(req, res) {
             return jsonError(res, 404, `No completed AUTO-HOCO run found for Germany ${daySlot}.`);
         }
 
-        const { geojson, timeCreated } = await fetchRunGeojson(runId);
+        const { geojson, updated } = await fetchRunGeojson(runId);
 
         // GeoJSON point order is [lon, lat].
         const match = findHighestRiskMatch(geojson, [lonNum, latNum]);
@@ -313,8 +313,8 @@ export default async function handler(req, res) {
             inRiskArea: !!match,
             risk: match ? match.risk : 0,
             label: match ? match.label : null,
-            timeCreated, // ISO8601 UTC, e.g. "2026-06-29T13:08:32.727Z"
-            timeCreatedDE: formatGermanTime(timeCreated), // e.g. "29.06.2026, 15:08:32"
+            updated, // ISO8601 UTC, e.g. "2026-06-29T13:08:32.727Z"
+            updatedDE: formatGermanTime(updated), // e.g. "29.06.2026, 15:08:32"
         });
     } catch (err) {
         console.error("outlook handler error:", err);
