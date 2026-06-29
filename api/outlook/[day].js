@@ -187,7 +187,7 @@ async function fetchRunGeojson(runId) {
         return cached.data;
     }
 
-    const { url: downloadUrl, timeCreated } = await resolveDownloadUrl(runId);
+    const { url: downloadUrl, updated } = await resolveDownloadUrl(runId);
     const geoResponse = await fetch(downloadUrl);
     if (!geoResponse.ok) {
         throw new Error(`GeoJSON fetch failed (${geoResponse.status}) for ${runId}`);
