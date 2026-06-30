@@ -1,18 +1,18 @@
 // /api/outlook/[day].js
 //
 // Usage:
-//   /api/outlook/day01?lat=52.5&lon=13.4   -> Day 0-1 forecast for Germany
-//   /api/outlook/day12?lat=52.5&lon=13.4   -> Day 1-2 forecast for Germany
-//   /api/outlook/day23?lat=52.5&lon=13.4   -> Day 2-3 forecast for Germany
+//   /api/outlook/day0?lat=52.5&lon=13.4   -> Day 0-1
+//   /api/outlook/day1?lat=52.5&lon=13.4   -> Day 1-2
+//   /api/outlook/day2?lat=52.5&lon=13.4   -> Day 2-3
 
 const FIREBASE_PROJECT_ID = "hoco-3b23e";
 const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
 const STORAGE_BASE_URL = `https://firebasestorage.googleapis.com/v0/b/${FIREBASE_PROJECT_ID}.firebasestorage.app/o`;
 
 const DAY_SLOT_MAP = {
-    day1: "Day0-1",
-    day1-2: "Day1-2",
-    day2-3: "Day2-3",
+    day0: "Day0-1",
+    day1: "Day1-2",
+    day2: "Day2-3",
 };
 
 const REGION = "Germany";
