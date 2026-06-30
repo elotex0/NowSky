@@ -10,9 +10,9 @@ const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${FIREB
 const STORAGE_BASE_URL = `https://firebasestorage.googleapis.com/v0/b/${FIREBASE_PROJECT_ID}.firebasestorage.app/o`;
 
 const DAY_SLOT_MAP = {
-    day01: "Day0-1",
-    day12: "Day1-2",
-    day23: "Day2-3",
+    day1: "Day0-1",
+    day1-2: "Day1-2",
+    day2-3: "Day2-3",
 };
 
 const REGION = "Germany";
@@ -86,6 +86,8 @@ async function findLatestRun(daySlot) {
         runId: match.id,
         geojsonUrl: match.geojsonUrl || null,
         updated: match.updatedAt || match.createdAt || null,
+        // Stored in Firestore as "dd/mm/yyyy hh:mm", same format the HOCO web app writes
+        // when a run is created (see parseHocoTime / formatHocoDateTime in the frontend).
         startTime: match.startTime || null,
         endTime: match.endTime || null,
     };
@@ -150,16 +152,14 @@ function formatGermanTime(isoString) {
     }).format(date);
 }
 
-// Parses HOCO's stored "dd/mm/yyyy hh:mm" string. The frontend writes these in the run's
-// own local context, so this is returned as-is (it's already a German-style date format,
-// just without seconds) - no timezone conversion needed here.
-function parseHocoTimeString(value) {
+// Converts HOCO's stored "dd/mm/yyyy hh:mm" into German "dd.mm.yyyy hh:mm" notation.
+function toGermanDateFormat(value) {
     if (!value) return null;
     const match = String(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})$/);
-    if (!match) return null;
+    if (!match) return value; // fall back to the raw string if it doesn't match the expected shape
 
     const [, dd, mm, yyyy, hh, min] = match;
-    return new Date(Number(yyyy), Number(mm) - 1, Number(dd), Number(hh), Number(min));
+    return `${dd.padStart(2, "0")}.${mm.padStart(2, "0")}.${yyyy} ${hh.padStart(2, "0")}:${min}`;
 }
 
 // --- Point-in-polygon -------------------------------------------------------
@@ -268,8 +268,8 @@ export default async function handler(req, res) {
             updated,
             updatedDE: formatGermanTime(updated),
             validPeriod: {
-                start: run.startTime,   // raw, as stored: "dd/mm/yyyy hh:mm"
-                end: run.endTime,
+                start: toGermanDateFormat(run.startTime),   // e.g. "29.06.2026 06:00"
+                end: toGermanDateFormat(run.endTime),
             },
         });
     } catch (err) {
