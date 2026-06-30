@@ -1,6 +1,6 @@
 // /api/outlook.js
 //
-// Usage:
+// benutzung:
 //   /api/outlook?lat=52.5&lon=13.4   -> { day0: {...}, day1: {...}, day2: {...} }
 
 const FIREBASE_PROJECT_ID = "hoco-3b23e";
