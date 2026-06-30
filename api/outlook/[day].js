@@ -17,10 +17,6 @@ const DAY_SLOT_MAP = {
 
 const REGION = "Germany";
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const geojsonCache = new Map(); // runId -> { data, fetchedAt }
-const runIdCache = new Map();   // daySlot -> { runId, geojsonUrl, updated, fetchedAt }
-
 function jsonError(res, status, message) {
     return res.status(status).json({ error: message });
 }
@@ -69,16 +65,7 @@ async function runFirestoreQuery(structuredQuery) {
         }));
 }
 
-// Returns { runId, geojsonUrl, updated } for the latest completed run for the given day slot.
-// geojsonUrl is stored directly on the Firestore doc (confirmed by the HOCO test page),
-// so we can skip the Storage metadata round-trip entirely and save ~200-400 ms per cold call.
 async function findLatestRun(daySlot) {
-    const cached = runIdCache.get(daySlot);
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-        return cached;
-    }
-
-    // No composite index needed: sort-only query, filter client-side (same pattern as HOCO test page).
     const docs = await runFirestoreQuery({
         from: [{ collectionId: "hoco_requests" }],
         orderBy: [{ field: { fieldPath: "createdAt" }, direction: "DESCENDING" }],
@@ -95,17 +82,11 @@ async function findLatestRun(daySlot) {
 
     if (!match) return null;
 
-    // Prefer the geojsonUrl stored on the Firestore doc to avoid an extra Storage metadata fetch.
-    // Fall back to constructing the Storage path if the field is absent.
-    const geojsonUrl = match.geojsonUrl || null;
-
-    // Use the Firestore doc's own updatedAt/createdAt as the "updated" timestamp if available,
-    // otherwise we'll fall back to the Storage metadata (only fetched if geojsonUrl is missing).
-    const updated = match.updatedAt || match.createdAt || null;
-
-    const entry = { runId: match.id, geojsonUrl, updated, fetchedAt: Date.now() };
-    runIdCache.set(daySlot, entry);
-    return entry;
+    return {
+        runId: match.id,
+        geojsonUrl: match.geojsonUrl || null,
+        updated: match.updatedAt || match.createdAt || null,
+    };
 }
 
 // --- Firebase Storage helpers ----------------------------------------------
@@ -132,15 +113,9 @@ async function resolveStorageUrl(runId) {
 }
 
 async function fetchRunGeojson(runId, geojsonUrlFromFirestore, updatedFromFirestore) {
-    const cached = geojsonCache.get(runId);
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-        return cached.data;
-    }
-
     let downloadUrl = geojsonUrlFromFirestore;
     let updated = updatedFromFirestore;
 
-    // Only hit Storage metadata API if the Firestore doc didn't give us a URL directly.
     if (!downloadUrl) {
         const resolved = await resolveStorageUrl(runId);
         downloadUrl = resolved.url;
@@ -152,15 +127,11 @@ async function fetchRunGeojson(runId, geojsonUrlFromFirestore, updatedFromFirest
         throw new Error(`GeoJSON fetch failed (${geoResponse.status}) for ${runId}`);
     }
 
-    const geojson = await geoResponse.json();
-    const data = { geojson, updated };
-    geojsonCache.set(runId, { data, fetchedAt: Date.now() });
-    return data;
+    return { geojson: await geoResponse.json(), updated };
 }
 
 // --- Formatting ------------------------------------------------------------
 
-// ISO8601 UTC → German local time (CET/CEST), e.g. "29.06.2026, 15:08:32"
 function formatGermanTime(isoString) {
     if (!isoString) return null;
     const date = new Date(isoString);
