@@ -86,6 +86,8 @@ async function findLatestRun(daySlot) {
         runId: match.id,
         geojsonUrl: match.geojsonUrl || null,
         updated: match.updatedAt || match.createdAt || null,
+        startTime: match.startTime || null,
+        endTime: match.endTime || null,
     };
 }
 
@@ -146,6 +148,18 @@ function formatGermanTime(isoString) {
         minute: "2-digit",
         second: "2-digit",
     }).format(date);
+}
+
+// Parses HOCO's stored "dd/mm/yyyy hh:mm" string. The frontend writes these in the run's
+// own local context, so this is returned as-is (it's already a German-style date format,
+// just without seconds) - no timezone conversion needed here.
+function parseHocoTimeString(value) {
+    if (!value) return null;
+    const match = String(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+
+    const [, dd, mm, yyyy, hh, min] = match;
+    return new Date(Number(yyyy), Number(mm) - 1, Number(dd), Number(hh), Number(min));
 }
 
 // --- Point-in-polygon -------------------------------------------------------
@@ -253,6 +267,10 @@ export default async function handler(req, res) {
             label: match ? match.label : null,
             updated,
             updatedDE: formatGermanTime(updated),
+            validPeriod: {
+                start: run.startTime,   // raw, as stored: "dd/mm/yyyy hh:mm"
+                end: run.endTime,
+            },
         });
     } catch (err) {
         console.error("outlook handler error:", err);
