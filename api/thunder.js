@@ -66,6 +66,7 @@ export default async function handler(request) {
     const now = Date.now();
 
     const hitting = warnings.filter(w =>
+      typeof w.event === 'string' && w.event.includes('Gewitter') &&
       (w.end ?? 0) > now &&
       Array.isArray(w.regions) &&
       w.regions.some(r => r.polygon && pointInPolygon(lat, lon, r.polygon))
