@@ -2,6 +2,13 @@
 //
 // benutzung:
 //   /api/outlook?lat=52.5&lon=13.4   -> { day0: {...}, day1: {...}, day2: {...} }
+//
+// Hinweis: Es wird bewusst KEIN `where`-Gleichheitsfilter kombiniert mit
+// `orderBy` verwendet, da das in Firestore einen Composite-Index braucht,
+// der hier nicht angelegt werden kann (kein Console-Zugriff). Stattdessen
+// wird nur nach createdAt sortiert (braucht keinen Index) und der Rest
+// (region/type/status/daySlot) wird wie im Original client-seitig gefiltert.
+// Die Field-Mask (`select`) reduziert aber trotzdem die Transfergröße pro Doc.
 
 const FIREBASE_PROJECT_ID = "hoco-3b23e";
 const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
@@ -14,6 +21,18 @@ const DAY_SLOT_MAP = {
 };
 
 const REGION = "Germany";
+
+// Nur die Felder, die wir tatsächlich brauchen -> kleinere Payload pro Doc.
+const REQUIRED_FIELDS = [
+    "region",
+    "type",
+    "status",
+    "geojsonUrl",
+    "updatedAt",
+    "createdAt",
+    "startTime",
+    "endTime",
+];
 
 function jsonError(res, status, message) {
     return res.status(status).json({ error: message });
@@ -65,9 +84,16 @@ async function runFirestoreQuery(structuredQuery) {
 
 // Fetches the Firestore listing ONCE and finds matches for all 3 day slots,
 // instead of querying Firestore 3x (one query per slot).
+//
+// Kein `where`-Filter kombiniert mit `orderBy` (siehe Hinweis oben) -> Filterung
+// nach region/type/status/daySlot passiert wie im Original in JS. Die
+// Field-Mask (`select`) spart trotzdem Transfervolumen pro Dokument.
 async function findLatestRunsForAllSlots() {
     const docs = await runFirestoreQuery({
         from: [{ collectionId: "hoco_requests" }],
+        select: {
+            fields: REQUIRED_FIELDS.map((fieldPath) => ({ fieldPath })),
+        },
         orderBy: [{ field: { fieldPath: "createdAt" }, direction: "DESCENDING" }],
         limit: 200,
     });
@@ -188,11 +214,44 @@ function pointInRing(point, ring) {
     return inside;
 }
 
+// Schneller Bounding-Box-Check, bevor der teurere Ray-Casting-Test läuft.
+// Wird pro Ring gecached (via WeakMap), damit die Bbox nicht bei jedem
+// Request neu berechnet wird, solange dasselbe geparste geojson-Objekt lebt.
+const bboxCache = new WeakMap();
+
+function getBoundingBox(ring) {
+    const cached = bboxCache.get(ring);
+    if (cached) return cached;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const [x, y] of ring) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+
+    const bbox = { minX, minY, maxX, maxY };
+    bboxCache.set(ring, bbox);
+    return bbox;
+}
+
+function inBoundingBox(point, bbox) {
+    const [x, y] = point;
+    return x >= bbox.minX && x <= bbox.maxX && y >= bbox.minY && y <= bbox.maxY;
+}
+
 function pointInPolygonFeature(point, geometry) {
     if (!geometry) return false;
 
     if (geometry.type === "Polygon") {
-        if (!pointInRing(point, geometry.coordinates[0])) return false;
+        const outerRing = geometry.coordinates[0];
+        if (!inBoundingBox(point, getBoundingBox(outerRing))) return false;
+        if (!pointInRing(point, outerRing)) return false;
         for (let i = 1; i < geometry.coordinates.length; i++) {
             if (pointInRing(point, geometry.coordinates[i])) return false;
         }
@@ -201,7 +260,9 @@ function pointInPolygonFeature(point, geometry) {
 
     if (geometry.type === "MultiPolygon") {
         return geometry.coordinates.some((polygon) => {
-            if (!pointInRing(point, polygon[0])) return false;
+            const outerRing = polygon[0];
+            if (!inBoundingBox(point, getBoundingBox(outerRing))) return false;
+            if (!pointInRing(point, outerRing)) return false;
             for (let i = 1; i < polygon.length; i++) {
                 if (pointInRing(point, polygon[i])) return false;
             }
@@ -241,8 +302,17 @@ async function resolveSlot(slotKey, run, point) {
     }
 
     try {
+        const fetchStart = Date.now();
         const { geojson, updated } = await fetchRunGeojson(run.runId, run.geojsonUrl, run.updated);
+        const fetchMs = Date.now() - fetchStart;
+
+        const matchStart = Date.now();
         const match = findHighestRiskMatch(geojson, point);
+        const matchMs = Date.now() - matchStart;
+
+        console.log(
+            `[outlook] slot=${slotKey} runId=${run.runId} fetchMs=${fetchMs} matchMs=${matchMs} features=${geojson?.features?.length ?? 0}`
+        );
 
         return {
             day: run.daySlot,
@@ -271,6 +341,8 @@ export default async function handler(req, res) {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") return res.status(200).end();
 
+    const requestStart = Date.now();
+
     try {
         const { lat, lon } = req.query;
 
@@ -282,13 +354,23 @@ export default async function handler(req, res) {
 
         const point = [lonNum, latNum];
 
+        const firestoreStart = Date.now();
         const runs = await findLatestRunsForAllSlots();
+        console.log(`[outlook] firestoreMs=${Date.now() - firestoreStart}`);
 
         const [day0, day1, day2] = await Promise.all([
             resolveSlot("day0", runs.day0, point),
             resolveSlot("day1", runs.day1, point),
             resolveSlot("day2", runs.day2, point),
         ]);
+
+        console.log(`[outlook] totalMs=${Date.now() - requestStart}`);
+
+        // Kein Cache auf die Geodaten selbst (die ändern sich alle 6h und
+        // sollen immer frisch berechnet werden). Aber gleiche lat/lon-Anfragen,
+        // die innerhalb weniger Sekunden reinkommen, dürfen ruhig von der
+        // Vercel-/Browser-Edge kurz gecacht werden, um Lastspitzen abzufedern.
+        res.setHeader("Cache-Control", "public, s-maxage=30, stale-while-revalidate=60");
 
         return res.status(200).json({
             lat: latNum,
