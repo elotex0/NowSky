@@ -372,16 +372,34 @@ export default async function handler(req, res) {
   // Ohne Doppler-/Sweep-Daten (die die frühere externe DWD-Meso-API lieferte)
   // lässt sich ein Tornado selbst nicht direkt nachweisen, nur die
   // Wahrscheinlichkeit anhand des Umfelds abschätzen.
+  //
+  // Kalibrierung anhand europäischer Klimatologie (nicht 1:1 aus den USA
+  // übernommen):
+  //  - STP: Für die USA gilt "STP > 1" als Schwelle. In Europa liegen
+  //    signifikante Tornados im Mittel nur bei STP ≈ 0.15, selbst gewaltige
+  //    ("violent") Tornados im Mittel bei nur ≈ 0.7-0.9 (Pilguj et al. 2022,
+  //    GRL, ERA5/WRF-Downscaling; Taszarek et al. 2020; Coffer et al. 2020).
+  //    Die US-Schwelle würde in Europa daher fast nie greifen -> deutlich
+  //    niedrigere Schwellen.
+  //  - Mesozyklonenbasis: Aktuelle Studien zu europäischen Tornadoumgebungen
+  //    zeigen, dass die bodennahe Schicht (0-500 m, teils 0-100 m AGL) der
+  //    mit Abstand stärkste Unterscheidungsfaktor zwischen tornadischen und
+  //    nicht-tornadischen Fällen ist (near-ground SRH-Studien, AMS WAF 2020).
+  //    Eine Mesozyklone mit hoher Basis (>2 km) rotiert über der Grenzschicht
+  //    und erreicht den Boden faktisch nicht - das darf kein neutraler Faktor
+  //    sein, sondern muss das Tornadopotential aktiv senken (Malus statt nur
+  //    ausbleibendem Bonus).
   const assessTornadoPotential = (meso, nwp, stp) => {
     if (!meso) return null;
 
     let score = 0;
+    let baseMalus = 0;
     const factors = [];
 
-    // Mesozyklonen-Stärke (aus KONRAD3D: severity_index 1–3)
-    if (meso.severity_index >= 3) {
+    // Mesozyklonen-Stärke (KONRAD3D: severity_index 1–5)
+    if (meso.severity_index >= 4) {
       score += 2; factors.push(`starke Mesozyklone (Severity ${meso.severity_index})`);
-    } else if (meso.severity_index === 2) {
+    } else if (meso.severity_index >= 2) {
       score += 1; factors.push(`mittlere Mesozyklone (Severity ${meso.severity_index})`);
     }
 
@@ -394,28 +412,39 @@ export default async function handler(req, res) {
       }
     }
 
-    // Niedrige Mesozyklonenbasis begünstigt bodennahe Rotation
+    // Mesozyklonenbasis: niedrige Basis begünstigt bodennahe Rotation (Bonus),
+    // hohe Basis bedeutet die Rotation reicht kaum bis zum Boden (Malus).
     if (meso.height_base_m !== null) {
       if (meso.height_base_m < 1000) {
-        score += 2; factors.push("sehr niedrige Mesozyklonenbasis (unter 1000 m)");
+        score += 2; factors.push("sehr niedrige Mesozyklonenbasis (unter 1000 m) – bodennahe Rotation");
       } else if (meso.height_base_m < 1500) {
         score += 1; factors.push("niedrige Mesozyklonenbasis (unter 1500 m)");
+      } else if (meso.height_base_m > 3000) {
+        baseMalus = 5;
+        factors.push("stark angehobene Mesozyklonenbasis (über 3000 m) – Rotation erreicht den Boden kaum");
+      } else if (meso.height_base_m > 2000) {
+        baseMalus = 2;
+        factors.push("angehobene Mesozyklonenbasis (über 2000 m) – Rotation eher hochreichend statt bodennah");
       }
     }
 
-    // Significant Tornado Parameter (bereits berechnet aus NWP)
+    // Significant Tornado Parameter, europäisch kalibrierte Schwellen
+    // (siehe Kommentar oben: europäischer Mittelwert für signifikante
+    // Tornados ≈ 0.15, für gewaltige Tornados ≈ 0.7-0.9).
     if (stp !== null) {
-      if (stp >= 3) {
-        score += 3; factors.push(`sehr hoher STP (${stp})`);
-      } else if (stp >= 1) {
-        score += 2; factors.push(`erhöhter STP (${stp})`);
-      } else if (stp >= 0.5) {
+      if (stp >= 1) {
+        score += 3; factors.push(`sehr hoher STP (${stp}) – im Bereich gewaltiger europäischer Tornados`);
+      } else if (stp >= 0.3) {
+        score += 2; factors.push(`erhöhter STP (${stp}) – über dem Mittel signifikanter europäischer Tornados`);
+      } else if (stp >= 0.1) {
         score += 1; factors.push(`leicht erhöhter STP (${stp})`);
       }
     }
 
     if (nwp) {
-      // 0–1 km Bulk-Scherung: entscheidend für bodennahe Rotation
+      // 0–1 km Bulk-Scherung: beste verfügbare Näherung an die bodennahe
+      // Scherschicht, die für europäische Tornadoumgebungen besonders
+      // diskriminierend ist.
       if (nwp.bs_01km !== null) {
         if (nwp.bs_01km >= 15) {
           score += 2; factors.push(`starke 0-1km-Scherung (${nwp.bs_01km.toFixed(1)} m/s)`);
@@ -450,7 +479,7 @@ export default async function handler(req, res) {
       }
     }
 
-    score = Math.max(0, score);
+    score = Math.max(0, score - baseMalus);
 
     // Bei Score 0 gibt es keine erkennbaren Tornado-begünstigenden Faktoren
     // aus Meso + NWP → tornado bleibt null statt eines "gering"-Objekts.
