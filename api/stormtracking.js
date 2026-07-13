@@ -397,9 +397,9 @@ export default async function handler(req, res) {
     // Niedrige Mesozyklonenbasis begünstigt bodennahe Rotation
     if (meso.height_base_m !== null) {
       if (meso.height_base_m < 1000) {
-        score += 2; factors.push("sehr niedrige Mesozyklonenbasis (<1000 m)");
+        score += 2; factors.push("sehr niedrige Mesozyklonenbasis (unter 1000 m)");
       } else if (meso.height_base_m < 1500) {
-        score += 1; factors.push("niedrige Mesozyklonenbasis (<1500 m)");
+        score += 1; factors.push("niedrige Mesozyklonenbasis (unter 1500 m)");
       }
     }
 
