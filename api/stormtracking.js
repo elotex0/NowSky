@@ -380,9 +380,9 @@ export default async function handler(req, res) {
 
     // Mesozyklonen-Stärke (aus KONRAD3D: severity_index 1–3)
     if (meso.severity_index >= 3) {
-      score += 2; factors.push("starke Mesozyklone (Severity 3)");
+      score += 2; factors.push(`starke Mesozyklone (Severity ${meso.severity_index})`);
     } else if (meso.severity_index === 2) {
-      score += 1; factors.push("mittlere Mesozyklone (Severity 2)");
+      score += 1; factors.push(`mittlere Mesozyklone (Severity ${meso.severity_index})`);
     }
 
     // Rotationsgeschwindigkeit
@@ -451,6 +451,10 @@ export default async function handler(req, res) {
     }
 
     score = Math.max(0, score);
+
+    // Bei Score 0 gibt es keine erkennbaren Tornado-begünstigenden Faktoren
+    // aus Meso + NWP → tornado bleibt null statt eines "gering"-Objekts.
+    if (score === 0) return null;
 
     let level, label;
     if (score >= 7)      { level = "hoch";     label = "Tornadopotential hoch";     }
