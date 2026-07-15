@@ -20,6 +20,12 @@ export default async function handler(req, res) {
     { key: "15-20", minMin: 15, maxMin: 20 },
     { key: "20-25", minMin: 20, maxMin: 25 },
     { key: "25-30", minMin: 25, maxMin: 30 },
+    { key: "30-35", minMin: 30, maxMin: 35 },
+    { key: "35-40", minMin: 35, maxMin: 40 },
+    { key: "40-45", minMin: 40, maxMin: 45 },
+    { key: "45-50", minMin: 45, maxMin: 50 },
+    { key: "50-55", minMin: 50, maxMin: 55 },
+    { key: "55-60", minMin: 55, maxMin: 60 },
   ];
   const MAX_AGE_MIN = BUCKETS[BUCKETS.length - 1].maxMin; // 30
 
