@@ -422,21 +422,23 @@ export default async function handler(req, res) {
     // harte Obergrenze (levelCap) auf das Endergebnis angewendet - siehe
     // Kommentar oben.
     let levelCap  = null; // null = keine Deckelung nötig
-    let capReason = null;
     if (meso.height_base_m !== null) {
       if (meso.height_base_m < 1000) {
         score += 2; factors.push("sehr niedrige Mesozyklonenbasis (unter 1000 m) – bodennahe Rotation");
       } else if (meso.height_base_m < 1500) {
         score += 1; factors.push("niedrige Mesozyklonenbasis (unter 1500 m)");
       } else if (meso.height_base_m > 3000) {
-        levelCap  = "gering";
-        capReason = `stark angehobene Mesozyklonenbasis (${Math.round(meso.height_base_m)} m) – keine erkennbare bodennahe Rotation, Tornadopotential wird unabhängig von der Umgebung auf "gering" gedeckelt`;
+        // Basis weit über der Grenzschicht – keine erkennbare bodennahe
+        // Rotation. Egal wie günstig die Umgebung sonst ist: tornado wird
+        // unten auf null gesetzt, statt "gering" mit Umgebungsfaktoren zu
+        // melden, die suggerieren würden, es gäbe eine belastbare Einschätzung.
+        levelCap = "gering";
       } else if (meso.height_base_m > 2000) {
-        levelCap  = "möglich";
-        capReason = `angehobene Mesozyklonenbasis (${Math.round(meso.height_base_m)} m) – Rotation reicht nicht sicher bis zum Boden, Tornadopotential wird auf höchstens "möglich" gedeckelt`;
+        // Basis reicht nicht sicher bis zum Boden – Ergebnis wird unten
+        // ebenfalls verworfen (null), nicht auf "möglich" gedeckelt gemeldet.
+        levelCap = "möglich";
       }
     }
-    if (capReason) factors.push(capReason);
 
     // Significant Tornado Parameter, europäisch kalibrierte Schwellen
     // (siehe Kommentar oben: europäischer Mittelwert für signifikante
@@ -513,6 +515,12 @@ export default async function handler(req, res) {
     }
     const capped = level !== rawLevel;
 
+    // Wenn die Basishöhe das Ergebnis gedeckelt hätte, gibt es keine
+    // beobachtete bodennahe Rotation - dann macht eine Tornado-Einschätzung
+    // (auch nicht "gering") keinen Sinn. Egal wie günstig die Umgebung
+    // aussieht: ohne Cap-relevanten Faktor bleibt tornado schlicht null.
+    if (capped) return null;
+
     const label = {
       hoch:    "Tornadopotential hoch",
       erhöht:  "Tornadopotential erhöht",
@@ -524,7 +532,6 @@ export default async function handler(req, res) {
       level,
       label,
       score,
-      capped,
       factors,
       note: "Heuristische Einschätzung auf Basis von Mesozyklone + NWP-Umgebung, keine offizielle Tornadowarnung.",
     };
