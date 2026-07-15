@@ -442,7 +442,7 @@ export default async function handler(req, res) {
 
     score = Math.max(0, score);
 
-    if (score === 0 && !levelCap) return null;
+    if (score === 0) return null;
 
     let rawLevel;
     if (score >= 7)      rawLevel = "hoch";
