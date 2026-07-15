@@ -385,15 +385,20 @@ export default async function handler(req, res) {
   //    zeigen, dass die bodennahe Schicht (0-500 m, teils 0-100 m AGL) der
   //    mit Abstand stärkste Unterscheidungsfaktor zwischen tornadischen und
   //    nicht-tornadischen Fällen ist (near-ground SRH-Studien, AMS WAF 2020).
-  //    Eine Mesozyklone mit hoher Basis (>2 km) rotiert über der Grenzschicht
-  //    und erreicht den Boden faktisch nicht - das darf kein neutraler Faktor
-  //    sein, sondern muss das Tornadopotential aktiv senken (Malus statt nur
-  //    ausbleibendem Bonus).
+  //    Eine Mesozyklone mit hoher Basis rotiert über der Grenzschicht und
+  //    erreicht den Boden faktisch nicht. Das darf NICHT nur als Punktabzug
+  //    behandelt werden, der von genug NWP-Bonuspunkten wieder aufgewogen
+  //    werden kann (z.B. hoher STP + niedriges LCL) - denn ein Tornado
+  //    entsteht durch bodennahe Rotation, und wenn KONRAD3D diese bodennahe
+  //    Rotation gar nicht sieht (Basis weit über der Grenzschicht), kann die
+  //    Umgebung noch so günstig sein: es liegt aktuell keine Beobachtung
+  //    einer bodennahen Rotation vor. Deshalb wirkt die Basishöhe hier als
+  //    harte Obergrenze (Cap) für das Endergebnis, nicht als Verrechnung
+  //    gegen andere Boni.
   const assessTornadoPotential = (meso, nwp, stp) => {
     if (!meso) return null;
 
     let score = 0;
-    let baseMalus = 0;
     const factors = [];
 
     // Mesozyklonen-Stärke (KONRAD3D: severity_index 1–5)
@@ -412,21 +417,26 @@ export default async function handler(req, res) {
       }
     }
 
-    // Mesozyklonenbasis: niedrige Basis begünstigt bodennahe Rotation (Bonus),
-    // hohe Basis bedeutet die Rotation reicht kaum bis zum Boden (Malus).
+    // Mesozyklonenbasis: niedrige Basis begünstigt bodennahe Rotation (Bonus).
+    // Eine hohe Basis wird NICHT hier verrechnet, sondern weiter unten als
+    // harte Obergrenze (levelCap) auf das Endergebnis angewendet - siehe
+    // Kommentar oben.
+    let levelCap  = null; // null = keine Deckelung nötig
+    let capReason = null;
     if (meso.height_base_m !== null) {
       if (meso.height_base_m < 1000) {
         score += 2; factors.push("sehr niedrige Mesozyklonenbasis (unter 1000 m) – bodennahe Rotation");
       } else if (meso.height_base_m < 1500) {
         score += 1; factors.push("niedrige Mesozyklonenbasis (unter 1500 m)");
       } else if (meso.height_base_m > 3000) {
-        baseMalus = 5;
-        factors.push("stark angehobene Mesozyklonenbasis (über 3000 m) – Rotation erreicht den Boden kaum");
+        levelCap  = "gering";
+        capReason = `stark angehobene Mesozyklonenbasis (${Math.round(meso.height_base_m)} m) – keine erkennbare bodennahe Rotation, Tornadopotential wird unabhängig von der Umgebung auf "gering" gedeckelt`;
       } else if (meso.height_base_m > 2000) {
-        baseMalus = 2;
-        factors.push("angehobene Mesozyklonenbasis (über 2000 m) – Rotation eher hochreichend statt bodennah");
+        levelCap  = "möglich";
+        capReason = `angehobene Mesozyklonenbasis (${Math.round(meso.height_base_m)} m) – Rotation reicht nicht sicher bis zum Boden, Tornadopotential wird auf höchstens "möglich" gedeckelt`;
       }
     }
+    if (capReason) factors.push(capReason);
 
     // Significant Tornado Parameter, europäisch kalibrierte Schwellen
     // (siehe Kommentar oben: europäischer Mittelwert für signifikante
@@ -479,22 +489,42 @@ export default async function handler(req, res) {
       }
     }
 
-    score = Math.max(0, score - baseMalus);
+    score = Math.max(0, score);
 
-    // Bei Score 0 gibt es keine erkennbaren Tornado-begünstigenden Faktoren
-    // aus Meso + NWP → tornado bleibt null statt eines "gering"-Objekts.
-    if (score === 0) return null;
+    // Bei Score 0 und ohne Deckelungsgrund gibt es keine erkennbaren
+    // Tornado-begünstigenden Faktoren aus Meso + NWP → tornado bleibt null
+    // statt eines "gering"-Objekts.
+    if (score === 0 && !levelCap) return null;
 
-    let level, label;
-    if (score >= 7)      { level = "hoch";     label = "Tornadopotential hoch";     }
-    else if (score >= 4) { level = "erhöht";   label = "Tornadopotential erhöht";   }
-    else if (score >= 2) { level = "möglich";  label = "Tornado möglich";           }
-    else                  { level = "gering";   label = "Tornadopotential gering";   }
+    let rawLevel;
+    if (score >= 7)      rawLevel = "hoch";
+    else if (score >= 4) rawLevel = "erhöht";
+    else if (score >= 2) rawLevel = "möglich";
+    else                  rawLevel = "gering";
+
+    // ── Deckelung anwenden ──────────────────────────────────────────────
+    // Die Umgebung (NWP) kann noch so günstig sein - ohne beobachtete
+    // bodennahe Rotation (niedrige Mesozyklonenbasis) wird das Level auf
+    // levelCap begrenzt. Das ist eine echte Obergrenze, kein Punkteverrechnen.
+    const levelOrder = ["gering", "möglich", "erhöht", "hoch"];
+    let level = rawLevel;
+    if (levelCap && levelOrder.indexOf(rawLevel) > levelOrder.indexOf(levelCap)) {
+      level = levelCap;
+    }
+    const capped = level !== rawLevel;
+
+    const label = {
+      hoch:    "Tornadopotential hoch",
+      erhöht:  "Tornadopotential erhöht",
+      möglich: "Tornado möglich",
+      gering:  "Tornadopotential gering",
+    }[level];
 
     return {
       level,
       label,
       score,
+      capped,
       factors,
       note: "Heuristische Einschätzung auf Basis von Mesozyklone + NWP-Umgebung, keine offizielle Tornadowarnung.",
     };
