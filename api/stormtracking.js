@@ -475,6 +475,72 @@ export default async function handler(req, res) {
     };
   };
 
+  // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
+const fetchMesoXml = async () => {
+  const r = await fetch("https://opendata.dwd.de/weather/radar/mesocyclones/meso_latest.xml", {
+    headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error(`Meso HTTP ${r.status}`);
+  return await r.text();
+};
+
+// ── Meso-Events parsen ────────────────────────────────────────────────────
+const parseMesoEvents = (xml) => {
+  const eventMatches = xml.match(/<event[\s\S]*?<\/event>/g) ?? [];
+  return eventMatches.map((ev) => {
+    const np = blockFast(ev, "nowcast-parameters") ?? "";
+    return {
+      diameter_equivalent_km:      numFast(np, "mesocyclone_diameter_equivalent"),
+      velocity_rotational_max_ms:  numFast(np, "mesocyclone_velocity_rotational_max"),
+      shear_mean:                  numFast(np, "mesocyclone_shear_mean"),
+      shear_max:                   numFast(np, "mesocyclone_shear_max"),
+      momentum_mean:                numFast(np, "mesocyclone_momentum_mean"),
+      momentum_max:                 numFast(np, "mesocyclone_momentum_max"),
+      diameter_km:                  numFast(np, "mesocyclone_diameter"),
+      echotop_km:                    numFast(np, "mesocyclone_echotop"),
+      vil:                           numFast(np, "mesocyclone_vil"),
+      shear_vectors:                 intFast(np, "mesocyclone_shear_vectors"),
+      shear_features:                intFast(np, "mesocyclone_shear_features"),
+      mean_dbz:                      numFast(np, "mean_dbz"),
+      max_dbz:                       numFast(np, "max_dbz"),
+      velocity_max_ms:               numFast(np, "mesocyclone_velocity_max"),
+      velocity_rotational_mean_ms:   numFast(np, "mesocyclone_velocity_rotational_mean"),
+      velocity_rotational_max_closest_to_ground_ms:
+        numFast(np, "mesocyclone_velocity_rotational_max_closest_to_ground"),
+      meso_intensity:                intFast(np, "meso_intensity"),
+      _matched: false,
+    };
+  });
+};
+
+// ── Meso-Event zur KONRAD-Zelle matchen (über Werte, NICHT über Lat/Lon) ──
+const matchMesoEvent = (cell, mesoEvents) => {
+  const meso = cell.mesocyclone;
+  if (!meso || meso.diameter_equiv_km === null || meso.rotational_max_ms === null) return null;
+
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const ev of mesoEvents) {
+    if (ev._matched) continue;
+    if (ev.diameter_equivalent_km === null || ev.velocity_rotational_max_ms === null) continue;
+
+    const diamDiff = Math.abs(ev.diameter_equivalent_km - meso.diameter_equiv_km);
+    const velDiff  = Math.abs(ev.velocity_rotational_max_ms - meso.rotational_max_ms);
+
+    // KONRAD rundet auf 3 Nachkommastellen, Meso-XML liefert mehr Präzision
+    if (diamDiff < 0.01 && velDiff < 0.01) {
+      const score = diamDiff + velDiff;
+      if (score < bestScore) { bestScore = score; best = ev; }
+    }
+  }
+
+  if (best) best._matched = true;
+  return best;
+};
+  
+
   // ── fetchXml — parallel ───────────────────────────────────────────────────
   const fetchXml = async () => {
     const results = await Promise.allSettled(
@@ -739,10 +805,13 @@ export default async function handler(req, res) {
 
   // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    const [{ xml, filename }, { geojson, spatialIndex }] = await Promise.all([
+    const [{ xml, filename }, { geojson, spatialIndex }, mesoXml] = await Promise.all([
       fetchXml(),
       loadGeoJsonWithIndex(),
+      fetchMesoXml().catch(() => null), // optional – KONRAD3D bleibt Hauptquelle, Meso ist nur Anreicherung
     ]);
+    
+    const mesoEvents = mesoXml ? parseMesoEvents(mesoXml) : [];
 
     const reference_time =
       xml.match(/<reference_time[^>]*>([^<]+)<\/reference_time>/)?.[1]?.trim() ??
@@ -761,29 +830,56 @@ export default async function handler(req, res) {
     );
 
     for (const cell of cells) {
-      if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
-        cell.mesocyclone  = null;
-        cell.is_supercell = false;
-        cell.tornado       = null;
-        delete cell.konrad_mesocyclone;
-        continue;
-      }
-
-      cell.mesocyclone = {
-        ...cell.konrad_mesocyclone,
-        latitude:  cell.latitude,
-        longitude: cell.longitude,
-        dist_km:   null,
-        source:    "konrad3d_only",
-      };
-      cell.is_supercell = true;
-      cell.tornado       = assessTornadoPotential(
-        cell.konrad_mesocyclone,
-        cell.nwp,
-        cell.nwp_indices?.stp ?? null
-      );
+    if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
+      cell.mesocyclone  = null;
+      cell.is_supercell = false;
+      cell.tornado       = null;
       delete cell.konrad_mesocyclone;
+      continue;
     }
+  
+    cell.mesocyclone = {
+      ...cell.konrad_mesocyclone,
+      latitude:  cell.latitude,   // ← immer die Zell-Position, nie die Ellipse aus meso_latest.xml
+      longitude: cell.longitude,
+      dist_km:   null,
+      source:    "konrad3d_only",
+    };
+  
+    const mesoMatch = matchMesoEvent(cell, mesoEvents);
+    if (mesoMatch) {
+      cell.mesocyclone = {
+        ...cell.mesocyclone,
+        shear_mean_ms_km:             mesoMatch.shear_mean,
+        shear_max_ms_km:              mesoMatch.shear_max,
+        momentum_mean_ms_km:          mesoMatch.momentum_mean,
+        momentum_max_ms_km:           mesoMatch.momentum_max,
+        diameter_km:                  mesoMatch.diameter_km,
+        echotop_km:                   mesoMatch.echotop_km,
+        vil_kg_m2:                    mesoMatch.vil,
+        shear_vectors:                mesoMatch.shear_vectors,
+        shear_features:               mesoMatch.shear_features,
+        mean_dbz:                     mesoMatch.mean_dbz,
+        max_dbz:                      mesoMatch.max_dbz,
+        velocity_max_ms:              mesoMatch.velocity_max_ms,
+        velocity_rotational_mean_ms:  mesoMatch.velocity_rotational_mean_ms,
+        velocity_rotational_max_closest_to_ground_ms:
+          mesoMatch.velocity_rotational_max_closest_to_ground_ms,
+        meso_intensity:               mesoMatch.meso_intensity,
+        source:                       "konrad3d+meso",
+      };
+    }
+    // Wenn kein Match gefunden wird, bleibt source "konrad3d_only" –
+    // das Frontend zeigt dann eben nur die KONRAD-eigenen Felder, kein Meso-Event wird "erfunden".
+  
+    cell.is_supercell = true;
+    cell.tornado       = assessTornadoPotential(
+      cell.konrad_mesocyclone,
+      cell.nwp,
+      cell.nwp_indices?.stp ?? null
+    );
+    delete cell.konrad_mesocyclone;
+  }
 
     return res.status(200).json({
       reference_time,
