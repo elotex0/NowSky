@@ -476,14 +476,20 @@ export default async function handler(req, res) {
   };
 
   // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
-const fetchMesoXml = async () => {
-  const r = await fetch("https://opendata.dwd.de/weather/radar/mesocyclones/meso_latest.xml", {
-    headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!r.ok) throw new Error(`Meso HTTP ${r.status}`);
-  return await r.text();
-};
+  // WICHTIG: Es wird NICHT meso_latest.xml verwendet, da dessen Zeitstempel
+  // vom KONRAD3D-Zeitstempel abweichen kann (z.B. Meso schon :44, KONRAD erst :45)
+  // → dann würden die Werte falsch zugeordnet.
+  // Stattdessen wird exakt die Meso-Datei zum selben Zeitstempel geladen wie die
+  // tatsächlich verwendete KONRAD3D-Datei. Kein Fallback auf eine andere Datei.
+  const fetchMesoXml = async (mesoDate, mesoTime) => {
+    const url = `https://opendata.dwd.de/weather/radar/mesocyclones/meso_${mesoDate}_${mesoTime}.xml`;
+    const r = await fetch(url, {
+      headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) throw new Error(`Meso HTTP ${r.status}`);
+    return await r.text();
+  };
 
 // ── Meso-Events parsen ────────────────────────────────────────────────────
 const parseMesoEvents = (xml) => {
@@ -805,13 +811,25 @@ const matchMesoEvent = (cell, mesoEvents) => {
 
   // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    const [{ xml, filename }, { geojson, spatialIndex }, mesoXml] = await Promise.all([
+    const [{ xml, filename }, { geojson, spatialIndex }] = await Promise.all([
       fetchXml(),
       loadGeoJsonWithIndex(),
-      fetchMesoXml().catch(() => null), // optional – KONRAD3D bleibt Hauptquelle, Meso ist nur Anreicherung
     ]);
-    
-    const mesoEvents = mesoXml ? parseMesoEvents(mesoXml) : [];
+
+    // ── Zeitstempel aus der TATSÄCHLICH geladenen KONRAD3D-Datei extrahieren ──
+    // filename z.B. "KONRAD3D_20260715T124500" → Meso-Datei muss exakt
+    // "meso_20260715_1245.xml" sein, damit Zeitstempel übereinstimmen.
+    const konradTsMatch = filename.match(/^KONRAD3D_(\d{8})T(\d{2})(\d{2})/);
+    let mesoEvents = [];
+    if (konradTsMatch) {
+      const [, mesoDate, hh, min] = konradTsMatch;
+      const mesoTime = `${hh}${min}`;
+      const mesoXml = await fetchMesoXml(mesoDate, mesoTime).catch(() => null);
+      // Kein Fallback auf eine andere Meso-Datei (z.B. meso_latest.xml) –
+      // wenn zum KONRAD-Zeitstempel keine Meso-Datei existiert, bleibt
+      // mesoEvents leer und die Zellen laufen als "konrad3d_only".
+      if (mesoXml) mesoEvents = parseMesoEvents(mesoXml);
+    }
 
     const reference_time =
       xml.match(/<reference_time[^>]*>([^<]+)<\/reference_time>/)?.[1]?.trim() ??
