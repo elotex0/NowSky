@@ -367,26 +367,72 @@ export default async function handler(req, res) {
   // ── Tornado-Potential-Einschätzung ─────────────────────────────────────────
   const assessTornadoPotential = (meso, nwp, stp) => {
     if (!meso) return null;
-
+    
     let score = 0;
     const factors = [];
-
+    
+    // KONRAD3D-Grobklassifizierung
     if (meso.severity_index >= 4) {
-      score += 2; factors.push(`starke Mesozyklone (Severity ${meso.severity_index})`);
+      score += 1; factors.push(`starke Mesozyklone (Severity ${meso.severity_index})`);
     } else if (meso.severity_index >= 2) {
-      score += 1; factors.push(`mittlere Mesozyklone (Severity ${meso.severity_index})`);
+      score += 0.5; factors.push(`mittlere Mesozyklone (Severity ${meso.severity_index})`);
     }
-
-    if (meso.rotational_max_ms !== null) {
-      if (meso.rotational_max_ms >= 20) {
-        score += 2; factors.push(`hohe Rotationsgeschwindigkeit (${meso.rotational_max_ms.toFixed(1)} m/s)`);
-      } else if (meso.rotational_max_ms >= 12) {
-        score += 1; factors.push(`erhöhte Rotationsgeschwindigkeit (${meso.rotational_max_ms.toFixed(1)} m/s)`);
+    
+    // Bodennahe Rotation — wichtigster Einzelprädiktor, falls Meso-Match vorhanden
+    const hasGroundRot = meso.velocity_rotational_max_closest_to_ground_ms != null;
+    const groundRot = meso.velocity_rotational_max_closest_to_ground_ms ?? meso.rotational_max_ms;
+    
+    if (groundRot != null) {
+      if (groundRot >= 25) {
+        score += hasGroundRot ? 4 : 3;
+        factors.push(`sehr hohe bodennahe Rotation (${groundRot.toFixed(1)} m/s)`);
+      } else if (groundRot >= 18) {
+        score += hasGroundRot ? 3 : 2;
+        factors.push(`hohe bodennahe Rotation (${groundRot.toFixed(1)} m/s)`);
+      } else if (groundRot >= 12) {
+        score += hasGroundRot ? 2 : 1;
+        factors.push(`erhöhte bodennahe Rotation (${groundRot.toFixed(1)} m/s)`);
       }
     }
-
-    let levelCap  = null;
-    if (meso.height_base_m !== null) {
+    
+    // Kompaktheit: kleiner Durchmesser + hohe Rotation = straffe Zirkulation
+    const diam = meso.diameter_km ?? meso.diameter_equiv_km;
+    if (diam != null && groundRot != null) {
+      if (diam < 3 && groundRot >= 12) {
+        score += 1.5;
+        factors.push(`kompakte, straffe Rotation (${diam.toFixed(1)} km Durchmesser)`);
+      } else if (diam > 10) {
+        score -= 0.5;
+        factors.push("breite, diffuse Rotation (großer Durchmesser)");
+      }
+    }
+    
+    // Momentum-Flux / azimutale Scherung aus Meso-XML (TDA-artige Signale)
+    if (meso.momentum_max_ms_km != null) {
+      if (meso.momentum_max_ms_km >= 300) {
+        score += 2; factors.push(`sehr hoher Momentum-Flux (${meso.momentum_max_ms_km.toFixed(0)} m/s/km)`);
+      } else if (meso.momentum_max_ms_km >= 150) {
+        score += 1; factors.push(`erhöhter Momentum-Flux (${meso.momentum_max_ms_km.toFixed(0)} m/s/km)`);
+      }
+    }
+    
+    if (meso.shear_max_ms_km != null && meso.shear_max_ms_km >= 8) {
+      score += 1;
+      factors.push(`hohe azimutale Scherung (${meso.shear_max_ms_km.toFixed(1)} m/s/km)`);
+    }
+    
+    // DWD meso_intensity — unabhängige radaroperationelle Einstufung (0-3)
+    if (meso.meso_intensity != null) {
+      if (meso.meso_intensity >= 3) {
+        score += 2; factors.push(`DWD Meso-Intensität maximal (${meso.meso_intensity})`);
+      } else if (meso.meso_intensity >= 2) {
+        score += 1; factors.push(`DWD Meso-Intensität erhöht (${meso.meso_intensity})`);
+      }
+    }
+    
+    // Mesozyklonenbasis (unverändert)
+    let levelCap = null;
+    if (meso.height_base_m != null) {
       if (meso.height_base_m < 1000) {
         score += 2; factors.push("sehr niedrige Mesozyklonenbasis (unter 1000 m) – bodennahe Rotation");
       } else if (meso.height_base_m < 1500) {
@@ -397,7 +443,7 @@ export default async function handler(req, res) {
         levelCap = "möglich";
       }
     }
-
+    
     if (stp !== null) {
       if (stp >= 1) {
         score += 3; factors.push(`sehr hoher STP (${stp}) – im Bereich gewaltiger europäischer Tornados`);
@@ -407,73 +453,53 @@ export default async function handler(req, res) {
         score += 1; factors.push(`leicht erhöhter STP (${stp})`);
       }
     }
-
+    
     if (nwp) {
-      if (nwp.bs_01km !== null) {
-        if (nwp.bs_01km >= 15) {
-          score += 2; factors.push(`starke 0-1km-Scherung (${nwp.bs_01km.toFixed(1)} m/s)`);
-        } else if (nwp.bs_01km >= 10) {
-          score += 1; factors.push(`moderate 0-1km-Scherung (${nwp.bs_01km.toFixed(1)} m/s)`);
-        }
+      if (nwp.bs_01km != null) {
+        if (nwp.bs_01km >= 15) { score += 2; factors.push(`starke 0-1km-Scherung (${nwp.bs_01km.toFixed(1)} m/s)`); }
+        else if (nwp.bs_01km >= 10) { score += 1; factors.push(`moderate 0-1km-Scherung (${nwp.bs_01km.toFixed(1)} m/s)`); }
       }
-
-      if (nwp.srh_1km_rm !== null) {
-        if (nwp.srh_1km_rm >= 150) {
-          score += 2; factors.push(`hohe 0-1km-Helizität (${nwp.srh_1km_rm.toFixed(0)} m²/s²)`);
-        } else if (nwp.srh_1km_rm >= 100) {
-          score += 1; factors.push(`erhöhte 0-1km-Helizität (${nwp.srh_1km_rm.toFixed(0)} m²/s²)`);
-        }
+      if (nwp.srh_1km_rm != null) {
+        if (nwp.srh_1km_rm >= 150) { score += 2; factors.push(`hohe 0-1km-Helizität (${nwp.srh_1km_rm.toFixed(0)} m²/s²)`); }
+        else if (nwp.srh_1km_rm >= 100) { score += 1; factors.push(`erhöhte 0-1km-Helizität (${nwp.srh_1km_rm.toFixed(0)} m²/s²)`); }
       }
-
-      if (nwp.mu_lcl_hgt !== null) {
-        if (nwp.mu_lcl_hgt < 1000) {
-          score += 2; factors.push(`sehr niedriges Kondensationsniveau (${Math.round(nwp.mu_lcl_hgt)} m)`);
-        } else if (nwp.mu_lcl_hgt < 1500) {
-          score += 1; factors.push(`niedriges Kondensationsniveau (${Math.round(nwp.mu_lcl_hgt)} m)`);
-        } else if (nwp.mu_lcl_hgt > 2000) {
-          score -= 1; factors.push("hohes Kondensationsniveau (ungünstig)");
-        }
+      if (nwp.mu_lcl_hgt != null) {
+        if (nwp.mu_lcl_hgt < 1000) { score += 2; factors.push(`sehr niedriges Kondensationsniveau (${Math.round(nwp.mu_lcl_hgt)} m)`); }
+        else if (nwp.mu_lcl_hgt < 1500) { score += 1; factors.push(`niedriges Kondensationsniveau (${Math.round(nwp.mu_lcl_hgt)} m)`); }
+        else if (nwp.mu_lcl_hgt > 2000) { score -= 1; factors.push("hohes Kondensationsniveau (ungünstig)"); }
       }
-
-      if (nwp.mu_cin !== null && nwp.mu_cin < -100) {
-        score -= 1; factors.push("starke Konvektionshemmung (CIN)");
-      }
+      if (nwp.mu_cin != null && nwp.mu_cin < -100) { score -= 1; factors.push("starke Konvektionshemmung (CIN)"); }
     }
-
+    
     score = Math.max(0, score);
-
     if (score === 0) return null;
-
+    
+    // Schwellen angehoben, da mit Meso-Match deutlich mehr Score-Quellen zur Verfügung stehen
     let rawLevel;
-    if (score >= 7)      rawLevel = "hoch";
-    else if (score >= 4) rawLevel = "erhöht";
-    else if (score >= 2) rawLevel = "möglich";
-    else                  rawLevel = "gering";
-
+    if (score >= 9)      rawLevel = "hoch";
+    else if (score >= 5) rawLevel = "erhöht";
+    else if (score >= 2.5) rawLevel = "möglich";
+    else                   rawLevel = "gering";
+    
     const levelOrder = ["gering", "möglich", "erhöht", "hoch"];
     let level = rawLevel;
-    if (levelCap && levelOrder.indexOf(rawLevel) > levelOrder.indexOf(levelCap)) {
-      level = levelCap;
-    }
+    if (levelCap && levelOrder.indexOf(rawLevel) > levelOrder.indexOf(levelCap)) level = levelCap;
     const capped = level !== rawLevel;
-
     if (capped) return null;
-
+    
     const label = {
       hoch:    "Tornadopotential hoch",
       erhöht:  "Tornadopotential erhöht",
       möglich: "Tornado möglich",
       gering:  "Tornadopotential gering",
     }[level];
-
+    
     return {
-      level,
-      label,
-      score,
-      factors,
+      level, label, score, factors,
+      source: meso.source, // "konrad3d_only" vs "konrad3d+meso" für Transparenz im Frontend
       note: "Heuristische Einschätzung auf Basis von Mesozyklone + NWP-Umgebung, keine offizielle Tornadowarnung.",
     };
-  };
+    };
 
   // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
   // WICHTIG: Es wird NICHT meso_latest.xml verwendet, da dessen Zeitstempel
@@ -892,7 +918,7 @@ const matchMesoEvent = (cell, mesoEvents) => {
   
     cell.is_supercell = true;
     cell.tornado       = assessTornadoPotential(
-      cell.konrad_mesocyclone,
+      cell.mesocyclone,
       cell.nwp,
       cell.nwp_indices?.stp ?? null
     );
