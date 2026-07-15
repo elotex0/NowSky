@@ -243,8 +243,8 @@ export default async function handler(req, res) {
     const distKm = Math.round(best.dist * 10) / 10;
     const brng   = bearing(best.lat, best.lon, lat, lon);
     const dir    = bearingToDirection(brng);
-    if (distKm < 1.5) return { text: `über ${best.name}`, name: best.name, dist_km: distKm };
-    return { text: `${distKm} km ${dir} von ${best.name}`, name: best.name, dist_km: distKm, direction: dir };
+    if (distKm < 1.5) return { text: `über ${best.name}`, name: best.name };
+    return { text: `${distKm} km ${dir} von ${best.name}`, name: best.name, direction: dir };
   };
 
   // ── Turf-basierte Ortserkennung mit Spatial Index ─────────────────────────
@@ -365,50 +365,18 @@ export default async function handler(req, res) {
   };
 
   // ── Tornado-Potential-Einschätzung ─────────────────────────────────────────
-  // Kombiniert die KONRAD3D-eigene Mesozyklone (Stärke, Rotationsgeschwindigkeit,
-  // Basishöhe) mit den NWP-Umgebungsparametern (STP, 0-1km-Scherung/-Helizität,
-  // LCL-Höhe, CIN). Das ist eine Heuristik zur groben Einordnung des Tornado-
-  // Potentials der Umgebung – KEINE offizielle Tornado-Warnung/-Detektion.
-  // Ohne Doppler-/Sweep-Daten (die die frühere externe DWD-Meso-API lieferte)
-  // lässt sich ein Tornado selbst nicht direkt nachweisen, nur die
-  // Wahrscheinlichkeit anhand des Umfelds abschätzen.
-  //
-  // Kalibrierung anhand europäischer Klimatologie (nicht 1:1 aus den USA
-  // übernommen):
-  //  - STP: Für die USA gilt "STP > 1" als Schwelle. In Europa liegen
-  //    signifikante Tornados im Mittel nur bei STP ≈ 0.15, selbst gewaltige
-  //    ("violent") Tornados im Mittel bei nur ≈ 0.7-0.9 (Pilguj et al. 2022,
-  //    GRL, ERA5/WRF-Downscaling; Taszarek et al. 2020; Coffer et al. 2020).
-  //    Die US-Schwelle würde in Europa daher fast nie greifen -> deutlich
-  //    niedrigere Schwellen.
-  //  - Mesozyklonenbasis: Aktuelle Studien zu europäischen Tornadoumgebungen
-  //    zeigen, dass die bodennahe Schicht (0-500 m, teils 0-100 m AGL) der
-  //    mit Abstand stärkste Unterscheidungsfaktor zwischen tornadischen und
-  //    nicht-tornadischen Fällen ist (near-ground SRH-Studien, AMS WAF 2020).
-  //    Eine Mesozyklone mit hoher Basis rotiert über der Grenzschicht und
-  //    erreicht den Boden faktisch nicht. Das darf NICHT nur als Punktabzug
-  //    behandelt werden, der von genug NWP-Bonuspunkten wieder aufgewogen
-  //    werden kann (z.B. hoher STP + niedriges LCL) - denn ein Tornado
-  //    entsteht durch bodennahe Rotation, und wenn KONRAD3D diese bodennahe
-  //    Rotation gar nicht sieht (Basis weit über der Grenzschicht), kann die
-  //    Umgebung noch so günstig sein: es liegt aktuell keine Beobachtung
-  //    einer bodennahen Rotation vor. Deshalb wirkt die Basishöhe hier als
-  //    harte Obergrenze (Cap) für das Endergebnis, nicht als Verrechnung
-  //    gegen andere Boni.
   const assessTornadoPotential = (meso, nwp, stp) => {
     if (!meso) return null;
 
     let score = 0;
     const factors = [];
 
-    // Mesozyklonen-Stärke (KONRAD3D: severity_index 1–5)
     if (meso.severity_index >= 4) {
       score += 2; factors.push(`starke Mesozyklone (Severity ${meso.severity_index})`);
     } else if (meso.severity_index >= 2) {
       score += 1; factors.push(`mittlere Mesozyklone (Severity ${meso.severity_index})`);
     }
 
-    // Rotationsgeschwindigkeit
     if (meso.rotational_max_ms !== null) {
       if (meso.rotational_max_ms >= 20) {
         score += 2; factors.push(`hohe Rotationsgeschwindigkeit (${meso.rotational_max_ms.toFixed(1)} m/s)`);
@@ -417,32 +385,19 @@ export default async function handler(req, res) {
       }
     }
 
-    // Mesozyklonenbasis: niedrige Basis begünstigt bodennahe Rotation (Bonus).
-    // Eine hohe Basis wird NICHT hier verrechnet, sondern weiter unten als
-    // harte Obergrenze (levelCap) auf das Endergebnis angewendet - siehe
-    // Kommentar oben.
-    let levelCap  = null; // null = keine Deckelung nötig
+    let levelCap  = null;
     if (meso.height_base_m !== null) {
       if (meso.height_base_m < 1000) {
         score += 2; factors.push("sehr niedrige Mesozyklonenbasis (unter 1000 m) – bodennahe Rotation");
       } else if (meso.height_base_m < 1500) {
         score += 1; factors.push("niedrige Mesozyklonenbasis (unter 1500 m)");
       } else if (meso.height_base_m > 3000) {
-        // Basis weit über der Grenzschicht – keine erkennbare bodennahe
-        // Rotation. Egal wie günstig die Umgebung sonst ist: tornado wird
-        // unten auf null gesetzt, statt "gering" mit Umgebungsfaktoren zu
-        // melden, die suggerieren würden, es gäbe eine belastbare Einschätzung.
         levelCap = "gering";
       } else if (meso.height_base_m > 2000) {
-        // Basis reicht nicht sicher bis zum Boden – Ergebnis wird unten
-        // ebenfalls verworfen (null), nicht auf "möglich" gedeckelt gemeldet.
         levelCap = "möglich";
       }
     }
 
-    // Significant Tornado Parameter, europäisch kalibrierte Schwellen
-    // (siehe Kommentar oben: europäischer Mittelwert für signifikante
-    // Tornados ≈ 0.15, für gewaltige Tornados ≈ 0.7-0.9).
     if (stp !== null) {
       if (stp >= 1) {
         score += 3; factors.push(`sehr hoher STP (${stp}) – im Bereich gewaltiger europäischer Tornados`);
@@ -454,9 +409,6 @@ export default async function handler(req, res) {
     }
 
     if (nwp) {
-      // 0–1 km Bulk-Scherung: beste verfügbare Näherung an die bodennahe
-      // Scherschicht, die für europäische Tornadoumgebungen besonders
-      // diskriminierend ist.
       if (nwp.bs_01km !== null) {
         if (nwp.bs_01km >= 15) {
           score += 2; factors.push(`starke 0-1km-Scherung (${nwp.bs_01km.toFixed(1)} m/s)`);
@@ -465,7 +417,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // 0–1 km Storm Relative Helicity
       if (nwp.srh_1km_rm !== null) {
         if (nwp.srh_1km_rm >= 150) {
           score += 2; factors.push(`hohe 0-1km-Helizität (${nwp.srh_1km_rm.toFixed(0)} m²/s²)`);
@@ -474,7 +425,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // Niedriges LCL (feuchte Grundschicht) begünstigt Tornadogenese
       if (nwp.mu_lcl_hgt !== null) {
         if (nwp.mu_lcl_hgt < 1000) {
           score += 2; factors.push(`sehr niedriges Kondensationsniveau (${Math.round(nwp.mu_lcl_hgt)} m)`);
@@ -485,7 +435,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // Starke CIN unterdrückt Konvektion/Tornadogenese
       if (nwp.mu_cin !== null && nwp.mu_cin < -100) {
         score -= 1; factors.push("starke Konvektionshemmung (CIN)");
       }
@@ -493,9 +442,6 @@ export default async function handler(req, res) {
 
     score = Math.max(0, score);
 
-    // Bei Score 0 und ohne Deckelungsgrund gibt es keine erkennbaren
-    // Tornado-begünstigenden Faktoren aus Meso + NWP → tornado bleibt null
-    // statt eines "gering"-Objekts.
     if (score === 0 && !levelCap) return null;
 
     let rawLevel;
@@ -504,10 +450,6 @@ export default async function handler(req, res) {
     else if (score >= 2) rawLevel = "möglich";
     else                  rawLevel = "gering";
 
-    // ── Deckelung anwenden ──────────────────────────────────────────────
-    // Die Umgebung (NWP) kann noch so günstig sein - ohne beobachtete
-    // bodennahe Rotation (niedrige Mesozyklonenbasis) wird das Level auf
-    // levelCap begrenzt. Das ist eine echte Obergrenze, kein Punkteverrechnen.
     const levelOrder = ["gering", "möglich", "erhöht", "hoch"];
     let level = rawLevel;
     if (levelCap && levelOrder.indexOf(rawLevel) > levelOrder.indexOf(levelCap)) {
@@ -515,10 +457,6 @@ export default async function handler(req, res) {
     }
     const capped = level !== rawLevel;
 
-    // Wenn die Basishöhe das Ergebnis gedeckelt hätte, gibt es keine
-    // beobachtete bodennahe Rotation - dann macht eine Tornado-Einschätzung
-    // (auch nicht "gering") keinen Sinn. Egal wie günstig die Umgebung
-    // aussieht: ohne Cap-relevanten Faktor bleibt tornado schlicht null.
     if (capped) return null;
 
     const label = {
@@ -599,12 +537,6 @@ export default async function handler(req, res) {
     const echo_bottom_large_hail = noFill(numFast(hymec, "echo_bottom_large_hail"));
     const hail_flag              = intFast(inner, "hail_flag");
 
-    // ── KONRAD3D-eigene Mesozyklonen-Zuordnung ──────────────────────────────
-    // Das KONRAD3D-Format hat KEINE eigene Geometrie für die Meso – nur
-    // ein Assignment-Flag + aggregierte Attribute. number_assigned_mesocyclones
-    // ist hier die Quelle der Wahrheit dafür, ob diese Zelle überhaupt eine
-    // Meso hat (0 oder 1, siehe Datenbeispiel). Bei 1 wird die Position der
-    // Zelle (centroid_3d) als Meso-Position übernommen.
     const mesoBlock           = blockFast(inner, "mesocyclone") ?? "";
     const meso_severity   = intFast(mesoBlock, "mesocyclone_severity_index") ?? 0;
     const has_mesocyclone = meso_severity >= 1;
@@ -615,7 +547,6 @@ export default async function handler(req, res) {
       height_base_m:     noFill(numFast(mesoBlock, "mesocyclone_height_base")),
       rotational_max_ms: noFill(numFast(mesoBlock, "mesocyclone_velocity_rotational_max")),
     } : null;
-    // ── NWP-Modell ────────────────────────────────────────────────────────
     const nwpBlock       = blockFast(inner, "nwp_model") ?? "";
     const nwp_mu_cape    = numFast(nwpBlock, "nwp_mu_cape");
     const nwp_mu_cin     = numFast(nwpBlock, "nwp_mu_cin");
@@ -631,7 +562,6 @@ export default async function handler(req, res) {
     const nwp_prcp_water = numFast(nwpBlock, "nwp_prcp_water");
     const nwp_dcape      = numFast(nwpBlock, "nwp_dcape");
 
-    // ── STP ───────────────────────────────────────────────────────────────
     let nwp_stp = null;
     if (nwp_mu_cape !== null && nwp_mu_lcl_hgt !== null &&
         nwp_srh_1km_rm !== null && nwp_bs_06km !== null) {
@@ -650,7 +580,6 @@ export default async function handler(req, res) {
       nwp_stp = Math.round(cape_term * lcl_term * srh_term * shr_term * cin_term * 100) / 100;
     }
 
-    // ── SCP ───────────────────────────────────────────────────────────────
     let nwp_scp = null;
     if (nwp_mu_cape !== null && nwp_srh_3km_rm !== null && nwp_bs_06km !== null) {
       const cape_term = nwp_mu_cape / 1000;
@@ -660,7 +589,6 @@ export default async function handler(req, res) {
       nwp_scp = Math.round(cape_term * srh_term * ebs_term * 100) / 100;
     }
 
-    // ── Hagelberechnung ───────────────────────────────────────────────────
     let hail_cm = null;
     if (hail_flag !== null && hail_flag >= 1) {
       if (hail_flag === 1) {
@@ -682,13 +610,11 @@ export default async function handler(req, res) {
       if (hail_cm !== null) hail_cm = Math.round(hail_cm * 10) / 10;
     }
 
-    // ── Tracking ──────────────────────────────────────────────────────────
     const trackBlock     = blockFast(inner, "tracking") ?? "";
     const cell_speed     = numFast(trackBlock, "cell_speed");
     const severity_trend = numFast(trackBlock, "severity_trend") ?? numFast(inner, "severity_trend");
     const mass_trend     = numFast(trackBlock, "mass_trend")     ?? numFast(inner, "mass_trend");
 
-    // ── Zellenentwicklung ─────────────────────────────────────────────────
     let development = null;
     if (area_growth_rate !== null || severity_trend !== null || mass_trend !== null) {
       let pos = 0, neg = 0;
@@ -709,7 +635,6 @@ export default async function handler(req, res) {
       else               development = { status: "gleichbleibend", color: "orange" };
     }
 
-    // ── Forecast-Punkte ───────────────────────────────────────────────────
     const forecastBlock     = blockFast(inner, "forecast") ?? "";
     const centroidForecasts = blockFast(forecastBlock, "centroid_forecasts") ?? "";
     const cfBlocks          = allBlocksFast(centroidForecasts, "centroid_forecast");
@@ -744,7 +669,6 @@ export default async function handler(req, res) {
       perp_point2_lat = p2.lat; perp_point2_lon = p2.lon;
     }
 
-    // ── Track-Punkte + Orte ───────────────────────────────────────────────
     const refMs       = new Date(ref_time).getTime();
     const trackPoints = [];
     if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
@@ -815,9 +739,6 @@ export default async function handler(req, res) {
 
   // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    // KONRAD3D-XML + GeoJSON/Index parallel laden. Die externe DWD-Meso-API
-    // (meso_latest.xml) wird nicht mehr abgefragt – Mesozyklonen-Daten
-    // kommen ausschließlich aus KONRAD3D selbst (konrad_mesocyclone).
     const [{ xml, filename }, { geojson, spatialIndex }] = await Promise.all([
       fetchXml(),
       loadGeoJsonWithIndex(),
@@ -833,29 +754,18 @@ export default async function handler(req, res) {
 
     const featureMatches = xml.match(/<feature[\s\S]*?<\/feature>/g) ?? [];
 
-    // Alle Features parallel parsen
     const cells = await Promise.all(
       featureMatches.map((f) =>
         Promise.resolve(parseFeature(f, geojson, spatialIndex, reference_time))
       )
     );
 
-    // ── Mesozyklone + Tornado-Potential aus KONRAD3D + NWP übernehmen ────────
-    // Quelle der Wahrheit für die Meso selbst: has_mesocyclone
-    // (number_assigned_mesocyclones aus der KONRAD3D-Zelle). Ist das 0, gibt
-    // es für diese Zelle keine Meso. Ist es 1, bekommt die Meso die lat/lon
-    // der Zelle (KONRAD3D liefert dafür keine eigene Geometrie).
-    // Für die Tornado-Einschätzung fließen zusätzlich die NWP-Umgebungs-
-    // parameter (STP, 0-1km-Scherung/-Helizität, LCL, CIN) ein – siehe
-    // assessTornadoPotential(). Das ersetzt keine offizielle Tornadowarnung,
-    // sondern liefert eine grobe, nachvollziehbare Risikoeinstufung, da ohne
-    // die frühere externe DWD-Meso-API (Sweeps/Scherung am Radar) ein
-    // Tornado selbst nicht direkt detektierbar ist.
     for (const cell of cells) {
       if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
         cell.mesocyclone  = null;
         cell.is_supercell = false;
         cell.tornado       = null;
+        delete cell.konrad_mesocyclone;
         continue;
       }
 
@@ -872,6 +782,7 @@ export default async function handler(req, res) {
         cell.nwp,
         cell.nwp_indices?.stp ?? null
       );
+      delete cell.konrad_mesocyclone;
     }
 
     return res.status(200).json({
