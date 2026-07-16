@@ -103,6 +103,26 @@ const attrFast = (tagStr, attrName) => {
 
 const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
 
+// ── Elevations aus Meso-XML parsen ────────────────────────────────────────
+const parseElevations = (np) => {
+  const elevBlock = blockFast(np, "elevations") ?? "";
+  const elevTags  = allBlocksFast(elevBlock, "elevation");
+  const by_site = {};
+  let units = null;
+  for (const el of elevTags) {
+    const openTag = el.full.match(/<elevation([^>]*)>/)?.[0] ?? "";
+    const site = attrFast(openTag, "site");
+    const u    = attrFast(openTag, "units");
+    if (u) units = u;
+    if (!site) continue;
+    by_site[site] = el.inner
+      .split(",")
+      .map((v) => parseFloat(v.trim()))
+      .filter((v) => !isNaN(v));
+  }
+  return { by_site, units };
+};
+
 // ── GeoJSON async lesen + Spatial Index bauen ─────────────────────────────────
 const loadGeoJsonWithIndex = () => new Promise((resolve, reject) => {
   const filePath = path.join(__dirname, "../deutschland.geojson");
@@ -365,141 +385,91 @@ export default async function handler(req, res) {
   };
 
   // ── Tornado-Potential-Einschätzung ─────────────────────────────────────────
-  const assessTornadoPotential = (meso, nwp, stp) => {
-    if (!meso) return null;
-    
+  // NUR Meso-Parameter (kein NWP), KEIN Cap, Ergebnis: true / false
+  // true = Score erreicht die Schwelle für "hoch" (>= 9)
+  const assessTornadoPotential = (meso) => {
+    if (!meso) return false;
+
     let score = 0;
-    const factors = [];
-    
+
     // KONRAD3D-Grobklassifizierung
     if (meso.severity_index >= 4) {
-      score += 1; factors.push(`starke Mesozyklone (Severity ${meso.severity_index})`);
+      score += 1;
     } else if (meso.severity_index >= 2) {
-      score += 0.5; factors.push(`mittlere Mesozyklone (Severity ${meso.severity_index})`);
+      score += 0.5;
     }
-    
+
     // Bodennahe Rotation — wichtigster Einzelprädiktor, falls Meso-Match vorhanden
     const hasGroundRot = meso.velocity_rotational_max_closest_to_ground_ms != null;
     const groundRot = meso.velocity_rotational_max_closest_to_ground_ms ?? meso.rotational_max_ms;
-    
+
     if (groundRot != null) {
       if (groundRot >= 25) {
         score += hasGroundRot ? 4 : 3;
-        factors.push(`sehr hohe bodennahe Rotation (${groundRot.toFixed(1)} m/s)`);
       } else if (groundRot >= 18) {
         score += hasGroundRot ? 3 : 2;
-        factors.push(`hohe bodennahe Rotation (${groundRot.toFixed(1)} m/s)`);
       } else if (groundRot >= 12) {
         score += hasGroundRot ? 2 : 1;
-        factors.push(`erhöhte bodennahe Rotation (${groundRot.toFixed(1)} m/s)`);
       }
     }
-    
+
     // Kompaktheit: kleiner Durchmesser + hohe Rotation = straffe Zirkulation
     const diam = meso.diameter_km ?? meso.diameter_equiv_km;
     if (diam != null && groundRot != null) {
       if (diam < 3 && groundRot >= 12) {
         score += 1.5;
-        factors.push(`kompakte, straffe Rotation (${diam.toFixed(1)} km Durchmesser)`);
       } else if (diam > 10) {
         score -= 0.5;
-        factors.push("breite, diffuse Rotation (großer Durchmesser)");
       }
     }
-    
+
     // Momentum-Flux / azimutale Scherung aus Meso-XML (TDA-artige Signale)
     if (meso.momentum_max_ms_km != null) {
       if (meso.momentum_max_ms_km >= 300) {
-        score += 2; factors.push(`sehr hoher Momentum-Flux (${meso.momentum_max_ms_km.toFixed(0)} m/s/km)`);
+        score += 2;
       } else if (meso.momentum_max_ms_km >= 150) {
-        score += 1; factors.push(`erhöhter Momentum-Flux (${meso.momentum_max_ms_km.toFixed(0)} m/s/km)`);
+        score += 1;
       }
     }
-    
+
     if (meso.shear_max_ms_km != null && meso.shear_max_ms_km >= 8) {
       score += 1;
-      factors.push(`hohe azimutale Scherung (${meso.shear_max_ms_km.toFixed(1)} m/s/km)`);
     }
-    
+
     // DWD meso_intensity — unabhängige radaroperationelle Einstufung (0-3)
     if (meso.meso_intensity != null) {
       if (meso.meso_intensity >= 3) {
-        score += 2; factors.push(`DWD Meso-Intensität maximal (${meso.meso_intensity})`);
+        score += 2;
       } else if (meso.meso_intensity >= 2) {
-        score += 1; factors.push(`DWD Meso-Intensität erhöht (${meso.meso_intensity})`);
+        score += 1;
       }
     }
-    
-    // Mesozyklonenbasis (unverändert)
-    let levelCap = null;
+
+    // Mesozyklonenbasis
     if (meso.height_base_m != null) {
       if (meso.height_base_m < 1000) {
-        score += 2; factors.push("sehr niedrige Mesozyklonenbasis (unter 1000 m) – bodennahe Rotation");
+        score += 2;
       } else if (meso.height_base_m < 1500) {
-        score += 1; factors.push("niedrige Mesozyklonenbasis (unter 1500 m)");
-      } else if (meso.height_base_m > 3000) {
-        levelCap = "gering";
-      } else if (meso.height_base_m > 2000) {
-        levelCap = "möglich";
+        score += 1;
       }
     }
-    
-    if (stp !== null) {
-      if (stp >= 1) {
-        score += 3; factors.push(`sehr hoher STP (${stp}) – im Bereich gewaltiger europäischer Tornados`);
-      } else if (stp >= 0.3) {
-        score += 2; factors.push(`erhöhter STP (${stp}) – über dem Mittel signifikanter europäischer Tornados`);
-      } else if (stp >= 0.1) {
-        score += 1; factors.push(`leicht erhöhter STP (${stp})`);
+
+    // Bestätigung durch mehrere Radarstandorte/Elevationen
+    if (meso.elevations) {
+      const sites = Object.keys(meso.elevations).length;
+      const tilts = Object.values(meso.elevations).reduce((a, arr) => a + (arr?.length || 0), 0);
+      if (sites >= 3 || tilts >= 6) {
+        score += 0.5;
+      } else if (sites >= 2) {
+        score += 0.25;
       }
     }
-    
-    if (nwp) {
-      if (nwp.bs_01km != null) {
-        if (nwp.bs_01km >= 15) { score += 2; factors.push(`starke 0-1km-Scherung (${nwp.bs_01km.toFixed(1)} m/s)`); }
-        else if (nwp.bs_01km >= 10) { score += 1; factors.push(`moderate 0-1km-Scherung (${nwp.bs_01km.toFixed(1)} m/s)`); }
-      }
-      if (nwp.srh_1km_rm != null) {
-        if (nwp.srh_1km_rm >= 150) { score += 2; factors.push(`hohe 0-1km-Helizität (${nwp.srh_1km_rm.toFixed(0)} m²/s²)`); }
-        else if (nwp.srh_1km_rm >= 100) { score += 1; factors.push(`erhöhte 0-1km-Helizität (${nwp.srh_1km_rm.toFixed(0)} m²/s²)`); }
-      }
-      if (nwp.mu_lcl_hgt != null) {
-        if (nwp.mu_lcl_hgt < 1000) { score += 2; factors.push(`sehr niedriges Kondensationsniveau (${Math.round(nwp.mu_lcl_hgt)} m)`); }
-        else if (nwp.mu_lcl_hgt < 1500) { score += 1; factors.push(`niedriges Kondensationsniveau (${Math.round(nwp.mu_lcl_hgt)} m)`); }
-        else if (nwp.mu_lcl_hgt > 2000) { score -= 1; factors.push("hohes Kondensationsniveau (ungünstig)"); }
-      }
-      if (nwp.mu_cin != null && nwp.mu_cin < -100) { score -= 1; factors.push("starke Konvektionshemmung (CIN)"); }
-    }
-    
+
     score = Math.max(0, score);
-    if (score === 0) return null;
-    
-    // Schwellen angehoben, da mit Meso-Match deutlich mehr Score-Quellen zur Verfügung stehen
-    let rawLevel;
-    if (score >= 9)      rawLevel = "hoch";
-    else if (score >= 5) rawLevel = "erhöht";
-    else if (score >= 2.5) rawLevel = "möglich";
-    else                   rawLevel = "gering";
-    
-    const levelOrder = ["gering", "möglich", "erhöht", "hoch"];
-    let level = rawLevel;
-    if (levelCap && levelOrder.indexOf(rawLevel) > levelOrder.indexOf(levelCap)) level = levelCap;
-    const capped = level !== rawLevel;
-    if (capped) return null;
-    
-    const label = {
-      hoch:    "Tornadopotential hoch",
-      erhöht:  "Tornadopotential erhöht",
-      möglich: "Tornado möglich",
-      gering:  "Tornadopotential gering",
-    }[level];
-    
-    return {
-      level, label, score, factors,
-      source: meso.source, // "konrad3d_only" vs "konrad3d+meso" für Transparenz im Frontend
-      note: "Heuristische Einschätzung auf Basis von Mesozyklone + NWP-Umgebung, keine offizielle Tornadowarnung.",
-    };
-    };
+
+    // Nur true, wenn Stufe "hoch" erreicht ist (kein Cap, kein Downgrade)
+    return score >= 9;
+  };
 
   // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
   // WICHTIG: Es wird NICHT meso_latest.xml verwendet, da dessen Zeitstempel
@@ -517,61 +487,63 @@ export default async function handler(req, res) {
     return await r.text();
   };
 
-// ── Meso-Events parsen ────────────────────────────────────────────────────
-const parseMesoEvents = (xml) => {
-  const eventMatches = xml.match(/<event[\s\S]*?<\/event>/g) ?? [];
-  return eventMatches.map((ev) => {
-    const np = blockFast(ev, "nowcast-parameters") ?? "";
-    return {
-      diameter_equivalent_km:      numFast(np, "mesocyclone_diameter_equivalent"),
-      velocity_rotational_max_ms:  numFast(np, "mesocyclone_velocity_rotational_max"),
-      shear_mean:                  numFast(np, "mesocyclone_shear_mean"),
-      shear_max:                   numFast(np, "mesocyclone_shear_max"),
-      momentum_mean:                numFast(np, "mesocyclone_momentum_mean"),
-      momentum_max:                 numFast(np, "mesocyclone_momentum_max"),
-      diameter_km:                  numFast(np, "mesocyclone_diameter"),
-      echotop_km:                    numFast(np, "mesocyclone_echotop"),
-      vil:                           numFast(np, "mesocyclone_vil"),
-      shear_vectors:                 intFast(np, "mesocyclone_shear_vectors"),
-      shear_features:                intFast(np, "mesocyclone_shear_features"),
-      mean_dbz:                      numFast(np, "mean_dbz"),
-      max_dbz:                       numFast(np, "max_dbz"),
-      velocity_max_ms:               numFast(np, "mesocyclone_velocity_max"),
-      velocity_rotational_mean_ms:   numFast(np, "mesocyclone_velocity_rotational_mean"),
-      velocity_rotational_max_closest_to_ground_ms:
-        numFast(np, "mesocyclone_velocity_rotational_max_closest_to_ground"),
-      meso_intensity:                intFast(np, "meso_intensity"),
-      _matched: false,
-    };
-  });
-};
+  // ── Meso-Events parsen ────────────────────────────────────────────────────
+  const parseMesoEvents = (xml) => {
+    const eventMatches = xml.match(/<event[\s\S]*?<\/event>/g) ?? [];
+    return eventMatches.map((ev) => {
+      const np = blockFast(ev, "nowcast-parameters") ?? "";
+      const elevations = parseElevations(np);
+      return {
+        diameter_equivalent_km:      numFast(np, "mesocyclone_diameter_equivalent"),
+        velocity_rotational_max_ms:  numFast(np, "mesocyclone_velocity_rotational_max"),
+        shear_mean:                  numFast(np, "mesocyclone_shear_mean"),
+        shear_max:                   numFast(np, "mesocyclone_shear_max"),
+        momentum_mean:                numFast(np, "mesocyclone_momentum_mean"),
+        momentum_max:                 numFast(np, "mesocyclone_momentum_max"),
+        diameter_km:                  numFast(np, "mesocyclone_diameter"),
+        echotop_km:                    numFast(np, "mesocyclone_echotop"),
+        vil:                           numFast(np, "mesocyclone_vil"),
+        shear_vectors:                 intFast(np, "mesocyclone_shear_vectors"),
+        shear_features:                intFast(np, "mesocyclone_shear_features"),
+        mean_dbz:                      numFast(np, "mean_dbz"),
+        max_dbz:                       numFast(np, "max_dbz"),
+        velocity_max_ms:               numFast(np, "mesocyclone_velocity_max"),
+        velocity_rotational_mean_ms:   numFast(np, "mesocyclone_velocity_rotational_mean"),
+        velocity_rotational_max_closest_to_ground_ms:
+          numFast(np, "mesocyclone_velocity_rotational_max_closest_to_ground"),
+        meso_intensity:                intFast(np, "meso_intensity"),
+        elevations_by_site:            elevations.by_site,
+        elevations_units:              elevations.units,
+        _matched: false,
+      };
+    });
+  };
 
-// ── Meso-Event zur KONRAD-Zelle matchen (über Werte, NICHT über Lat/Lon) ──
-const matchMesoEvent = (cell, mesoEvents) => {
-  const meso = cell.mesocyclone;
-  if (!meso || meso.diameter_equiv_km === null || meso.rotational_max_ms === null) return null;
+  // ── Meso-Event zur KONRAD-Zelle matchen (über Werte, NICHT über Lat/Lon) ──
+  const matchMesoEvent = (cell, mesoEvents) => {
+    const meso = cell.mesocyclone;
+    if (!meso || meso.diameter_equiv_km === null || meso.rotational_max_ms === null) return null;
 
-  let best = null;
-  let bestScore = Infinity;
+    let best = null;
+    let bestScore = Infinity;
 
-  for (const ev of mesoEvents) {
-    if (ev._matched) continue;
-    if (ev.diameter_equivalent_km === null || ev.velocity_rotational_max_ms === null) continue;
+    for (const ev of mesoEvents) {
+      if (ev._matched) continue;
+      if (ev.diameter_equivalent_km === null || ev.velocity_rotational_max_ms === null) continue;
 
-    const diamDiff = Math.abs(ev.diameter_equivalent_km - meso.diameter_equiv_km);
-    const velDiff  = Math.abs(ev.velocity_rotational_max_ms - meso.rotational_max_ms);
+      const diamDiff = Math.abs(ev.diameter_equivalent_km - meso.diameter_equiv_km);
+      const velDiff  = Math.abs(ev.velocity_rotational_max_ms - meso.rotational_max_ms);
 
-    // KONRAD rundet auf 3 Nachkommastellen, Meso-XML liefert mehr Präzision
-    if (diamDiff < 0.01 && velDiff < 0.01) {
-      const score = diamDiff + velDiff;
-      if (score < bestScore) { bestScore = score; best = ev; }
+      // KONRAD rundet auf 3 Nachkommastellen, Meso-XML liefert mehr Präzision
+      if (diamDiff < 0.01 && velDiff < 0.01) {
+        const score = diamDiff + velDiff;
+        if (score < bestScore) { bestScore = score; best = ev; }
+      }
     }
-  }
 
-  if (best) best._matched = true;
-  return best;
-};
-  
+    if (best) best._matched = true;
+    return best;
+  };
 
   // ── fetchXml — parallel ───────────────────────────────────────────────────
   const fetchXml = async () => {
@@ -645,6 +617,9 @@ const matchMesoEvent = (cell, mesoEvents) => {
       height_base_m:     noFill(numFast(mesoBlock, "mesocyclone_height_base")),
       rotational_max_ms: noFill(numFast(mesoBlock, "mesocyclone_velocity_rotational_max")),
     } : null;
+
+    // NWP-Felder werden weiterhin geparst und im Response mitgegeben (Info/Anzeige),
+    // fließen aber NICHT mehr in die Tornado-Bewertung ein.
     const nwpBlock       = blockFast(inner, "nwp_model") ?? "";
     const nwp_mu_cape    = numFast(nwpBlock, "nwp_mu_cape");
     const nwp_mu_cin     = numFast(nwpBlock, "nwp_mu_cin");
@@ -874,56 +849,54 @@ const matchMesoEvent = (cell, mesoEvents) => {
     );
 
     for (const cell of cells) {
-    if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
-      cell.mesocyclone  = null;
-      cell.is_supercell = false;
-      cell.tornado       = null;
-      delete cell.konrad_mesocyclone;
-      continue;
-    }
-  
-    cell.mesocyclone = {
-      ...cell.konrad_mesocyclone,
-      latitude:  cell.latitude,   // ← immer die Zell-Position, nie die Ellipse aus meso_latest.xml
-      longitude: cell.longitude,
-      dist_km:   null,
-      source:    "konrad3d_only",
-    };
-  
-    const mesoMatch = matchMesoEvent(cell, mesoEvents);
-    if (mesoMatch) {
+      if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
+        cell.mesocyclone  = null;
+        cell.is_supercell = false;
+        cell.tornado       = false;
+        delete cell.konrad_mesocyclone;
+        continue;
+      }
+
       cell.mesocyclone = {
-        ...cell.mesocyclone,
-        shear_mean_ms_km:             mesoMatch.shear_mean,
-        shear_max_ms_km:              mesoMatch.shear_max,
-        momentum_mean_ms_km:          mesoMatch.momentum_mean,
-        momentum_max_ms_km:           mesoMatch.momentum_max,
-        diameter_km:                  mesoMatch.diameter_km,
-        echotop_km:                   mesoMatch.echotop_km,
-        vil_kg_m2:                    mesoMatch.vil,
-        shear_vectors:                mesoMatch.shear_vectors,
-        shear_features:               mesoMatch.shear_features,
-        mean_dbz:                     mesoMatch.mean_dbz,
-        max_dbz:                      mesoMatch.max_dbz,
-        velocity_max_ms:              mesoMatch.velocity_max_ms,
-        velocity_rotational_mean_ms:  mesoMatch.velocity_rotational_mean_ms,
-        velocity_rotational_max_closest_to_ground_ms:
-          mesoMatch.velocity_rotational_max_closest_to_ground_ms,
-        meso_intensity:               mesoMatch.meso_intensity,
-        source:                       "konrad3d+meso",
+        ...cell.konrad_mesocyclone,
+        latitude:  cell.latitude,   // ← immer die Zell-Position, nie die Ellipse aus meso_latest.xml
+        longitude: cell.longitude,
+        dist_km:   null,
+        source:    "konrad3d_only",
       };
+
+      const mesoMatch = matchMesoEvent(cell, mesoEvents);
+      if (mesoMatch) {
+        cell.mesocyclone = {
+          ...cell.mesocyclone,
+          shear_mean_ms_km:             mesoMatch.shear_mean,
+          shear_max_ms_km:              mesoMatch.shear_max,
+          momentum_mean_ms_km:          mesoMatch.momentum_mean,
+          momentum_max_ms_km:           mesoMatch.momentum_max,
+          diameter_km:                  mesoMatch.diameter_km,
+          echotop_km:                   mesoMatch.echotop_km,
+          vil_kg_m2:                    mesoMatch.vil,
+          shear_vectors:                mesoMatch.shear_vectors,
+          shear_features:               mesoMatch.shear_features,
+          mean_dbz:                     mesoMatch.mean_dbz,
+          max_dbz:                      mesoMatch.max_dbz,
+          velocity_max_ms:              mesoMatch.velocity_max_ms,
+          velocity_rotational_mean_ms:  mesoMatch.velocity_rotational_mean_ms,
+          velocity_rotational_max_closest_to_ground_ms:
+            mesoMatch.velocity_rotational_max_closest_to_ground_ms,
+          meso_intensity:               mesoMatch.meso_intensity,
+          elevations:                   mesoMatch.elevations_by_site,
+          elevations_units:             mesoMatch.elevations_units,
+          source:                       "konrad3d+meso",
+        };
+      }
+      // Wenn kein Match gefunden wird, bleibt source "konrad3d_only" –
+      // das Frontend zeigt dann eben nur die KONRAD-eigenen Felder, kein Meso-Event wird "erfunden".
+
+      cell.is_supercell = true;
+      cell.tornado       = assessTornadoPotential(cell.mesocyclone);
+      delete cell.konrad_mesocyclone;
     }
-    // Wenn kein Match gefunden wird, bleibt source "konrad3d_only" –
-    // das Frontend zeigt dann eben nur die KONRAD-eigenen Felder, kein Meso-Event wird "erfunden".
-  
-    cell.is_supercell = true;
-    cell.tornado       = assessTornadoPotential(
-      cell.mesocyclone,
-      cell.nwp,
-      cell.nwp_indices?.stp ?? null
-    );
-    delete cell.konrad_mesocyclone;
-  }
 
     return res.status(200).json({
       reference_time,
