@@ -384,103 +384,6 @@ export default async function handler(req, res) {
     return orte;
   };
 
-  // ── Tornado-Potential-Einschätzung ─────────────────────────────────────────
-  // 100-Punkte TVS-Risk-Index (identische Formel wie im HTML-Rechner),
-  // gespeist aus den echten Meso-Feldern statt aus manuellen Inputs.
-  // Ergebnis: true, wenn Score >= 85, sonst false.
-  const num0 = (v) => (v === null || v === undefined || isNaN(v)) ? 0 : v;
-  const clamp01 = (x) => {
-    x = Number(x);
-    if (isNaN(x)) return 0;
-    return Math.max(0, Math.min(1, x));
-  };
-
-  const assessTornadoPotential = (meso) => {
-    if (!meso) return false;
-
-    let s = 0;
-
-    // ── Rotation ──
-    // Rot Max m/s → gesamter Rotationsmaximalwert der Mesozyklone
-    s += clamp01(num0(meso.rotational_max_ms) / 30) * 15;
-    // Rot Mittel m/s
-    s += clamp01(num0(meso.velocity_rotational_mean_ms) / 15) * 5;
-    // Bodenrotation m/s (bevorzugt bodennächster Wert, sonst Fallback auf Gesamtmaximum)
-    const groundRot = meso.velocity_rotational_max_closest_to_ground_ms ?? meso.rotational_max_ms;
-    s += clamp01(num0(groundRot) / 20) * 15;
-
-    // ── Scherung ──
-    s += clamp01(num0(meso.shear_max_ms_km) / 15) * 10;
-    s += clamp01(num0(meso.shear_mean_ms_km) / 8) * 5;
-
-    // ── Momentum ──
-    s += clamp01(num0(meso.momentum_max_ms_km) / 800) * 5;
-
-    // ── Mesocyclone-Struktur ──
-    // Kompaktheit: kleiner Durchmesser + hohe Rotation = straffe, tornado-typische Zirkulation.
-    // Großer Durchmesser = eher diffuse Mesozyklone, weniger tornado-typisch.
-    const eqDiam = meso.diameter_equiv_km;
-    if (eqDiam != null) {
-      if (eqDiam <= 4) {
-        // kompakt → Bonus, stärker falls Rotation zusätzlich hoch ist
-        s += (5 - clamp01(eqDiam / 4) * 2) ; // max 5 Punkte bei sehr kleinem Durchmesser
-      } else if (eqDiam > 10) {
-        // breit/diffus → Abzug statt Bonus
-        s -= 3;
-      }
-    }
-    // Top/EchoTop sind eher Intensitäts- als Tornado-spezifische Indikatoren.
-    // Reduziertes Gewicht statt voller 5+5 Punkte, damit "low-topped" Superzellen
-    // (in Europa häufig tornadisch trotz geringer Höhe) nicht benachteiligt werden.
-    const topKm = meso.height_top_m != null ? meso.height_top_m / 1000 : null;
-    s += clamp01(num0(topKm) / 15) * 2;
-    s += clamp01(num0(meso.echotop_km) / 15) * 2;
-    // Niedrige Basis km (height_base_m ist in Metern → in km umrechnen)
-    const baseKm = meso.height_base_m != null ? meso.height_base_m / 1000 : null;
-    s += (1 - clamp01(num0(baseKm) / 5)) * 5;
-
-    // ── Gewitterintensität ──
-    s += clamp01(num0(meso.vil_kg_m2) / 120) * 5;
-    s += clamp01(num0(meso.max_dbz) / 70) * 5;
-
-    // ── Algorithmus-Konfidenz (nicht Intensität!) ──
-    // Anzahl erkannter pattern vectors/features sagt eher etwas über die
-    // Erkennungssicherheit der Struktur aus, nicht über deren Gefährlichkeit.
-    s += clamp01(num0(meso.meso_intensity) / 5) * 5;
-    s += clamp01(num0(meso.shear_vectors) / 40) * 2;
-    s += clamp01(num0(meso.shear_features) / 20) * 3;
-
-    // ── Elevationsanalyse ──
-    let allElev = [];
-    let radarCount = 0;
-    if (meso.elevations) {
-      for (const site in meso.elevations) {
-        const vals = meso.elevations[site];
-        if (Array.isArray(vals) && vals.length > 0) {
-          radarCount++;
-          allElev.push(...vals);
-        }
-      }
-    }
-
-    if (allElev.length > 0) {
-      const minElev = Math.min(...allElev);
-      const maxElev = Math.max(...allElev);
-
-      if (minElev <= 0.5) s += 10;
-      else if (minElev <= 1.5) s += 7;
-      else s += 3;
-
-      s += clamp01(maxElev / 8) * 5;
-      s += clamp01(allElev.length / 15) * 5;
-      s += clamp01(radarCount / 5) * 5;
-    }
-
-    s = Math.round(Math.min(100, s));
-
-    return s >= 85;
-  };
-
   // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
   // WICHTIG: Es wird NICHT meso_latest.xml verwendet, da dessen Zeitstempel
   // vom KONRAD3D-Zeitstempel abweichen kann (z.B. Meso schon :44, KONRAD erst :45)
@@ -628,8 +531,7 @@ export default async function handler(req, res) {
       rotational_max_ms: noFill(numFast(mesoBlock, "mesocyclone_velocity_rotational_max")),
     } : null;
 
-    // NWP-Felder werden weiterhin geparst und im Response mitgegeben (Info/Anzeige),
-    // fließen aber NICHT mehr in die Tornado-Bewertung ein.
+    // NWP-Felder werden weiterhin geparst und im Response mitgegeben (Info/Anzeige).
     const nwpBlock       = blockFast(inner, "nwp_model") ?? "";
     const nwp_mu_cape    = numFast(nwpBlock, "nwp_mu_cape");
     const nwp_mu_cin     = numFast(nwpBlock, "nwp_mu_cin");
@@ -862,7 +764,6 @@ export default async function handler(req, res) {
       if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
         cell.mesocyclone  = null;
         cell.is_supercell = false;
-        cell.tornado       = false;
         delete cell.konrad_mesocyclone;
         continue;
       }
@@ -904,7 +805,6 @@ export default async function handler(req, res) {
       // das Frontend zeigt dann eben nur die KONRAD-eigenen Felder, kein Meso-Event wird "erfunden".
 
       cell.is_supercell = true;
-      cell.tornado       = assessTornadoPotential(cell.mesocyclone);
       delete cell.konrad_mesocyclone;
     }
 
