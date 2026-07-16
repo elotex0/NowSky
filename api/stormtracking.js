@@ -740,7 +740,7 @@ export default async function handler(req, res) {
       cell_id:                identifier,
       latitude:               lat,
       longitude:              lon,
-      _ref_ms:                refMS,
+      _ref_ms:                refMs,
       position,
       cell_speed,
       cell_based_vil_density: vil_density,
