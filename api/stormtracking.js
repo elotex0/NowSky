@@ -384,6 +384,73 @@ export default async function handler(req, res) {
     return orte;
   };
 
+  // ── Meteopool Mesocyclone-Feed fetchen (liefert tornado_suspicion) ────────
+  const METEOPOOL_URL =
+    "https://www.meteopool.org/lm-wfs.php?l=mesocyclones&ak=3e66c0a59362c0587e93227036cc760e&lang=de";
+
+  const fetchMeteopoolEvents = async () => {
+    const r = await fetch(METEOPOOL_URL, {
+      headers: { "User-Agent": "konrad3d-api/1.0" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) throw new Error(`Meteopool HTTP ${r.status}`);
+    const json = await r.json();
+    return parseMeteopoolEvents(json);
+  };
+
+  // "16.07.2026 13:00:00" (dmyhis, UTC) → ms
+  const parseDmyhisUtc = (str) => {
+    const m = (str ?? "").match(/(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+    if (!m) return null;
+    const [, dd, mm, yyyy, hh, min, ss] = m;
+    return Date.UTC(+yyyy, +mm - 1, +dd, +hh, +min, +ss);
+  };
+
+  const parseMeteopoolEvents = (geo) => {
+    if (!geo?.features) return [];
+    return geo.features.map((f) => {
+      const p      = f.properties ?? {};
+      const coords = f.geometry?.coordinates ?? [];
+      const lon    = coords[0] != null ? parseFloat(coords[0]) : null;
+      const lat    = coords[1] != null ? parseFloat(coords[1]) : null;
+      return {
+        id:                          p.id ?? null,
+        lat, lon,
+        time_utc_ms:                 parseDmyhisUtc(p.time_utc_dmyhis),
+        tornado_suspicion:           (p.tornado_suspicion ?? "").toString().trim(),
+        diameter_equivalent_km:      p.diameter_equivalent != null ? parseFloat(p.diameter_equivalent) : null,
+        velocity_rotational_max_ms:  p.velocity_rotational_max != null ? parseFloat(p.velocity_rotational_max) : null,
+        _matched: false,
+      };
+    });
+  };
+
+  // Meteopool-Event einer KONRAD-Zelle zuordnen: über Zeit (± maxMinutes)
+  // UND Position (± maxKm), da zu einem Zeitschritt mehrere Mesozyklonen
+  // in Deutschland aktiv sein können.
+  const matchMeteopoolEvent = (cell, meteopoolEvents, maxKm = 15, maxMinutes = 6) => {
+    if (!cell.latitude || !cell.longitude || cell._ref_ms == null) return null;
+
+    let best = null;
+    let bestScore = Infinity;
+
+    for (const ev of meteopoolEvents) {
+      if (ev._matched || ev.lat == null || ev.lon == null || ev.time_utc_ms == null) continue;
+
+      const minutesDiff = Math.abs(ev.time_utc_ms - cell._ref_ms) / 60000;
+      if (minutesDiff > maxMinutes) continue;
+
+      const distKm = haversine(cell.latitude, cell.longitude, ev.lat, ev.lon);
+      if (distKm > maxKm) continue;
+
+      const score = distKm + minutesDiff * 2;
+      if (score < bestScore) { bestScore = score; best = ev; }
+    }
+
+    if (best) best._matched = true;
+    return best;
+  };
+
   // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
   // WICHTIG: Es wird NICHT meso_latest.xml verwendet, da dessen Zeitstempel
   // vom KONRAD3D-Zeitstempel abweichen kann (z.B. Meso schon :44, KONRAD erst :45)
