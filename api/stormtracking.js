@@ -417,13 +417,24 @@ export default async function handler(req, res) {
     s += clamp01(num0(meso.momentum_max_ms_km) / 800) * 5;
 
     // ── Mesocyclone-Struktur ──
-    // Äquivalenter Durchmesser km
-    s += clamp01(num0(meso.diameter_equiv_km) / 10) * 5;
-    // Top km (height_top_m ist in Metern → in km umrechnen)
+    // Kompaktheit: kleiner Durchmesser + hohe Rotation = straffe, tornado-typische Zirkulation.
+    // Großer Durchmesser = eher diffuse Mesozyklone, weniger tornado-typisch.
+    const eqDiam = meso.diameter_equiv_km;
+    if (eqDiam != null) {
+      if (eqDiam <= 4) {
+        // kompakt → Bonus, stärker falls Rotation zusätzlich hoch ist
+        s += (5 - clamp01(eqDiam / 4) * 2) ; // max 5 Punkte bei sehr kleinem Durchmesser
+      } else if (eqDiam > 10) {
+        // breit/diffus → Abzug statt Bonus
+        s -= 3;
+      }
+    }
+    // Top/EchoTop sind eher Intensitäts- als Tornado-spezifische Indikatoren.
+    // Reduziertes Gewicht statt voller 5+5 Punkte, damit "low-topped" Superzellen
+    // (in Europa häufig tornadisch trotz geringer Höhe) nicht benachteiligt werden.
     const topKm = meso.height_top_m != null ? meso.height_top_m / 1000 : null;
-    s += clamp01(num0(topKm) / 15) * 5;
-    // EchoTop km
-    s += clamp01(num0(meso.echotop_km) / 15) * 5;
+    s += clamp01(num0(topKm) / 15) * 2;
+    s += clamp01(num0(meso.echotop_km) / 15) * 2;
     // Niedrige Basis km (height_base_m ist in Metern → in km umrechnen)
     const baseKm = meso.height_base_m != null ? meso.height_base_m / 1000 : null;
     s += (1 - clamp01(num0(baseKm) / 5)) * 5;
@@ -432,7 +443,9 @@ export default async function handler(req, res) {
     s += clamp01(num0(meso.vil_kg_m2) / 120) * 5;
     s += clamp01(num0(meso.max_dbz) / 70) * 5;
 
-    // ── Algorithmus ──
+    // ── Algorithmus-Konfidenz (nicht Intensität!) ──
+    // Anzahl erkannter pattern vectors/features sagt eher etwas über die
+    // Erkennungssicherheit der Struktur aus, nicht über deren Gefährlichkeit.
     s += clamp01(num0(meso.meso_intensity) / 5) * 5;
     s += clamp01(num0(meso.shear_vectors) / 40) * 2;
     s += clamp01(num0(meso.shear_features) / 20) * 3;
