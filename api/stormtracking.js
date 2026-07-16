@@ -385,90 +385,87 @@ export default async function handler(req, res) {
   };
 
   // ── Tornado-Potential-Einschätzung ─────────────────────────────────────────
-  // NUR Meso-Parameter (kein NWP), KEIN Cap, Ergebnis: true / false
-  // true = Score erreicht die Schwelle für "hoch" (>= 9)
+  // 100-Punkte TVS-Risk-Index (identische Formel wie im HTML-Rechner),
+  // gespeist aus den echten Meso-Feldern statt aus manuellen Inputs.
+  // Ergebnis: true, wenn Score >= 85, sonst false.
+  const num0 = (v) => (v === null || v === undefined || isNaN(v)) ? 0 : v;
+  const clamp01 = (x) => {
+    x = Number(x);
+    if (isNaN(x)) return 0;
+    return Math.max(0, Math.min(1, x));
+  };
+
   const assessTornadoPotential = (meso) => {
     if (!meso) return false;
 
-    let score = 0;
+    let s = 0;
 
-    // KONRAD3D-Grobklassifizierung
-    if (meso.severity_index >= 4) {
-      score += 1;
-    } else if (meso.severity_index >= 2) {
-      score += 0.5;
-    }
-
-    // Bodennahe Rotation — wichtigster Einzelprädiktor, falls Meso-Match vorhanden
-    const hasGroundRot = meso.velocity_rotational_max_closest_to_ground_ms != null;
+    // ── Rotation ──
+    // Rot Max m/s → gesamter Rotationsmaximalwert der Mesozyklone
+    s += clamp01(num0(meso.rotational_max_ms) / 30) * 15;
+    // Rot Mittel m/s
+    s += clamp01(num0(meso.velocity_rotational_mean_ms) / 15) * 5;
+    // Bodenrotation m/s (bevorzugt bodennächster Wert, sonst Fallback auf Gesamtmaximum)
     const groundRot = meso.velocity_rotational_max_closest_to_ground_ms ?? meso.rotational_max_ms;
+    s += clamp01(num0(groundRot) / 20) * 15;
 
-    if (groundRot != null) {
-      if (groundRot >= 25) {
-        score += hasGroundRot ? 4 : 3;
-      } else if (groundRot >= 18) {
-        score += hasGroundRot ? 3 : 2;
-      } else if (groundRot >= 12) {
-        score += hasGroundRot ? 2 : 1;
-      }
-    }
+    // ── Scherung ──
+    s += clamp01(num0(meso.shear_max_ms_km) / 15) * 10;
+    s += clamp01(num0(meso.shear_mean_ms_km) / 8) * 5;
 
-    // Kompaktheit: kleiner Durchmesser + hohe Rotation = straffe Zirkulation
-    const diam = meso.diameter_km ?? meso.diameter_equiv_km;
-    if (diam != null && groundRot != null) {
-      if (diam < 3 && groundRot >= 12) {
-        score += 1.5;
-      } else if (diam > 10) {
-        score -= 0.5;
-      }
-    }
+    // ── Momentum ──
+    s += clamp01(num0(meso.momentum_max_ms_km) / 800) * 5;
 
-    // Momentum-Flux / azimutale Scherung aus Meso-XML (TDA-artige Signale)
-    if (meso.momentum_max_ms_km != null) {
-      if (meso.momentum_max_ms_km >= 300) {
-        score += 2;
-      } else if (meso.momentum_max_ms_km >= 150) {
-        score += 1;
-      }
-    }
+    // ── Mesocyclone-Struktur ──
+    // Äquivalenter Durchmesser km
+    s += clamp01(num0(meso.diameter_equiv_km) / 10) * 5;
+    // Top km (height_top_m ist in Metern → in km umrechnen)
+    const topKm = meso.height_top_m != null ? meso.height_top_m / 1000 : null;
+    s += clamp01(num0(topKm) / 15) * 5;
+    // EchoTop km
+    s += clamp01(num0(meso.echotop_km) / 15) * 5;
+    // Niedrige Basis km (height_base_m ist in Metern → in km umrechnen)
+    const baseKm = meso.height_base_m != null ? meso.height_base_m / 1000 : null;
+    s += (1 - clamp01(num0(baseKm) / 5)) * 5;
 
-    if (meso.shear_max_ms_km != null && meso.shear_max_ms_km >= 8) {
-      score += 1;
-    }
+    // ── Gewitterintensität ──
+    s += clamp01(num0(meso.vil_kg_m2) / 120) * 5;
+    s += clamp01(num0(meso.max_dbz) / 70) * 5;
 
-    // DWD meso_intensity — unabhängige radaroperationelle Einstufung (0-3)
-    if (meso.meso_intensity != null) {
-      if (meso.meso_intensity >= 3) {
-        score += 2;
-      } else if (meso.meso_intensity >= 2) {
-        score += 1;
-      }
-    }
+    // ── Algorithmus ──
+    s += clamp01(num0(meso.meso_intensity) / 5) * 5;
+    s += clamp01(num0(meso.shear_vectors) / 40) * 2;
+    s += clamp01(num0(meso.shear_features) / 20) * 3;
 
-    // Mesozyklonenbasis
-    if (meso.height_base_m != null) {
-      if (meso.height_base_m < 1000) {
-        score += 2;
-      } else if (meso.height_base_m < 1500) {
-        score += 1;
-      }
-    }
-
-    // Bestätigung durch mehrere Radarstandorte/Elevationen
+    // ── Elevationsanalyse ──
+    let allElev = [];
+    let radarCount = 0;
     if (meso.elevations) {
-      const sites = Object.keys(meso.elevations).length;
-      const tilts = Object.values(meso.elevations).reduce((a, arr) => a + (arr?.length || 0), 0);
-      if (sites >= 3 || tilts >= 6) {
-        score += 0.5;
-      } else if (sites >= 2) {
-        score += 0.25;
+      for (const site in meso.elevations) {
+        const vals = meso.elevations[site];
+        if (Array.isArray(vals) && vals.length > 0) {
+          radarCount++;
+          allElev.push(...vals);
+        }
       }
     }
 
-    score = Math.max(0, score);
+    if (allElev.length > 0) {
+      const minElev = Math.min(...allElev);
+      const maxElev = Math.max(...allElev);
 
-    // Nur true, wenn Stufe "hoch" erreicht ist (kein Cap, kein Downgrade)
-    return score >= 9;
+      if (minElev <= 0.5) s += 10;
+      else if (minElev <= 1.5) s += 7;
+      else s += 3;
+
+      s += clamp01(maxElev / 8) * 5;
+      s += clamp01(allElev.length / 15) * 5;
+      s += clamp01(radarCount / 5) * 5;
+    }
+
+    s = Math.round(Math.min(100, s));
+
+    return s >= 85;
   };
 
   // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
