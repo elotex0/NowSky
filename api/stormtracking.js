@@ -425,31 +425,27 @@ export default async function handler(req, res) {
     });
   };
 
-  // Meteopool-Event einer KONRAD-Zelle zuordnen: über Zeit (± maxMinutes)
-  // UND Position (± maxKm), da zu einem Zeitschritt mehrere Mesozyklonen
-  // in Deutschland aktiv sein können.
-  const matchMeteopoolEvent = (cell, meteopoolEvents, maxKm = 15, maxMinutes = 6) => {
-    if (!cell.latitude || !cell.longitude || cell._ref_ms == null) return null;
+  const matchMeteopoolEventByValue = (mesoData, meteopoolEvents) => {
+  if (!mesoData || mesoData.diameter_equiv_km === null || mesoData.rotational_max_ms === null) return null;
 
-    let best = null;
-    let bestScore = Infinity;
+  let best = null;
+  let bestScore = Infinity;
 
-    for (const ev of meteopoolEvents) {
-      if (ev._matched || ev.lat == null || ev.lon == null || ev.time_utc_ms == null) continue;
+  for (const ev of meteopoolEvents) {
+    if (ev._matched || ev.diameter_equivalent_km === null || ev.velocity_rotational_max_ms === null) continue;
 
-      const minutesDiff = Math.abs(ev.time_utc_ms - cell._ref_ms) / 60000;
-      if (minutesDiff > maxMinutes) continue;
+    const diamDiff = Math.abs(ev.diameter_equivalent_km - mesoData.diameter_equiv_km);
+    const velDiff  = Math.abs(ev.velocity_rotational_max_ms - mesoData.rotational_max_ms);
 
-      const distKm = haversine(cell.latitude, cell.longitude, ev.lat, ev.lon);
-      if (distKm > maxKm) continue;
-
-      const score = distKm + minutesDiff * 2;
+    if (diamDiff < 0.1 && velDiff < 0.1) {
+      const score = diamDiff + velDiff;
       if (score < bestScore) { bestScore = score; best = ev; }
     }
+  }
 
-    if (best) best._matched = true;
-    return best;
-  };
+  if (best) best._matched = true;
+  return best;
+};
 
   // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
   // WICHTIG: Es wird NICHT meso_latest.xml verwendet, da dessen Zeitstempel
@@ -830,15 +826,16 @@ export default async function handler(req, res) {
     );
 
     for (const cell of cells) {
-      const tornadoMatch = matchMeteopoolEvent(cell, meteopoolEvents);
-       cell.tornado = !!(tornadoMatch && tornadoMatch.tornado_suspicion && tornadoMatch.tornado_suspicion.trim() !== "");
-      
       if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
         cell.mesocyclone  = null;
         cell.is_supercell = false;
+        cell.tornado      = false;
         delete cell.konrad_mesocyclone;
         continue;
       }
+
+      const tornadoMatch = matchMeteopoolEventByValue(cell.konrad_mesocyclone, meteopoolEvents);
+      cell.tornado = !!(tornadoMatch && tornadoMatch.tornado_suspicion && tornadoMatch.tornado_suspicion.trim() !== "");
 
       cell.mesocyclone = {
         ...cell.konrad_mesocyclone,
