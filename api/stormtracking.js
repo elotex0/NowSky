@@ -740,6 +740,7 @@ export default async function handler(req, res) {
       cell_id:                identifier,
       latitude:               lat,
       longitude:              lon,
+      _ref_ms:                refMS,
       position,
       cell_speed,
       cell_based_vil_density: vil_density,
@@ -791,9 +792,10 @@ export default async function handler(req, res) {
 
   // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    const [{ xml, filename }, { geojson, spatialIndex }] = await Promise.all([
+    const [{ xml, filename }, { geojson, spatialIndex }, meteopoolEvents] = await Promise.all([
       fetchXml(),
       loadGeoJsonWithIndex(),
+      fetchMeteopoolEvents().catch(() => []),
     ]);
 
     // ── Zeitstempel aus der TATSÄCHLICH geladenen KONRAD3D-Datei extrahieren ──
@@ -828,6 +830,9 @@ export default async function handler(req, res) {
     );
 
     for (const cell of cells) {
+      const tornadoMatch = matchMeteopoolEvent(cell, meteopoolEvents);
+       cell.tornado = !!(tornadoMatch && tornadoMatch.tornado_suspicion && tornadoMatch.tornado_suspicion.trim() !== "");
+      
       if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
         cell.mesocyclone  = null;
         cell.is_supercell = false;
