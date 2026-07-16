@@ -426,26 +426,26 @@ export default async function handler(req, res) {
   };
 
   const matchMeteopoolEventByValue = (mesoData, meteopoolEvents) => {
-  if (!mesoData || mesoData.diameter_equiv_km === null || mesoData.rotational_max_ms === null) return null;
+    if (!mesoData || mesoData.diameter_equiv_km === null || mesoData.rotational_max_ms === null) return null;
 
-  let best = null;
-  let bestScore = Infinity;
+    let best = null;
+    let bestScore = Infinity;
 
-  for (const ev of meteopoolEvents) {
-    if (ev._matched || ev.diameter_equivalent_km === null || ev.velocity_rotational_max_ms === null) continue;
+    for (const ev of meteopoolEvents) {
+      if (ev._matched || ev.diameter_equivalent_km === null || ev.velocity_rotational_max_ms === null) continue;
 
-    const diamDiff = Math.abs(ev.diameter_equivalent_km - mesoData.diameter_equiv_km);
-    const velDiff  = Math.abs(ev.velocity_rotational_max_ms - mesoData.rotational_max_ms);
+      const diamDiff = Math.abs(ev.diameter_equivalent_km - mesoData.diameter_equiv_km);
+      const velDiff  = Math.abs(ev.velocity_rotational_max_ms - mesoData.rotational_max_ms);
 
-    if (diamDiff < 0.1 && velDiff < 0.1) {
-      const score = diamDiff + velDiff;
-      if (score < bestScore) { bestScore = score; best = ev; }
+      if (diamDiff < 0.1 && velDiff < 0.1) {
+        const score = diamDiff + velDiff;
+        if (score < bestScore) { bestScore = score; best = ev; }
+      }
     }
-  }
 
-  if (best) best._matched = true;
-  return best;
-};
+    if (best) best._matched = true;
+    return best;
+  };
 
   // ── Meso-XML fetchen (Zusatzfelder, die KONRAD3D nicht liefert) ──────────
   // WICHTIG: Es wird NICHT meso_latest.xml verwendet, da dessen Zeitstempel
@@ -521,20 +521,32 @@ export default async function handler(req, res) {
     return best;
   };
 
-  // ── fetchXml — parallel ───────────────────────────────────────────────────
-  const fetchXml = async () => {
-    const results = await Promise.allSettled(
-      [5, 10, 15, 20].map(async (offset) => {
-        const filename = buildFilename(offset);
-        const url = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
-        const r = await fetch(url, {
-          headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
-          signal: AbortSignal.timeout(8000),
-        });
+  // ── fetchXmlAndMeso — KONRAD3D + zugehöriges Meso-XML pro Offset PARALLEL ──
+  // Statt erst alle KONRAD3D-Offsets abzuklappern und danach das Meso-XML zu
+  // fetchen, laufen beide Requests pro Offset gleichzeitig. Kein Caching.
+  const fetchXmlAndMeso = async () => {
+    const attempts = [5, 10, 15, 20].map(async (offset) => {
+      const filename = buildFilename(offset);
+      const konradUrl = `https://opendata.dwd.de/weather/radar/konrad3d/${filename}.xml`;
+
+      const konradPromise = fetch(konradUrl, {
+        headers: { "User-Agent": "konrad3d-api/1.0", "Connection": "keep-alive" },
+        signal: AbortSignal.timeout(8000),
+      }).then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return { xml: await r.text(), filename };
-      })
-    );
+        return r.text();
+      });
+
+      const konradTsMatch = filename.match(/^KONRAD3D_(\d{8})T(\d{2})(\d{2})/);
+      const mesoPromise = konradTsMatch
+        ? fetchMesoXml(konradTsMatch[1], `${konradTsMatch[2]}${konradTsMatch[3]}`).catch(() => null)
+        : Promise.resolve(null);
+
+      const [xml, mesoXml] = await Promise.all([konradPromise, mesoPromise]);
+      return { xml, filename, mesoXml };
+    });
+
+    const results = await Promise.allSettled(attempts);
     const first = results.find((r) => r.status === "fulfilled");
     if (first) return first.value;
     throw new Error("Keine aktuelle KONRAD3D-Datei verfügbar");
@@ -788,26 +800,16 @@ export default async function handler(req, res) {
 
   // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    const [{ xml, filename }, { geojson, spatialIndex }, meteopoolEvents] = await Promise.all([
-      fetchXml(),
+    const [{ xml, filename, mesoXml }, { geojson, spatialIndex }, meteopoolEvents] = await Promise.all([
+      fetchXmlAndMeso(),
       loadGeoJsonWithIndex(),
       fetchMeteopoolEvents().catch(() => []),
     ]);
 
-    // ── Zeitstempel aus der TATSÄCHLICH geladenen KONRAD3D-Datei extrahieren ──
-    // filename z.B. "KONRAD3D_20260715T124500" → Meso-Datei muss exakt
-    // "meso_20260715_1245.xml" sein, damit Zeitstempel übereinstimmen.
-    const konradTsMatch = filename.match(/^KONRAD3D_(\d{8})T(\d{2})(\d{2})/);
-    let mesoEvents = [];
-    if (konradTsMatch) {
-      const [, mesoDate, hh, min] = konradTsMatch;
-      const mesoTime = `${hh}${min}`;
-      const mesoXml = await fetchMesoXml(mesoDate, mesoTime).catch(() => null);
-      // Kein Fallback auf eine andere Meso-Datei (z.B. meso_latest.xml) –
-      // wenn zum KONRAD-Zeitstempel keine Meso-Datei existiert, bleibt
-      // mesoEvents leer und die Zellen laufen als "konrad3d_only".
-      if (mesoXml) mesoEvents = parseMesoEvents(mesoXml);
-    }
+    // Kein Fallback auf eine andere Meso-Datei (z.B. meso_latest.xml) –
+    // wenn zum KONRAD-Zeitstempel keine Meso-Datei existiert, bleibt
+    // mesoEvents leer und die Zellen laufen als "konrad3d_only".
+    const mesoEvents = mesoXml ? parseMesoEvents(mesoXml) : [];
 
     const reference_time =
       xml.match(/<reference_time[^>]*>([^<]+)<\/reference_time>/)?.[1]?.trim() ??
