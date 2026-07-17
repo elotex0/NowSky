@@ -2,7 +2,9 @@ export const config = {
   runtime: 'edge',
 };
 
+// Primary + Fallback-Server (AWS-Mirror), analog zu Request.j0() in der App
 const DWD_URL = 'https://app-prod-static.warnwetter.de/v16/gewitter_monitor.json';
+const DWD_URL_FALLBACK = 'https://s3-eu-west-1.amazonaws.com/app-prod-static-irl.warnwetter.de/v16/gewitter_monitor.json';
 const DWD_FORECAST_URL = 'https://app-prod-static.warnwetter.de/v16/warnings_nowcast.json';
 
 // DWD Gewittermonitor level → SEVERITY string
@@ -28,9 +30,11 @@ export default async function handler(request) {
 
   // --- current (Gewittermonitor) ---
   let current = { thunderstorm: false, severity: null };
+  let currentSource = 'none';
   try {
-    const response = await fetchWithTimeout(DWD_URL, 4000);
-    const data = await response.json();
+    const data = await fetchGewitterWithFallback();
+    currentSource = data.__source;
+
     const gebiete = data.gebiete;
     if (!gebiete || !Array.isArray(gebiete)) {
       throw new Error('No gebiete in response');
@@ -89,8 +93,44 @@ export default async function handler(request) {
     lat,
     lon,
     current,
+    currentSource, // "primary" | "fallback" | "none" — zeigt, welcher Server geliefert hat
     forecast,
   });
+}
+
+/**
+ * Fragt gewitter_monitor.json von primary UND fallback parallel ab.
+ * Nimmt die Antwort mit nicht-leeren "gebiete".
+ * Bevorzugt primary, falls beide Daten haben.
+ * Wirft, falls beide fehlschlagen oder beide leer sind.
+ */
+async function fetchGewitterWithFallback() {
+  const results = await Promise.allSettled([
+    fetchWithTimeout(DWD_URL, 4000).then(r => r.json()),
+    fetchWithTimeout(DWD_URL_FALLBACK, 4000).then(r => r.json()),
+  ]);
+
+  const [primaryResult, fallbackResult] = results;
+
+  const primary = primaryResult.status === 'fulfilled' ? primaryResult.value : null;
+  const fallback = fallbackResult.status === 'fulfilled' ? fallbackResult.value : null;
+
+  const primaryGebiete = primary?.gebiete ?? [];
+  const fallbackGebiete = fallback?.gebiete ?? [];
+
+  if (primaryGebiete.length > 0) {
+    return { ...primary, __source: 'primary' };
+  }
+  if (fallbackGebiete.length > 0) {
+    return { ...fallback, __source: 'fallback' };
+  }
+  if (primary) {
+    return { ...primary, __source: 'primary' }; // beide leer, primary bevorzugen
+  }
+  if (fallback) {
+    return { ...fallback, __source: 'fallback' };
+  }
+  throw new Error('Both DWD gewitter_monitor sources failed');
 }
 
 /**
