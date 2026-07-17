@@ -103,6 +103,8 @@ const attrFast = (tagStr, attrName) => {
 
 const noFill = (v) => (v === -1000000000 || v === "-1000000000") ? null : v;
 
+const round4 = (n) => (n === null || n === undefined || isNaN(n)) ? n : Number(n.toFixed(4));
+
 // ── Elevations aus Meso-XML parsen ────────────────────────────────────────
 const parseElevations = (np) => {
   const elevBlock = blockFast(np, "elevations") ?? "";
@@ -573,8 +575,8 @@ export default async function handler(req, res) {
 
     const centroid3d = blockFast(geo, "centroid_3d") ?? blockFast(geo, "centroid3d") ?? "";
     const geodetic   = blockFast(centroid3d, "geodetic_coordinate") ?? centroid3d;
-    const lat        = numFast(geodetic, "latitude");
-    const lon        = numFast(geodetic, "longitude");
+    const lat        = round4(numFast(geodetic, "latitude"));
+    const lon        = round4(numFast(geodetic, "longitude"));
 
     const intens         = blockFast(inner, "intensity") ?? "";
     const severity       = intFast(intens, "severity") ?? 0;
