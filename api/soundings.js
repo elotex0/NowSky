@@ -124,7 +124,7 @@ function getBerlinWallClockFloored(instant) {
   const month = Number(get("month"));
   const day = Number(get("day"));
   let hour = Number(get("hour"));
-  if (hour === 24) hour = 0; // manche Locales geben 24 statt 0 zurück
+  if (hour === 24) hour = 0;
 
   return new Date(Date.UTC(year, month - 1, day, hour, 0, 0));
 }
