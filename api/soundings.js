@@ -18,8 +18,38 @@ const MAX_STEP = 48; // Absicherung, falls Ziel-Zeit außerhalb des Forecast-Hor
 // Mindestanzahl an "loose"-Vergleichsfällen, ab der eine Wahrscheinlichkeit
 // überhaupt als aussagekräftig gilt. Bei z.B. loose=1 und prob=1 (=100%)
 // beruht das nur auf EINEM einzigen historischen Fall -> statistisch nicht
-// belastbar, wird daher unterdrückt (reliable: false, prob/prob_pct: null).
+// belastbar, wird daher unterdrückt (ausreichend_daten: false, prob_pct: null).
 const MIN_LOOSE_MATCHES = 10; // ggf. anpassen
+
+// Übersetzung der SPC-Hazard-Codes ins Deutsche.
+// Aufbau der Original-Codes: [LEVEL] + [TYP], z.B. "MRGL SVR", "SIG TOR".
+// Level: MRGL (marginal/gering), SLGT (gering), ENH (erhöht), MDT (mäßig),
+//        HIGH (hoch), SIG (signifikant) - fehlt der Level, ist "SVR"/"TOR"
+//        allein die Basis-Kategorie ohne weitere Abstufung.
+// Typ:   SVR (Unwetter allgemein: Wind/Hagel), TOR (Tornado)
+const HAZARD_DE = {
+  NONE: "Kein Unwetterpotenzial",
+  SVR: "Unwetterrisiko",
+  TOR: "Tornadorisiko",
+  "MRGL SVR": "Marginales Unwetterrisiko",
+  "MRGL TOR": "Marginales Tornadorisiko",
+  "SLGT SVR": "Geringes Unwetterrisiko",
+  "SLGT TOR": "Geringes Tornadorisiko",
+  "ENH SVR": "Erhöhtes Unwetterrisiko",
+  "ENH TOR": "Erhöhtes Tornadorisiko",
+  "MDT SVR": "Mäßiges Unwetterrisiko",
+  "MDT TOR": "Mäßiges Tornadorisiko",
+  "HIGH SVR": "Hohes Unwetterrisiko",
+  "HIGH TOR": "Hohes Tornadorisiko",
+  "SIG SVR": "Signifikantes Unwetterrisiko",
+  "SIG TOR": "Signifikantes Tornadorisiko",
+};
+
+function translateHazard(code) {
+  if (!code) return null;
+  const normalized = code.trim().toUpperCase().replace(/\s+/g, " ");
+  return HAZARD_DE[normalized] ?? code; // unbekannter Code -> Original als Fallback
+}
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -106,7 +136,8 @@ export default async function handler(req, res) {
       },
       // Zusätzliche Kontext-Felder (unabhängig von SARS, ergänzen das Bild)
       context: {
-        hazard: comp.hazard ?? null,          // z.B. "MRGL TOR", "MRGL SVR", "NONE"
+        hazard: translateHazard(comp.hazard),  // z.B. "Marginales Tornadorisiko"
+        hazard_code: comp.hazard ?? null,      // Original-Code, falls im Frontend gebraucht (z.B. "MRGL TOR")
         ship: roundOrNull(comp.ship, 2),      // Sig. Hail Parameter (>1 = günstig, >4 = sehr hoch)
         scp: roundOrNull(comp.scp, 2),        // Supercell Composite (>1 = möglich, >4-8 = erhöht)
         stp_cin: roundOrNull(comp.stp_cin, 2),// Sig. Tornado Parameter inkl. CIN (>1 = signifikant)
@@ -148,9 +179,8 @@ function formatSarsCategory(cat, opts = {}) {
   return {
     matches,
     loose,
-    prob: reliable ? rawProb : null,
-    prob_pct: reliable ? Math.round(rawProb * 100) : null,
-    reliable,
+    prob_pct: reliable ? Math.round(rawProb * 100) : null, // nur noch Prozent, keine rohe Dezimalzahl
+    ausreichend_daten: reliable, // true = genug Vergleichsfälle (>= MIN_LOOSE_MATCHES) für aussagekräftige %-Angabe
   };
 }
 
