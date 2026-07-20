@@ -6,13 +6,20 @@
 //
 // Ermittelt automatisch den neuesten ICON-D2/GERMANY Run und den passenden
 // Forecast-Step für die gewünschte Uhrzeit (Europe/Berlin, auf volle Stunde
-// abgerundet) und gibt NUR die SARS-Wahrscheinlichkeiten für Supercell/Hail
-// zurück.
+// abgerundet) und gibt die SARS-Wahrscheinlichkeiten für Supercell/Hail
+// zurück, plus ein paar zusätzliche Kontext-Felder (hazard, SHIP, Craven-Index,
+// Microburst-Flag).
 
 const BASE = "https://data2.weatherwise.app";
 const MODEL = "ICON-D2";
 const REGION = "GERMANY";
 const MAX_STEP = 48; // Absicherung, falls Ziel-Zeit außerhalb des Forecast-Horizonts liegt
+
+// Mindestanzahl an "loose"-Vergleichsfällen, ab der eine Wahrscheinlichkeit
+// überhaupt als aussagekräftig gilt. Bei z.B. loose=1 und prob=1 (=100%)
+// beruht das nur auf EINEM einzigen historischen Fall -> statistisch nicht
+// belastbar, wird daher unterdrückt (reliable: false, prob/prob_pct: null).
+const MIN_LOOSE_MATCHES = 10; // ggf. anpassen
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -77,11 +84,15 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: "Sounding-API-Fehler", status: soundingResp.status });
     }
     const data = await soundingResp.json();
-    const sars = data?.indices?.sars;
+    const indices = data?.indices;
+    const sars = indices?.sars;
 
     if (!sars) {
       return res.status(502).json({ error: "Keine SARS-Daten in der Antwort enthalten" });
     }
+
+    const comp = indices?.comp ?? {};
+    const thermo = indices?.thermo ?? {};
 
     return res.status(200).json({
       run: latestRun,
@@ -90,13 +101,63 @@ export default async function handler(req, res) {
       lat: Number(lat),
       lon: Number(lon),
       sars: {
-        supercell: sars.supercell ?? { matches: [], loose: 0, prob: 0 },
-        hail: sars.hail ?? { matches: [], loose: 0, prob: 0 },
+        supercell: formatSarsCategory(sars.supercell),
+        hail: formatSarsCategory(sars.hail, { convertToCm: true }),
+      },
+      // Zusätzliche Kontext-Felder (unabhängig von SARS, ergänzen das Bild)
+      context: {
+        hazard: comp.hazard ?? null,          // z.B. "MRGL TOR", "MRGL SVR", "NONE"
+        ship: roundOrNull(comp.ship, 2),      // Sig. Hail Parameter (>1 = günstig, >4 = sehr hoch)
+        scp: roundOrNull(comp.scp, 2),        // Supercell Composite (>1 = möglich, >4-8 = erhöht)
+        stp_cin: roundOrNull(comp.stp_cin, 2),// Sig. Tornado Parameter inkl. CIN (>1 = signifikant)
+        craven_sigsvr: roundOrNull(thermo.sigsvr, 0), // CAPE x Shear, >20000 = signifikant severe
+        microburst_risk: thermo.mburst === 1, // true/false Flag
       },
     });
   } catch (err) {
     return res.status(500).json({ error: "Interner Fehler", detail: String(err) });
   }
+}
+
+// Formatiert eine SARS-Kategorie (supercell oder hail):
+// - rundet prob auf ganze Prozent (prob_pct)
+// - unterdrückt prob/prob_pct, wenn zu wenige "loose"-Vergleichsfälle vorliegen
+// - wandelt bei Hagel die Zoll-Werte in den Matches zusätzlich in cm um
+function formatSarsCategory(cat, opts = {}) {
+  const { convertToCm = false } = opts;
+
+  if (!cat) {
+    return { matches: [], loose: 0, prob: null, prob_pct: null, reliable: false };
+  }
+
+  const loose = cat.loose ?? 0;
+  const rawProb = cat.prob ?? 0;
+  const reliable = loose >= MIN_LOOSE_MATCHES;
+
+  let matches = cat.matches ?? [];
+  if (convertToCm) {
+    matches = matches.map((m) => {
+      // Format je nach Kategorie: [id, inches] bei Hagel, [id, "WEAKTOR"] o.ä. bei Supercell
+      if (Array.isArray(m) && typeof m[1] === "number") {
+        return { id: m[0], inches: m[1], cm: Math.round(m[1] * 2.54 * 100) / 100 };
+      }
+      return m;
+    });
+  }
+
+  return {
+    matches,
+    loose,
+    prob: reliable ? rawProb : null,
+    prob_pct: reliable ? Math.round(rawProb * 100) : null,
+    reliable,
+  };
+}
+
+function roundOrNull(val, decimals) {
+  if (val === null || val === undefined) return null;
+  const factor = 10 ** decimals;
+  return Math.round(val * factor) / factor;
 }
 
 // Parst "2026_07_19_15_00_00" als UTC-Zeitpunkt
