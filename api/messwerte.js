@@ -48,9 +48,6 @@ export default async function handler(req, res) {
       ? data.filter(station => inGermanyBbox(station) && isDwdOnly(station))
       : [];
 
-    // Kurzes Caching am Edge, damit nicht jeder Request die Quelle neu belastet
-    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=30');
-
     return res.status(200).json(filtered);
   } catch (err) {
     return res.status(502).json({
