@@ -28,6 +28,17 @@ function isDwdOnly(station) {
   return station.source === 'dwd';
 }
 
+function getLatestTs(stations) {
+  // "ts" ist ISO-Format (z.B. "2026-07-30T22:10"), UTC -> string-Vergleich reicht
+  let latest = null;
+  for (const s of stations) {
+    if (typeof s.ts === 'string' && (latest === null || s.ts > latest)) {
+      latest = s.ts;
+    }
+  }
+  return latest;
+}
+
 export default async function handler(req, res) {
   // CORS Header für alle Requests
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -44,9 +55,16 @@ export default async function handler(req, res) {
       throw new Error(`Quelle antwortete mit Status ${response.status}`);
     }
     const data = await response.json();
-    const filtered = Array.isArray(data)
+    const preFiltered = Array.isArray(data)
       ? data.filter(station => inGermanyBbox(station) && isDwdOnly(station))
       : [];
+
+    // Nur die neuesten Werte behalten (höchster ts, UTC)
+    const latestTs = getLatestTs(preFiltered);
+    const filtered = latestTs
+      ? preFiltered.filter(station => station.ts === latestTs)
+      : preFiltered;
+
 
     return res.status(200).json(filtered);
   } catch (err) {
