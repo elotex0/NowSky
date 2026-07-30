@@ -7,7 +7,7 @@ const SOURCE_URL = 'https://radar.wetterstation-neustadt.de/messwerte.json';
 // Grobe Bounding Box für Deutschland
 const BBOX = {
   latMin: 47.27,
-  latMax: 55.06,
+  latMax: 55.6,
   lonMin: 5.87,
   lonMax: 15.04
 };
