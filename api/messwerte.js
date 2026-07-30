@@ -23,6 +23,11 @@ function inGermanyBbox(station) {
   );
 }
 
+function isDwdOnly(station) {
+  // Nur exakt "dwd", kein "dwd_sn" oder sonstige Varianten
+  return station.source === 'dwd';
+}
+
 export default async function handler(req, res) {
   // CORS Header für alle Requests
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -39,7 +44,12 @@ export default async function handler(req, res) {
       throw new Error(`Quelle antwortete mit Status ${response.status}`);
     }
     const data = await response.json();
-    const filtered = Array.isArray(data) ? data.filter(inGermanyBbox) : [];
+    const filtered = Array.isArray(data)
+      ? data.filter(station => inGermanyBbox(station) && isDwdOnly(station))
+      : [];
+
+    // Kurzes Caching am Edge, damit nicht jeder Request die Quelle neu belastet
+    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=30');
 
     return res.status(200).json(filtered);
   } catch (err) {
