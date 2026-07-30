@@ -1,4 +1,4 @@
-import JSZip from "jszip";
+import AdmZip from "adm-zip";
 
 const BASE_URL =
   "https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/air_temperature/now/";
@@ -10,14 +10,12 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    // 1. Verzeichnis-Listing holen
     const listResp = await fetch(BASE_URL);
     if (!listResp.ok) {
       return res.status(502).json({ error: "Verzeichnis konnte nicht geladen werden" });
     }
     const html = await listResp.text();
 
-    // 2. Alle ZIP-Dateinamen der Stationen extrahieren
     const zipFiles = Array.from(
       html.matchAll(/href="(10minutenwerte_TU_\d+_now\.zip)"/g)
     ).map((m) => m[1]);
@@ -26,7 +24,6 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: "Keine Stationsdateien gefunden" });
     }
 
-    // Optional: mit ?limit=20 begrenzen (sonst evtl. Timeout auf Vercel, ~500 Stationen)
     const limit = req.query.limit ? parseInt(req.query.limit, 10) : zipFiles.length;
     const filesToProcess = zipFiles.slice(0, limit);
 
@@ -36,15 +33,15 @@ export default async function handler(req, res) {
         try {
           const zipResp = await fetch(BASE_URL + filename);
           if (!zipResp.ok) throw new Error("Download fehlgeschlagen");
-          const buffer = await zipResp.arrayBuffer();
+          const buffer = Buffer.from(await zipResp.arrayBuffer());
 
-          const zip = await JSZip.loadAsync(buffer);
-          const txtFileName = Object.keys(zip.files).find((n) =>
-            n.toLowerCase().endsWith(".txt")
+          const zip = new AdmZip(buffer);
+          const entry = zip.getEntries().find((e) =>
+            e.entryName.toLowerCase().endsWith(".txt")
           );
-          if (!txtFileName) throw new Error("Keine TXT-Datei im ZIP");
+          if (!entry) throw new Error("Keine TXT-Datei im ZIP");
 
-          const txtContent = await zip.files[txtFileName].async("string");
+          const txtContent = entry.getData().toString("utf-8");
           const lines = txtContent.trim().split(/\r?\n/);
           const header = lines[0].split(";").map((h) => h.trim());
           const lastLine = lines[lines.length - 1].split(";").map((v) => v.trim());
