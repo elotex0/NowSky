@@ -165,14 +165,13 @@ export default async function handler(req, res) {
 
     const stations = filtered.map(mapStation);
 
-    // "updated" zeigt den neuesten Zeitstempel je Source, z.B.:
-    // { dwd: "03.08.2026, 22:00 Uhr (MESZ)", iem: "03.08.2026, 21:45 Uhr (MESZ)" }
-    const updated = Object.fromEntries(
-      Object.entries(latestBySource).map(([src, ts]) => [src, formatUpdated(ts)])
-    );
+    // "updated" zeigt den global neuesten Zeitstempel ueber alle Sources hinweg
+    // (die Stationen selbst bleiben aber weiterhin pro Source auf ihrem eigenen
+    // aktuellsten Stand gefiltert, siehe oben).
+    const globalLatestTs = Object.values(latestBySource).sort().pop() || null;
 
     return res.status(200).json({
-      updated,
+      updated: formatUpdated(globalLatestTs),
       count: stations.length,
       stations
     });
