@@ -1,7 +1,7 @@
 // api/messwerte.js
 // Vercel Serverless Function
-// Ruft die Quelle ab, filtert auf Deutschland-Bbox + source === 'dwd',
-// behaelt nur die neuesten Werte, wandelt Uhrzeiten UTC -> Europe/Berlin um,
+// Ruft die Quelle ab, filtert auf Deutschland-Bbox + erlaubte Sources,
+// behaelt pro Source nur die neuesten Werte, wandelt Uhrzeiten UTC -> Europe/Berlin um,
 // benennt Felder um und rechnet Windgeschwindigkeiten in km/h um.
 // Liefert CORS *
 
@@ -26,20 +26,27 @@ function inGermanyBbox(station) {
   );
 }
 
-function isDwdOnly(station) {
-  // Nur exakt "dwd", kein "dwd_sn" oder sonstige Varianten
-  return station.source === 'dwd';
+// Erlaubte Quellen. Jede Source wird separat auf ihren eigenen
+// neuesten Zeitstempel gefiltert (siehe getLatestTsPerSource),
+// damit unterschiedlich aktuelle Quellen sich nicht gegenseitig ausschließen.
+const ALLOWED_SOURCES = ['dwd', 'iem'];
+
+function isAllowedSource(station) {
+  return ALLOWED_SOURCES.includes(station.source);
 }
 
-function getLatestTs(stations) {
-  // "ts" ist ISO-Format (z.B. "2026-07-30T22:10"), UTC -> string-Vergleich reicht
-  let latest = null;
+// Ermittelt pro Source den neuesten Zeitstempel.
+// Rueckgabe: { dwd: '2026-08-03T20:00', iem: '2026-08-03T19:45', ... }
+function getLatestTsPerSource(stations) {
+  const latestBySource = {};
   for (const s of stations) {
-    if (typeof s.ts === 'string' && (latest === null || s.ts > latest)) {
-      latest = s.ts;
+    if (typeof s.ts !== 'string') continue;
+    const src = s.source;
+    if (!(src in latestBySource) || s.ts > latestBySource[src]) {
+      latestBySource[src] = s.ts;
     }
   }
-  return latest;
+  return latestBySource;
 }
 
 // Wandelt einen UTC-Zeitstempel ohne Zonen-Suffix (z.B. "2026-07-30T22:40")
@@ -66,7 +73,9 @@ function utcToBerlin(tsUtc) {
   return `${map.year}-${map.month}-${map.day}T${map.hour}:${map.minute}`;
 }
 
-// Formatierte, gut lesbare Version fuer das "updated"-Feld ganz oben
+// Formatierte, gut lesbare Version fuer das "updated"-Feld ganz oben.
+// Da jetzt mehrere Sources mit ggf. unterschiedlichen Zeitstempeln existieren,
+// zeigt "updated" den jeweils neuesten Wert JE SOURCE an.
 function formatUpdated(tsUtc) {
   if (typeof tsUtc !== 'string') return null;
   const utcDate = new Date(tsUtc + ':00Z');
@@ -142,20 +151,28 @@ export default async function handler(req, res) {
     }
     const data = await response.json();
     const preFiltered = Array.isArray(data)
-      ? data.filter(station => inGermanyBbox(station) && isDwdOnly(station))
+      ? data.filter(station => inGermanyBbox(station) && isAllowedSource(station))
       : [];
 
-    // Nur die neuesten Werte behalten (höchster ts, UTC)
-    const latestTsUtc = getLatestTs(preFiltered);
-    const filtered = latestTsUtc
-      ? preFiltered.filter(station => station.ts === latestTsUtc)
-      : preFiltered;
+    // Pro Source den neuesten Zeitstempel ermitteln, dann jede Station
+    // gegen den neuesten Zeitstempel IHRER EIGENEN Source pruefen.
+    // So bleiben z.B. dwd (aktuell 20:00) und iem (aktuell 19:45) beide erhalten,
+    // statt dass iem komplett verschwindet, nur weil es "aelter" ist als dwd.
+    const latestBySource = getLatestTsPerSource(preFiltered);
+    const filtered = preFiltered.filter(
+      station => station.ts === latestBySource[station.source]
+    );
 
     const stations = filtered.map(mapStation);
 
+    // "updated" zeigt den neuesten Zeitstempel je Source, z.B.:
+    // { dwd: "03.08.2026, 22:00 Uhr (MESZ)", iem: "03.08.2026, 21:45 Uhr (MESZ)" }
+    const updated = Object.fromEntries(
+      Object.entries(latestBySource).map(([src, ts]) => [src, formatUpdated(ts)])
+    );
 
     return res.status(200).json({
-      updated: formatUpdated(latestTsUtc),
+      updated,
       count: stations.length,
       stations
     });
