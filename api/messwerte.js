@@ -26,27 +26,41 @@ function inGermanyBbox(station) {
   );
 }
 
-// Erlaubte Quellen. Jede Source wird separat auf ihren eigenen
-// neuesten Zeitstempel gefiltert (siehe getLatestTsPerSource),
-// damit unterschiedlich aktuelle Quellen sich nicht gegenseitig ausschließen.
+// Erlaubte Quellen.
 const ALLOWED_SOURCES = ['dwd', 'iem'];
 
 function isAllowedSource(station) {
   return ALLOWED_SOURCES.includes(station.source);
 }
 
-// Ermittelt pro Source den neuesten Zeitstempel.
-// Rueckgabe: { dwd: '2026-08-03T20:00', iem: '2026-08-03T19:45', ... }
-function getLatestTsPerSource(stations) {
-  const latestBySource = {};
+// Behaelt pro Station (id) nur den Eintrag mit dem neuesten ts.
+// Das ist wichtig, weil nicht alle Stationen exakt zur gleichen Minute
+// melden (auch innerhalb einer Source koennen einzelne Stationen
+// 5-10 Minuten hinterherhaengen). Wenn man stattdessen auf einen
+// einzigen globalen oder Source-weiten "neuesten" ts exakt matcht,
+// fallen alle leicht verspaeteten Stationen komplett raus.
+function dedupeKeepLatestPerStation(stations) {
+  const latestById = new Map();
   for (const s of stations) {
-    if (typeof s.ts !== 'string') continue;
-    const src = s.source;
-    if (!(src in latestBySource) || s.ts > latestBySource[src]) {
-      latestBySource[src] = s.ts;
+    if (typeof s.ts !== 'string' || typeof s.id === 'undefined') continue;
+    const existing = latestById.get(s.id);
+    if (!existing || s.ts > existing.ts) {
+      latestById.set(s.id, s);
     }
   }
-  return latestBySource;
+  return Array.from(latestById.values());
+}
+
+// Ermittelt den global neuesten Zeitstempel ueber alle (bereits
+// deduplizierten) Stationen hinweg, nur fuer die Anzeige im "updated"-Feld.
+function getGlobalLatestTs(stations) {
+  let latest = null;
+  for (const s of stations) {
+    if (typeof s.ts === 'string' && (latest === null || s.ts > latest)) {
+      latest = s.ts;
+    }
+  }
+  return latest;
 }
 
 // Wandelt einen UTC-Zeitstempel ohne Zonen-Suffix (z.B. "2026-07-30T22:40")
@@ -154,21 +168,16 @@ export default async function handler(req, res) {
       ? data.filter(station => inGermanyBbox(station) && isAllowedSource(station))
       : [];
 
-    // Pro Source den neuesten Zeitstempel ermitteln, dann jede Station
-    // gegen den neuesten Zeitstempel IHRER EIGENEN Source pruefen.
-    // So bleiben z.B. dwd (aktuell 20:00) und iem (aktuell 19:45) beide erhalten,
-    // statt dass iem komplett verschwindet, nur weil es "aelter" ist als dwd.
-    const latestBySource = getLatestTsPerSource(preFiltered);
-    const filtered = preFiltered.filter(
-      station => station.ts === latestBySource[station.source]
-    );
+    // Pro Station (id) nur den jeweils neuesten Eintrag behalten,
+    // statt auf einen einzigen globalen/Source-weiten Zeitstempel zu matchen.
+    // So bleiben auch leicht verspaetete Stationen erhalten.
+    const filtered = dedupeKeepLatestPerStation(preFiltered);
 
     const stations = filtered.map(mapStation);
 
-    // "updated" zeigt den global neuesten Zeitstempel ueber alle Sources hinweg
-    // (die Stationen selbst bleiben aber weiterhin pro Source auf ihrem eigenen
-    // aktuellsten Stand gefiltert, siehe oben).
-    const globalLatestTs = Object.values(latestBySource).sort().pop() || null;
+    // "updated" zeigt den global neuesten Zeitstempel ueber alle
+    // (jetzt deduplizierten) Stationen hinweg.
+    const globalLatestTs = getGlobalLatestTs(filtered);
 
     return res.status(200).json({
       updated: formatUpdated(globalLatestTs),
