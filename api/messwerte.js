@@ -165,7 +165,7 @@ export default async function handler(req, res) {
     }
     const data = await response.json();
     const preFiltered = Array.isArray(data)
-      ? data.filter(station => inGermanyBbox(station) && isAllowedSource(station))
+      ? data.filter(station => isAllowedSource(station))
       : [];
 
     // Pro Station (id) nur den jeweils neuesten Eintrag behalten,
