@@ -660,14 +660,14 @@ export default async function handler(req, res) {
       } else if (hail_flag === 2) {
         const thickness = (echo_top_hail !== null && echo_bottom_hail !== null)
           ? (echo_top_hail - echo_bottom_hail) / 1000 : 0;
-        hail_cm = Math.max(1.0, Math.min(1.0 + thickness * 0.2 + area_hail * 0.003, 3.9));
+        hail_cm = Math.max(2.0, Math.min(2.0 + thickness * 0.2 + area_hail * 0.003, 4.9));
       } else if (hail_flag === 3) {
         const thickness = (echo_top_large_hail !== null && echo_bottom_large_hail !== null)
           ? (echo_top_large_hail - echo_bottom_large_hail) / 1000
           : (echo_top_hail !== null && echo_bottom_hail !== null)
             ? (echo_top_hail - echo_bottom_hail) / 1000 : 0;
         const area = area_large_hail > 0 ? area_large_hail : area_hail;
-        hail_cm = Math.max(2.0, 2.0 + thickness * 0.3 + area * 0.005);
+        hail_cm = Math.max(5.0, 5.0 + thickness * 0.3 + area * 0.005);
       }
       if (hail_cm !== null) hail_cm = Math.round(hail_cm * 10) / 10;
     }
