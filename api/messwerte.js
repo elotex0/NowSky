@@ -27,7 +27,7 @@ function inGermanyBbox(station) {
 }
 
 // Erlaubte Quellen.
-const ALLOWED_SOURCES = ['dwd', 'iem', 'meteofrance'];
+const ALLOWED_SOURCES = ['dwd', 'iem', 'meteofrance', 'dhmz', 'meteohub' ];
 
 function isAllowedSource(station) {
   return ALLOWED_SOURCES.includes(station.source);
