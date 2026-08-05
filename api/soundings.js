@@ -15,9 +15,9 @@
 // Craven-Index, Microburst-Flag).
 
 const BASE = "https://data2.weatherwise.app";
-const MODEL = "ICON-D2";
+const MODEL = "ICON-EU";
 const REGION = "GERMANY";
-const MAX_STEP = 48; // Absicherung, falls Ziel-Zeit außerhalb des Forecast-Horizonts liegt
+const MAX_STEP = 120; // Absicherung, falls Ziel-Zeit außerhalb des Forecast-Horizonts liegt
 
 // Mindestanzahl an "loose"-Vergleichsfällen, ab der eine Wahrscheinlichkeit
 // überhaupt als aussagekräftig gilt. Bei z.B. loose=1 und prob=1 (=100%)
