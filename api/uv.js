@@ -57,8 +57,9 @@ export default async function handler(req, res) {
         zeit: data.now?.time ?? null,
       },
       max_uv: {
-        heute: data.today?.max?.uv_index ?? null,
+        datum: data.today?.date ?? null,
         zeit: data.today?.max?.time ?? null,
+        heute: data.today?.max?.uv_index ?? null,
       },
     });
 
