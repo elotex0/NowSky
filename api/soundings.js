@@ -4,11 +4,15 @@
 //   /api/sounding-sars?lat=48.7419&lon=9.211
 //   /api/sounding-sars?lat=48.7419&lon=9.211&time=2026-07-19T21:30:00  (optional, sonst "jetzt")
 //
-// Ermittelt automatisch den neuesten ICON-D2/GERMANY Run und den passenden
-// Forecast-Step für die gewünschte Uhrzeit (Europe/Berlin, auf volle Stunde
-// abgerundet) und gibt die SARS-Wahrscheinlichkeiten für Supercell/Hail
-// zurück, plus ein paar zusätzliche Kontext-Felder (hazard, SHIP, Craven-Index,
-// Microburst-Flag).
+// Ermittelt automatisch den neuesten ICON-D2/GERMANY Run und liefert die
+// SARS-Wahrscheinlichkeiten für Supercell/Hail für ALLE Forecast-Steps ab der
+// gewünschten Uhrzeit (Europe/Berlin, auf volle Stunde abgerundet) bis zum
+// Ende des Forecast-Horizonts (MAX_STEP). Also z.B. bei Run 21:00 UTC und
+// Zielzeit = jetzt (kurz nach 21 Uhr lokal): Step 1 (=22 Uhr lokal) ist der
+// erste Eintrag, danach folgen die restlichen 47 Steps.
+//
+// Plus ein paar zusätzliche Kontext-Felder pro Step (hazard, SHIP,
+// Craven-Index, Microburst-Flag).
 
 const BASE = "https://data2.weatherwise.app";
 const MODEL = "ICON-D2";
@@ -20,6 +24,10 @@ const MAX_STEP = 48; // Absicherung, falls Ziel-Zeit außerhalb des Forecast-Hor
 // beruht das nur auf EINEM einzigen historischen Fall -> statistisch nicht
 // belastbar, wird daher unterdrückt (ausreichend_daten: false, prob_pct: null).
 const MIN_LOOSE_MATCHES = 10; // ggf. anpassen
+
+// Wie viele Soundings gleichzeitig (parallel) abgerufen werden, um die
+// Upstream-API nicht mit 48 gleichzeitigen Requests zu fluten.
+const CONCURRENCY = 8;
 
 // Übersetzung der SPC-Hazard-Codes ins Deutsche.
 // Aufbau der Original-Codes: [LEVEL] + [TYP], z.B. "MRGL SVR", "SIG TOR".
@@ -75,7 +83,9 @@ export default async function handler(req, res) {
     }
     const latestRun = runs[runs.length - 1]; // z.B. "2026_07_19_15_00_00"
 
-    // 2) Zielzeit bestimmen (Europe/Berlin, auf volle Stunde abgerundet)
+    // 2) Zielzeit bestimmen (Europe/Berlin, auf volle Stunde abgerundet) -
+    //    das ist die UNTERGRENZE: alle Steps ab (inkl.) dieser Zeit werden
+    //    zurückgegeben.
     const targetInstant = time ? new Date(time) : new Date();
     if (isNaN(targetInstant.getTime())) {
       return res.status(400).json({ error: "Ungültiger time-Parameter" });
@@ -85,18 +95,19 @@ export default async function handler(req, res) {
     // 3) Run-String in UTC-Date parsen
     const runDate = parseRunString(latestRun);
 
-    // 4) Passenden Step finden: run(UTC) + step[h] muss (in Berlin-Wallclock)
-    //    exakt targetWall entsprechen
-    let step = null;
+    // 4) Alle Steps ermitteln, deren Gültigkeitszeit (Berlin-Wallclock)
+    //    >= targetWall ist - d.h. "jetzt" (bzw. der übergebenen Zeit) und
+    //    alle folgenden Steps bis MAX_STEP.
+    const stepsToFetch = [];
     for (let s = 0; s <= MAX_STEP; s++) {
       const validInstant = new Date(runDate.getTime() + s * 3600 * 1000);
       const validWall = getBerlinWallClockFloored(validInstant);
-      if (validWall.getTime() === targetWall.getTime()) {
-        step = s;
-        break;
+      if (validWall.getTime() >= targetWall.getTime()) {
+        stepsToFetch.push({ step: s, validWall });
       }
     }
-    if (step === null) {
+
+    if (stepsToFetch.length === 0) {
       return res.status(422).json({
         error: "Zielzeit liegt außerhalb des Forecast-Horizonts dieses Runs",
         run: latestRun,
@@ -104,49 +115,91 @@ export default async function handler(req, res) {
       });
     }
 
-    // 5) Sounding abrufen
+    // 5) Soundings für alle passenden Steps abrufen (mit begrenzter
+    //    Parallelität, um die Upstream-API nicht zu überlasten)
+    const forecasts = await fetchSoundingsInBatches(stepsToFetch, latestRun, lat, lon);
+
+    return res.status(200).json({
+      run: latestRun,
+      lat: Number(lat),
+      lon: Number(lon),
+      count: forecasts.length,
+      forecasts,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Interner Fehler", detail: String(err) });
+  }
+}
+
+// Ruft die Soundings für eine Liste von { step, validWall } ab, mit
+// begrenzter Parallelität (CONCURRENCY gleichzeitige Requests). Steps, bei
+// denen der Abruf fehlschlägt, werden mit einem "error"-Feld statt Daten
+// zurückgegeben, damit ein einzelner Fehler nicht die ganze Antwort killt.
+async function fetchSoundingsInBatches(stepsToFetch, latestRun, lat, lon) {
+  const results = new Array(stepsToFetch.length);
+
+  let cursor = 0;
+  async function worker() {
+    while (cursor < stepsToFetch.length) {
+      const idx = cursor++;
+      const { step, validWall } = stepsToFetch[idx];
+      results[idx] = await fetchOneStep(step, validWall, latestRun, lat, lon);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(CONCURRENCY, stepsToFetch.length) }, worker);
+  await Promise.all(workers);
+
+  return results;
+}
+
+// Ruft ein einzelnes Sounding ab und formt es ins gleiche Ausgabeformat wie
+// zuvor (sars + context), ergänzt um step und valid_local. Fehler beim
+// Abruf werden abgefangen und als error-Feld zurückgegeben, statt die
+// gesamte Anfrage scheitern zu lassen.
+async function fetchOneStep(step, validWall, latestRun, lat, lon) {
+  const valid_local = validWall.toISOString().replace(".000Z", "Z");
+
+  try {
     const soundingUrl =
       `${BASE}/api/models/v1/sounding/?model=${MODEL}&region=${REGION}` +
       `&run=${latestRun}&step=${step}&lat=${lat}&lon=${lon}&format=json`;
 
     const soundingResp = await fetch(soundingUrl);
     if (!soundingResp.ok) {
-      return res.status(502).json({ error: "Sounding-API-Fehler", status: soundingResp.status });
+      return { step, valid_local, error: `Sounding-API-Fehler (Status ${soundingResp.status})` };
     }
+
     const data = await soundingResp.json();
     const indices = data?.indices;
     const sars = indices?.sars;
 
     if (!sars) {
-      return res.status(502).json({ error: "Keine SARS-Daten in der Antwort enthalten" });
+      return { step, valid_local, error: "Keine SARS-Daten in der Antwort enthalten" };
     }
 
     const comp = indices?.comp ?? {};
     const thermo = indices?.thermo ?? {};
 
-    return res.status(200).json({
-      run: latestRun,
+    return {
       step,
-      valid_local: targetWall.toISOString().replace(".000Z", "Z"),
-      lat: Number(lat),
-      lon: Number(lon),
+      valid_local,
       sars: {
         supercell: formatSarsCategory(sars.supercell),
         hail: formatSarsCategory(sars.hail, { convertToCm: true }),
       },
-      // Zusätzliche Kontext-Felder (unabhängig von SARS, ergänzen das Bild)
       context: {
-        hazard: translateHazard(comp.hazard),  // z.B. "Marginales Tornadorisiko"
-        hazard_code: comp.hazard ?? null,      // Original-Code, falls im Frontend gebraucht (z.B. "MRGL TOR")
-        ship: roundOrNull(comp.ship, 2),      // Sig. Hail Parameter (>1 = günstig, >4 = sehr hoch)
-        scp: roundOrNull(comp.scp, 2),        // Supercell Composite (>1 = möglich, >4-8 = erhöht)
-        stp_cin: roundOrNull(comp.stp_cin, 2),// Sig. Tornado Parameter inkl. CIN (>1 = signifikant)
-        craven_sigsvr: roundOrNull(thermo.sigsvr, 0), // CAPE x Shear, >20000 = signifikant severe
-        microburst_risk: thermo.mburst === 1, // true/false Flag
+        hazard: translateHazard(comp.hazard),
+        hazard_code: comp.hazard ?? null,
+        ship: roundOrNull(comp.ship, 2),
+        scp: roundOrNull(comp.scp, 2),
+        stp_cin: roundOrNull(comp.stp_cin, 2),
+        craven_sigsvr: roundOrNull(thermo.sigsvr, 0),
+        microburst_risk: thermo.mburst === 1,
       },
-    });
+    };
   } catch (err) {
-    return res.status(500).json({ error: "Interner Fehler", detail: String(err) });
+    return { step, valid_local, error: String(err) };
   }
 }
 
