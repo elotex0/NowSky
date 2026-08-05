@@ -16,7 +16,7 @@
 
 const BASE = "https://data2.weatherwise.app";
 const MODEL = "ICON-EU";
-const REGION = "GERMANY";
+const REGION = "EUROPE";
 const MAX_STEP = 120; // Absicherung, falls Ziel-Zeit außerhalb des Forecast-Horizonts liegt
 
 // Mindestanzahl an "loose"-Vergleichsfällen, ab der eine Wahrscheinlichkeit
