@@ -27,46 +27,7 @@ function normalize(str) {
     .replace(/ß/g,"ss");
 }
 
-// Zeitstempel aus dem Verzeichnis-Index parsen, z.B. "09-Aug-2026 01:05:03"
-// -> ISO-String, unter Annahme Europe/Berlin (CET = UTC+1, CEST = UTC+2)
-function parseIndexTimestamp(dateStr) {
-  const months = {
-    Jan:0, Feb:1, Mar:2, Apr:3, May:4, Jun:5,
-    Jul:6, Aug:7, Sep:8, Oct:9, Nov:10, Dec:11
-  };
-  const m = dateStr.match(/(\d{2})-(\w{3})-(\d{4}) (\d{2}):(\d{2}):(\d{2})/);
-  if (!m) return null;
-  const [, day, monStr, year, hour, min, sec] = m;
-  const month = months[monStr];
-
-  // Grobe DST-Bestimmung für Deutschland (letzter Sonntag im März bis letzter Sonntag im Oktober)
-  const naiveDate = new Date(Date.UTC(+year, month, +day, +hour, +min, +sec));
-  const isDST = month > 2 && month < 9; // Apr–Sep sicher DST; Randfälle März/Okt werden hier grob approximiert
-  const offsetHours = isDST ? 2 : 1;
-
-  // Berliner Zeit -> UTC durch Abzug des Offsets
-  const utcMs = naiveDate.getTime() - offsetHours * 60 * 60 * 1000;
-  return new Date(utcMs).toISOString();
-}
-
-// Verzeichnis-Index abrufen und Timestamp für die heutige Datei extrahieren
-async function getUpdatedAt(todayStr) {
-  const indexUrl = "https://opendata.dwd.de/climate_environment/health/forecasts/heat/";
-  const res = await fetch(indexUrl);
-  const html = await res.text();
-
-  const filename = `hwtrend_${todayStr}.json`;
-  const escaped = filename.replace(/[.]/g, "\\.");
-  const re = new RegExp(
-    `${escaped}\\s+(\\d{2}-\\w{3}-\\d{4}\\s+\\d{2}:\\d{2}:\\d{2})`
-  );
-  const match = html.match(re);
-  if (!match) return null;
-
-  return parseIndexTimestamp(match[1]);
-}
-
-// DWD JSON laden
+// DWD JSON laden + Last-Modified per HEAD abfragen
 async function getDWDJson() {
   const todayStr = new Date()
     .toISOString()
@@ -78,14 +39,27 @@ async function getDWDJson() {
   }
 
   const url = `https://opendata.dwd.de/climate_environment/health/forecasts/heat/hwtrend_${todayStr}.json`;
+
+  // HEAD-Request für den Last-Modified-Header
+  let updatedAt = null;
+  try {
+    const headRes = await fetch(url, { method: "HEAD" });
+    const lastModified = headRes.headers.get("last-modified");
+    if (lastModified) {
+      updatedAt = new Date(lastModified).toISOString();
+    }
+  } catch (e) {
+    console.error("HEAD request failed:", e.message);
+  }
+
   const res = await fetch(url);
   const data = await res.json();
 
   dwdCache = data;
   cachedDay = todayStr;
-  cachedUpdatedAt = await getUpdatedAt(todayStr).catch(() => null);
+  cachedUpdatedAt = updatedAt;
 
-  return { data, updatedAt: cachedUpdatedAt };
+  return { data, updatedAt };
 }
 
 // Region aus Nominatim bestimmen
