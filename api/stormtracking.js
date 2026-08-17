@@ -371,19 +371,11 @@ export default async function handler(req, res) {
       if (dLast < bestDist) bestMs = last.ms;
 
       seen.add(name);
-      // minutes_until relativ zu jetzt (nicht zur reference_time)
-      const nowMs         = Date.now();
-      const minutes_until = Math.round((bestMs - nowMs) / 60000);
-      // Orte die bereits hinter der Zelle liegen (> 2 min in Vergangenheit) überspringen
-      if (minutes_until < -2) continue;
-      const arrival_time  = new Date(bestMs).toLocaleTimeString("de-DE", {
-        hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin",
-      });
-      orte.push({ name, arrival_time, minutes_until: Math.max(0, minutes_until) });
+      orte.push({ name, _sortMs: bestMs });
     }
 
-    orte.sort((a, b) => (a.minutes_until ?? 0) - (b.minutes_until ?? 0));
-    return orte;
+    orte.sort((a, b) => a._sortMs - b._sortMs);
+    return orte.map(({ name }) => ({ name }));
   };
 
   // ── Meteopool Mesocyclone-Feed fetchen (liefert tornado_suspicion) ────────
