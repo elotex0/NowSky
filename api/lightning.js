@@ -1,18 +1,15 @@
 // api/lightning.js
-// Abruf: /api/lightning
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // Deutschland Bounding Box
   const DE_BBOX = { latMin: 46.9, latMax: 55.55, lonMin: 5.5, lonMax: 15.55 }
   const inGermany = (p) =>
     p.lat >= DE_BBOX.latMin && p.lat <= DE_BBOX.latMax &&
     p.lon >= DE_BBOX.lonMin && p.lon <= DE_BBOX.lonMax;
 
-  // Zeit-Buckets in Minuten (Alter des Blitzes relativ zu "jetzt")
   const BUCKETS = [
     { key: "0-5", minMin: 0, maxMin: 5 },
     { key: "5-10", minMin: 5, maxMin: 10 },
@@ -27,19 +24,26 @@ export default async function handler(req, res) {
     { key: "50-55", minMin: 50, maxMin: 55 },
     { key: "55-60", minMin: 55, maxMin: 60 },
   ];
-  const MAX_AGE_MIN = BUCKETS[BUCKETS.length - 1].maxMin; // 30
+  const MAX_AGE_MIN = BUCKETS[BUCKETS.length - 1].maxMin; // 60
 
   const getBucket = (ageMin) => {
     for (const b of BUCKETS) {
       if (ageMin >= b.minMin && ageMin < b.maxMin) return b.key;
     }
-    return null; // älter als MAX_AGE_MIN -> wird verworfen
+    return null;
   };
 
   try {
     const now = new Date();
     const nowSec = Math.floor(now.getTime() / 1000);
-    const cutoffSec = nowSec - 60 * MAX_AGE_MIN; // bis 30 min zurück
+    const cutoffSec = nowSec - 60 * MAX_AGE_MIN;
+
+    // --- NEU: "jetzt" auf 5-Minuten-Raster abrunden ---
+    const ROUND_SEC = 5 * 60;
+    const nowRoundedSec = Math.floor(nowSec / ROUND_SEC) * ROUND_SEC;
+    const vonSec = nowRoundedSec - 60 * MAX_AGE_MIN;
+    const bisSec = nowRoundedSec;
+    // ----------------------------------------------------
 
     const liveRes = await fetch("https://ukwx.duckdns.org/lightning/europe", {
       headers: { "User-Agent": "lightning-api" },
@@ -49,11 +53,8 @@ export default async function handler(req, res) {
     const liveData = await liveRes.json();
     const allPoints = liveData.points ?? [];
 
-    // Nur Deutschland + Zeitfilter letzte 30 min
-    // Zeitfeld ist "t" (Unix-Sekunden)
     const filtered = allPoints.filter((p) => inGermany(p) && p.t >= cutoffSec);
 
-    // Buckets initialisieren
     const grouped = {};
     for (const b of BUCKETS) grouped[b.key] = [];
 
@@ -73,8 +74,8 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       meta: {
-        von: new Date(cutoffSec * 1000).toISOString(),
-        bis: now.toISOString(),
+        von: new Date(vonSec * 1000).toISOString(),
+        bis: new Date(bisSec * 1000).toISOString(),
         anzahlGesamt: filtered.length,
         anzahlProBucket,
       },
