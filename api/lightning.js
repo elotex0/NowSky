@@ -10,40 +10,23 @@ export default async function handler(req, res) {
     p.lat >= DE_BBOX.latMin && p.lat <= DE_BBOX.latMax &&
     p.lon >= DE_BBOX.lonMin && p.lon <= DE_BBOX.lonMax;
 
-  const BUCKETS = [
-    { key: "0-5", minMin: 0, maxMin: 5 },
-    { key: "5-10", minMin: 5, maxMin: 10 },
-    { key: "10-15", minMin: 10, maxMin: 15 },
-    { key: "15-20", minMin: 15, maxMin: 20 },
-    { key: "20-25", minMin: 20, maxMin: 25 },
-    { key: "25-30", minMin: 25, maxMin: 30 },
-    { key: "30-35", minMin: 30, maxMin: 35 },
-    { key: "35-40", minMin: 35, maxMin: 40 },
-    { key: "40-45", minMin: 40, maxMin: 45 },
-    { key: "45-50", minMin: 45, maxMin: 50 },
-    { key: "50-55", minMin: 50, maxMin: 55 },
-    { key: "55-60", minMin: 55, maxMin: 60 },
+  const BUCKET_DEFS = [
+    "0-5","5-10","10-15","15-20","20-25","25-30",
+    "30-35","35-40","40-45","45-50","50-55","55-60",
   ];
-  const MAX_AGE_MIN = BUCKETS[BUCKETS.length - 1].maxMin; // 60
-
-  const getBucket = (ageMin) => {
-    for (const b of BUCKETS) {
-      if (ageMin >= b.minMin && ageMin < b.maxMin) return b.key;
-    }
-    return null;
-  };
+  const MAX_AGE_MIN = 60;
+  const ROUND_SEC = 5 * 60;
 
   try {
     const now = new Date();
     const nowSec = Math.floor(now.getTime() / 1000);
-    const cutoffSec = nowSec - 60 * MAX_AGE_MIN;
 
-    // --- NEU: "jetzt" auf 5-Minuten-Raster abrunden ---
-    const ROUND_SEC = 5 * 60;
+    // "jetzt" auf 5-Minuten-Raster abrunden -> stabiler Referenzpunkt
     const nowRoundedSec = Math.floor(nowSec / ROUND_SEC) * ROUND_SEC;
+
     const vonSec = nowRoundedSec - 60 * MAX_AGE_MIN;
     const bisSec = nowRoundedSec;
-    // ----------------------------------------------------
+    const cutoffSec = vonSec;
 
     const liveRes = await fetch("https://ukwx.duckdns.org/lightning/europe", {
       headers: { "User-Agent": "lightning-api" },
@@ -53,14 +36,32 @@ export default async function handler(req, res) {
     const liveData = await liveRes.json();
     const allPoints = liveData.points ?? [];
 
-    const filtered = allPoints.filter((p) => inGermany(p) && p.t >= cutoffSec);
+    const filtered = allPoints.filter((p) => inGermany(p) && p.t >= cutoffSec && p.t < bisSec);
 
+    // Buckets initialisieren, inkl. absoluter Zeitgrenzen für die Anzeige
     const grouped = {};
-    for (const b of BUCKETS) grouped[b.key] = [];
+    const bucketRanges = {};
+    for (const key of BUCKET_DEFS) {
+      const [minMin, maxMin] = key.split("-").map(Number);
+      grouped[key] = [];
+      bucketRanges[key] = {
+        von: new Date((bisSec - 60 * maxMin) * 1000).toISOString(),
+        bis: new Date((bisSec - 60 * minMin) * 1000).toISOString(),
+      };
+    }
+
+    // Zuordnung anhand absoluter Sekunden relativ zu nowRoundedSec (nicht nowSec!)
+    const getBucketKey = (t) => {
+      const ageMinFromRounded = (bisSec - t) / 60; // Alter bezogen auf gerundetes "jetzt"
+      for (const key of BUCKET_DEFS) {
+        const [minMin, maxMin] = key.split("-").map(Number);
+        if (ageMinFromRounded >= minMin && ageMinFromRounded < maxMin) return key;
+      }
+      return null;
+    };
 
     for (const p of filtered) {
-      const ageMin = (nowSec - p.t) / 60;
-      const bucketKey = getBucket(ageMin);
+      const bucketKey = getBucketKey(p.t);
       if (!bucketKey) continue;
       grouped[bucketKey].push({
         lat: p.lat,
@@ -70,7 +71,7 @@ export default async function handler(req, res) {
     }
 
     const anzahlProBucket = {};
-    for (const b of BUCKETS) anzahlProBucket[b.key] = grouped[b.key].length;
+    for (const key of BUCKET_DEFS) anzahlProBucket[key] = grouped[key].length;
 
     return res.status(200).json({
       meta: {
@@ -78,6 +79,7 @@ export default async function handler(req, res) {
         bis: new Date(bisSec * 1000).toISOString(),
         anzahlGesamt: filtered.length,
         anzahlProBucket,
+        bucketZeiten: bucketRanges, // z.B. "0-5": { von: "...14:25", bis: "...14:30" }
       },
       buckets: grouped,
     });
