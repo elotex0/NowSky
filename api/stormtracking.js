@@ -125,36 +125,47 @@ const parseElevations = (np) => {
   return { by_site, units };
 };
 
-// ── GeoJSON async lesen + Spatial Index bauen ─────────────────────────────────
-const loadGeoJsonWithIndex = () => new Promise((resolve, reject) => {
-  const filePath = path.join(__dirname, "../deutschland.geojson");
-  const chunks = [];
-  fs.createReadStream(filePath, { encoding: "utf-8" })
-    .on("data", c => chunks.push(c))
-    .on("end", () => {
-      try {
-        const geojson = JSON.parse(chunks.join(""));
+// ── GeoJSON + Spatial Index: EINMALIG pro warmer Instanz, danach gecacht ───
+// Das Bauen des rbush-Index (JSON.parse + turf.bbox pro Feature) ist der
+// mit Abstand teuerste Teil im Request. Da sich deutschland.geojson nie
+// ändert, wird das Ergebnis im Modul-Scope gecacht, statt bei jedem Request
+// neu zu berechnen.
+let _geoCache = null;
 
-        // Spatial Index aufbauen (rbush)
-        const tree = new rbush();
-        const items = [];
-        for (let i = 0; i < geojson.features.length; i++) {
-          const f = geojson.features[i];
-          try {
-            const bbox = turf.bbox(f);
-            if (isFinite(bbox[0]) && isFinite(bbox[1]) && isFinite(bbox[2]) && isFinite(bbox[3])) {
-              items.push({ minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3], idx: i });
-            }
-          } catch { /* Feature überspringen */ }
+const loadGeoJsonWithIndex = () => {
+  if (_geoCache) return Promise.resolve(_geoCache);
+
+  return new Promise((resolve, reject) => {
+    const filePath = path.join(__dirname, "../deutschland.geojson");
+    const chunks = [];
+    fs.createReadStream(filePath, { encoding: "utf-8" })
+      .on("data", c => chunks.push(c))
+      .on("end", () => {
+        try {
+          const geojson = JSON.parse(chunks.join(""));
+
+          // Spatial Index aufbauen (rbush)
+          const tree = new rbush();
+          const items = [];
+          for (let i = 0; i < geojson.features.length; i++) {
+            const f = geojson.features[i];
+            try {
+              const bbox = turf.bbox(f);
+              if (isFinite(bbox[0]) && isFinite(bbox[1]) && isFinite(bbox[2]) && isFinite(bbox[3])) {
+                items.push({ minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3], idx: i });
+              }
+            } catch { /* Feature überspringen */ }
+          }
+          tree.load(items);
+          _geoCache = { geojson, spatialIndex: tree };
+          resolve(_geoCache);
+        } catch (e) {
+          reject(e);
         }
-        tree.load(items);
-        resolve({ geojson, spatialIndex: tree });
-      } catch (e) {
-        reject(e);
-      }
-    })
-    .on("error", reject);
-});
+      })
+      .on("error", reject);
+  });
+};
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -770,10 +781,10 @@ export default async function handler(req, res) {
 
     const featureMatches = xml.match(/<feature[\s\S]*?<\/feature>/g) ?? [];
 
-    const cells = await Promise.all(
-      featureMatches.map((f) =>
-        Promise.resolve(parseFeature(f, geojson, spatialIndex, reference_time))
-      )
+    // Reines synchrones Parsing – kein Promise-Wrapping nötig (kein I/O hier),
+    // das hat vorher nur unnötigen Microtask-Overhead erzeugt.
+    const cells = featureMatches.map((f) =>
+      parseFeature(f, geojson, spatialIndex, reference_time)
     );
 
     for (const cell of cells) {
