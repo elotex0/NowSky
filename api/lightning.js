@@ -21,10 +21,11 @@ export default async function handler(req, res) {
     const now = new Date();
     const nowSec = Math.floor(now.getTime() / 1000);
 
-    // Raster-Referenzpunkt für die STABILEN, älteren Buckets
+    // Fester Raster-Referenzpunkt -> ändert sich NUR alle 5 Minuten
     const nowRoundedSec = Math.floor(nowSec / ROUND_SEC) * ROUND_SEC;
 
     const vonSec = nowRoundedSec - 60 * MAX_AGE_MIN;
+    const bisSec = nowRoundedSec; // <- für die ANZEIGE, bleibt stabil
     const cutoffSec = vonSec;
 
     const liveRes = await fetch("https://ukwx.duckdns.org/lightning/europe", {
@@ -35,28 +36,27 @@ export default async function handler(req, res) {
     const liveData = await liveRes.json();
     const allPoints = liveData.points ?? [];
 
-    // Obergrenze ist jetzt die ECHTE aktuelle Zeit, nicht die gerundete
+    // Für die DATEN nutzen wir die echte aktuelle Zeit als Obergrenze,
+    // damit nichts zwischen Rundungsmarke und "jetzt" verloren geht
     const filtered = allPoints.filter((p) => inGermany(p) && p.t >= cutoffSec && p.t <= nowSec);
 
+    // Bucket-Zeiten für die ANZEIGE - komplett am Raster, bleibt stabil
     const grouped = {};
     const bucketRanges = {};
     for (const key of BUCKET_DEFS) {
       const [minMin, maxMin] = key.split("-").map(Number);
       grouped[key] = [];
       bucketRanges[key] = {
-        von: new Date((nowRoundedSec - 60 * maxMin) * 1000).toISOString(),
-        // Der neueste Bucket "0-5" endet bei "jetzt" (real), alle anderen am Raster
-        bis: minMin === 0
-          ? now.toISOString()
-          : new Date((nowRoundedSec - 60 * minMin) * 1000).toISOString(),
+        von: new Date((bisSec - 60 * maxMin) * 1000).toISOString(),
+        bis: new Date((bisSec - 60 * minMin) * 1000).toISOString(),
       };
     }
 
+    // Zuordnung der Blitze: Alter relativ zum Raster-Zeitpunkt,
+    // aber negatives Alter (zwischen Raster und echtem "jetzt") auf 0 clampen,
+    // damit diese Blitze trotzdem in "0-5" landen statt zu verschwinden
     const getBucketKey = (t) => {
-      // Alter relativ zum RASTER-Zeitpunkt berechnen
-      let ageMinFromRounded = (nowRoundedSec - t) / 60;
-      // Blitze, die NACH der Rundungsmarke liegen (also zwischen 14:15:00 und 14:15:59),
-      // sollen trotzdem in den neuesten Bucket "0-5" fallen -> Alter auf 0 clampen
+      let ageMinFromRounded = (bisSec - t) / 60;
       if (ageMinFromRounded < 0) ageMinFromRounded = 0;
 
       for (const key of BUCKET_DEFS) {
@@ -82,10 +82,10 @@ export default async function handler(req, res) {
     return res.status(200).json({
       meta: {
         von: new Date(vonSec * 1000).toISOString(),
-        bis: now.toISOString(), // echte Jetzt-Zeit, nicht gerundet
+        bis: new Date(bisSec * 1000).toISOString(), // bleibt fest am Raster (z.B. 14:15:00)
         anzahlGesamt: filtered.length,
         anzahlProBucket,
-        bucketZeiten: bucketRanges,
+        bucketZeiten: bucketRanges, // alle Buckets fest am Raster
       },
       buckets: grouped,
     });
