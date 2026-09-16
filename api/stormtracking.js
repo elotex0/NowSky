@@ -1,12 +1,4 @@
 // api/konrad3d.js
-import fs   from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import * as turf from "@turf/turf";
-import rbush from "rbush";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
 
 // ── Schneller String-Parser (indexOf, unterstützt Tags mit und ohne Attribute) ─
 const textFast = (xml, tag) => {
@@ -125,40 +117,6 @@ const parseElevations = (np) => {
   return { by_site, units };
 };
 
-// ── GeoJSON + Spatial Index: EINMALIG pro warmer Instanz, danach gecacht ───
-// Das Bauen des rbush-Index früher (JSON.parse + turf.bbox pro Feature) war
-// der mit Abstand teuerste Teil im Request. Bbox, vereinfachte Geometrien
-// und die Point-Buffer-Polygone (für findOrteAlongTrack) werden jetzt NICHT
-// mehr zur Laufzeit berechnet, sondern offline via scripts/prepare-geodata.mjs
-// vorberechnet und hier nur noch eingelesen:
-//   - deutschland.prepared.geojson  → vereinfachte Geometrien, Point-Features
-//                                      tragen properties._bufferedPolygon
-//   - deutschland.bbox-index.json   → [{idx,minX,minY,maxX,maxY}, ...] für rbush
-// Das Ergebnis wird weiterhin im Modul-Scope gecacht, da sich die Dateien
-// zur Laufzeit nie ändern.
-let _geoCache = null;
-
-const loadGeoJsonWithIndex = async () => {
-  if (_geoCache) return _geoCache;
-
-  const geoPath = path.join(__dirname, "../deutschland.prepared.geojson");
-  const idxPath = path.join(__dirname, "../deutschland.bbox-index.json");
-
-  const [geoRaw, idxRaw] = await Promise.all([
-    fs.promises.readFile(geoPath, "utf-8"),
-    fs.promises.readFile(idxPath, "utf-8"),
-  ]);
-
-  const geojson   = JSON.parse(geoRaw);
-  const bboxIndex = JSON.parse(idxRaw); // [{idx, minX, minY, maxX, maxY}, ...]
-
-  const tree = new rbush();
-  tree.load(bboxIndex); // kein turf.bbox-Loop mehr nötig, bbox kommt direkt aus der Sidecar-Datei
-
-  _geoCache = { geojson, spatialIndex: tree };
-  return _geoCache;
-};
-
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -224,128 +182,6 @@ export default async function handler(req, res) {
     ];
     for (const [limit, label] of dirs) if (brng < limit) return label;
     return "nördlich";
-  };
-
-  const getCityName = (properties) =>
-    properties?.name || properties?.NAME || properties?.GEN ||
-    properties?.name_de || properties?.NAMELSAD || null;
-
-  // ── Turf-basierte Ortserkennung mit Spatial Index ─────────────────────────
-  const findOrteAlongTrack = (trackPoints, geojson, spatialIndex, ref_time) => {
-    if (!geojson?.features || trackPoints.length === 0 || !spatialIndex) return [];
-
-    const BUFFER_KM = 2.5;
-    const refMs     = new Date(ref_time).getTime();
-
-    let trackBuffer;
-    try {
-      if (trackPoints.length === 1) {
-        trackBuffer = turf.buffer(
-          turf.point([trackPoints[0].lon, trackPoints[0].lat]),
-          BUFFER_KM, { units: "kilometers" }
-        );
-      } else {
-        const lines = [];
-        for (let i = 0; i < trackPoints.length - 1; i++) {
-          lines.push([
-            [trackPoints[i].lon,     trackPoints[i].lat],
-            [trackPoints[i + 1].lon, trackPoints[i + 1].lat],
-          ]);
-        }
-        trackBuffer = turf.buffer(
-          turf.multiLineString(lines), BUFFER_KM, { units: "kilometers" }
-        );
-      }
-    } catch { return []; }
-
-    const bufferBbox = turf.bbox(trackBuffer);
-
-    // ← Spatial Index: nur Features im Bounding-Box des Track-Buffers holen
-    const candidates = spatialIndex.search({
-      minX: bufferBbox[0], minY: bufferBbox[1],
-      maxX: bufferBbox[2], maxY: bufferBbox[3],
-    });
-
-    const orte = [];
-    const seen = new Set();
-
-    for (const item of candidates) {
-      const f    = geojson.features[item.idx];
-      const name = getCityName(f.properties);
-      if (!name || seen.has(name)) continue;
-
-      let centroidCoord;
-      try {
-        const c = turf.centroid(f);
-        centroidCoord = c.geometry.coordinates;
-      } catch {
-        const bbox = turf.bbox(f);
-        centroidCoord = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
-      }
-
-      const refPoint  = trackPoints[0];
-      const quickDist = haversine(centroidCoord[1], centroidCoord[0], refPoint.lat, refPoint.lon);
-      if (quickDist > 80) continue;
-
-      let isAffected = false;
-      try {
-        if (f.geometry.type === "Point") {
-          // Buffer-Polygon kommt aus scripts/prepare-geodata.mjs (offline
-          // vorberechnet, Radius je nach place: village/town/city) – kein
-          // turf.buffer() mehr pro Kandidat zur Laufzeit.
-          const bufferedGeom = f.properties?._bufferedPolygon;
-          if (bufferedGeom) {
-            isAffected = turf.booleanIntersects(bufferedGeom, trackBuffer);
-          } else {
-            // Fallback, falls die Sidecar-Datei fehlt/veraltet ist
-            const place    = f.properties?.place;
-            let radiusKm   = 1.0;
-            if (place === "village") radiusKm = 1.5;
-            else if (place === "town")  radiusKm = 2.0;
-            else if (place === "city")  radiusKm = 3.0;
-            const bufferedPoint = turf.buffer(turf.point(f.geometry.coordinates), radiusKm, { units: "kilometers" });
-            isAffected = turf.booleanIntersects(bufferedPoint, trackBuffer);
-          }
-        } else {
-          isAffected = turf.booleanIntersects(f, trackBuffer);
-        }
-      } catch { continue; }
-
-      if (!isAffected) continue;
-
-      let bestMs   = trackPoints[0].ms;
-      let bestDist = Infinity;
-
-      for (let i = 0; i < trackPoints.length - 1; i++) {
-        const p      = trackPoints[i];
-        const q      = trackPoints[i + 1];
-        const segLen = haversine(p.lat, p.lon, q.lat, q.lon);
-        if (segLen === 0) {
-          const d = haversine(centroidCoord[1], centroidCoord[0], p.lat, p.lon);
-          if (d < bestDist) { bestDist = d; bestMs = p.ms; }
-          continue;
-        }
-        const brngAB   = bearing(p.lat, p.lon, q.lat, q.lon);
-        const brngAP   = bearing(p.lat, p.lon, centroidCoord[1], centroidCoord[0]);
-        const distAP   = haversine(p.lat, p.lon, centroidCoord[1], centroidCoord[0]);
-        const angle    = ((brngAP - brngAB + 360) % 360) * Math.PI / 180;
-        const along    = Math.max(0, Math.min(segLen, distAP * Math.cos(angle)));
-        const t        = along / segLen;
-        const interpMs = p.ms + t * (q.ms - p.ms);
-        const across   = Math.abs(distAP * Math.sin(angle));
-        if (across < bestDist) { bestDist = across; bestMs = interpMs; }
-      }
-
-      const last  = trackPoints[trackPoints.length - 1];
-      const dLast = haversine(centroidCoord[1], centroidCoord[0], last.lat, last.lon);
-      if (dLast < bestDist) bestMs = last.ms;
-
-      seen.add(name);
-      orte.push({ name, _sortMs: bestMs });
-    }
-
-    orte.sort((a, b) => a._sortMs - b._sortMs);
-    return orte.map(({ name }) => ({ name }));
   };
 
   // ── Meteopool Mesocyclone-Feed fetchen (liefert tornado_suspicion) ────────
@@ -517,7 +353,7 @@ export default async function handler(req, res) {
   };
 
   // ── Feature parsen ────────────────────────────────────────────────────────
-  const parseFeature = (featureFull, geojson, spatialIndex, refTime) => {
+  const parseFeature = (featureFull, refTime) => {
     const featureTag = featureFull.match(/<feature([^>]*)>/)?.[0] ?? "";
     const inner      = blockFast(featureFull, "feature") ?? featureFull;
 
@@ -665,16 +501,13 @@ export default async function handler(req, res) {
 
     let forecast_lat = null;
     let forecast_lon = null;
-    const allForecasts = [];
 
     for (const cf of cfBlocks) {
-      const forecast_time = attrFast(cf.full, "forecast_time");
       const fg   = blockFast(cf.inner, "geodetic_coordinate") ?? cf.inner;
       const fLat = numFast(fg, "latitude");
       const fLon = numFast(fg, "longitude");
       forecast_lat = fLat;
       forecast_lon = fLon;
-      if (fLat && fLon) allForecasts.push({ forecast_time, lat: fLat, lon: fLon });
     }
 
     let lat3 = null, lon3 = null;
@@ -693,17 +526,7 @@ export default async function handler(req, res) {
       perp_point2_lat = p2.lat; perp_point2_lon = p2.lon;
     }
 
-    const refMs       = new Date(ref_time).getTime();
-    const trackPoints = [];
-    if (lat && lon) trackPoints.push({ lat, lon, ms: refMs });
-    for (const f of allForecasts) {
-      if (!f.forecast_time) continue;
-      const ms = new Date(f.forecast_time).getTime();
-      if (!isNaN(ms)) trackPoints.push({ lat: f.lat, lon: f.lon, ms });
-    }
-
-    const orte = (trackPoints.length > 0 && geojson)
-      ? findOrteAlongTrack(trackPoints, geojson, spatialIndex, ref_time) : [];
+    const refMs = new Date(ref_time).getTime();
 
     return {
       dateStr, timeStr,
@@ -731,7 +554,6 @@ export default async function handler(req, res) {
       lon3, lat3,
       echo_top_msl, echo_bottom_msl,
       covered_area,
-      orte,
       has_mesocyclone,
       konrad_mesocyclone,
       nwp: {
@@ -761,9 +583,8 @@ export default async function handler(req, res) {
 
   // ── Handler ───────────────────────────────────────────────────────────────
   try {
-    const [{ xml, filename, mesoXml }, { geojson, spatialIndex }, meteopoolEvents] = await Promise.all([
+    const [{ xml, filename, mesoXml }, meteopoolEvents] = await Promise.all([
       fetchXmlAndMeso(),
-      loadGeoJsonWithIndex(),
       fetchMeteopoolEvents().catch(() => []),
     ]);
 
@@ -782,11 +603,7 @@ export default async function handler(req, res) {
 
     const featureMatches = xml.match(/<feature[\s\S]*?<\/feature>/g) ?? [];
 
-    // Reines synchrones Parsing – kein Promise-Wrapping nötig (kein I/O hier),
-    // das hat vorher nur unnötigen Microtask-Overhead erzeugt.
-    const cells = featureMatches.map((f) =>
-      parseFeature(f, geojson, spatialIndex, reference_time)
-    );
+    const cells = featureMatches.map((f) => parseFeature(f, reference_time));
 
     for (const cell of cells) {
       if (!cell.has_mesocyclone || !cell.latitude || !cell.longitude) {
