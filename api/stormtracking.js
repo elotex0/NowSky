@@ -126,45 +126,37 @@ const parseElevations = (np) => {
 };
 
 // ── GeoJSON + Spatial Index: EINMALIG pro warmer Instanz, danach gecacht ───
-// Das Bauen des rbush-Index (JSON.parse + turf.bbox pro Feature) ist der
-// mit Abstand teuerste Teil im Request. Da sich deutschland.geojson nie
-// ändert, wird das Ergebnis im Modul-Scope gecacht, statt bei jedem Request
-// neu zu berechnen.
+// Das Bauen des rbush-Index früher (JSON.parse + turf.bbox pro Feature) war
+// der mit Abstand teuerste Teil im Request. Bbox, vereinfachte Geometrien
+// und die Point-Buffer-Polygone (für findOrteAlongTrack) werden jetzt NICHT
+// mehr zur Laufzeit berechnet, sondern offline via scripts/prepare-geodata.mjs
+// vorberechnet und hier nur noch eingelesen:
+//   - deutschland.prepared.geojson  → vereinfachte Geometrien, Point-Features
+//                                      tragen properties._bufferedPolygon
+//   - deutschland.bbox-index.json   → [{idx,minX,minY,maxX,maxY}, ...] für rbush
+// Das Ergebnis wird weiterhin im Modul-Scope gecacht, da sich die Dateien
+// zur Laufzeit nie ändern.
 let _geoCache = null;
 
-const loadGeoJsonWithIndex = () => {
-  if (_geoCache) return Promise.resolve(_geoCache);
+const loadGeoJsonWithIndex = async () => {
+  if (_geoCache) return _geoCache;
 
-  return new Promise((resolve, reject) => {
-    const filePath = path.join(__dirname, "../deutschland.geojson");
-    const chunks = [];
-    fs.createReadStream(filePath, { encoding: "utf-8" })
-      .on("data", c => chunks.push(c))
-      .on("end", () => {
-        try {
-          const geojson = JSON.parse(chunks.join(""));
+  const geoPath = path.join(__dirname, "../deutschland.prepared.geojson");
+  const idxPath = path.join(__dirname, "../deutschland.bbox-index.json");
 
-          // Spatial Index aufbauen (rbush)
-          const tree = new rbush();
-          const items = [];
-          for (let i = 0; i < geojson.features.length; i++) {
-            const f = geojson.features[i];
-            try {
-              const bbox = turf.bbox(f);
-              if (isFinite(bbox[0]) && isFinite(bbox[1]) && isFinite(bbox[2]) && isFinite(bbox[3])) {
-                items.push({ minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3], idx: i });
-              }
-            } catch { /* Feature überspringen */ }
-          }
-          tree.load(items);
-          _geoCache = { geojson, spatialIndex: tree };
-          resolve(_geoCache);
-        } catch (e) {
-          reject(e);
-        }
-      })
-      .on("error", reject);
-  });
+  const [geoRaw, idxRaw] = await Promise.all([
+    fs.promises.readFile(geoPath, "utf-8"),
+    fs.promises.readFile(idxPath, "utf-8"),
+  ]);
+
+  const geojson   = JSON.parse(geoRaw);
+  const bboxIndex = JSON.parse(idxRaw); // [{idx, minX, minY, maxX, maxY}, ...]
+
+  const tree = new rbush();
+  tree.load(bboxIndex); // kein turf.bbox-Loop mehr nötig, bbox kommt direkt aus der Sidecar-Datei
+
+  _geoCache = { geojson, spatialIndex: tree };
+  return _geoCache;
 };
 
 export default async function handler(req, res) {
@@ -298,13 +290,22 @@ export default async function handler(req, res) {
       let isAffected = false;
       try {
         if (f.geometry.type === "Point") {
-          const place    = f.properties?.place;
-          let radiusKm   = 1.0;
-          if (place === "village") radiusKm = 1.5;
-          else if (place === "town")  radiusKm = 2.0;
-          else if (place === "city")  radiusKm = 3.0;
-          const bufferedPoint = turf.buffer(turf.point(f.geometry.coordinates), radiusKm, { units: "kilometers" });
-          isAffected = turf.booleanIntersects(bufferedPoint, trackBuffer);
+          // Buffer-Polygon kommt aus scripts/prepare-geodata.mjs (offline
+          // vorberechnet, Radius je nach place: village/town/city) – kein
+          // turf.buffer() mehr pro Kandidat zur Laufzeit.
+          const bufferedGeom = f.properties?._bufferedPolygon;
+          if (bufferedGeom) {
+            isAffected = turf.booleanIntersects(bufferedGeom, trackBuffer);
+          } else {
+            // Fallback, falls die Sidecar-Datei fehlt/veraltet ist
+            const place    = f.properties?.place;
+            let radiusKm   = 1.0;
+            if (place === "village") radiusKm = 1.5;
+            else if (place === "town")  radiusKm = 2.0;
+            else if (place === "city")  radiusKm = 3.0;
+            const bufferedPoint = turf.buffer(turf.point(f.geometry.coordinates), radiusKm, { units: "kilometers" });
+            isAffected = turf.booleanIntersects(bufferedPoint, trackBuffer);
+          }
         } else {
           isAffected = turf.booleanIntersects(f, trackBuffer);
         }
