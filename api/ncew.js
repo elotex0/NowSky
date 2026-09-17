@@ -1,28 +1,69 @@
-// api/lightning.js
+// api/ncew.js
 //
-// Einfache Serverless Function (Vercel), KEIN Durable Object, KEIN WebSocket:
-// Liest bei jeder Anfrage die JSON-Quelle aus und liefert die Blitze in
-// Deutschland aus den letzten 60 Minuten, aufgeteilt in 12 Buckets à 5 Minuten.
-// Jeder Bucket hat echte Uhrzeiten (z.B. "14:05–14:10") als Label.
+// Serverless Function (Vercel), KEIN Durable Object, KEIN WebSocket:
+// Liest die ARCHIVIERTEN Blitzdaten für einen bestimmten 5-Minuten-
+// Zeitpunkt und liefert nur die Blitze in Deutschland aus genau diesem
+// 5-Minuten-Fenster.
 //
-// Quelle liefert bereits fertige HTTP/JSON-Daten (kein LZW, kein Live-Socket),
-// daher genügt ein einfacher fetch() pro Request - keine Dauerverbindung nötig.
+// Unterschied zum rollierenden Live-Feed (/api/lightning, für den
+// StormTracker): die Archiv-Dateien sind UNVERÄNDERLICH - fragt man
+// dieselbe Zeit später erneut ab, bekommt man exakt dieselben Blitze.
+// Nichts "verschwindet" mehr nachträglich aus einem Bucket.
+//
+// Archiv-URL-Schema (Dateiname = DEUTSCHE ORTSZEIT, nicht UTC!):
+//   https://radar.wetterstation-neustadt.de/blitze/archive/2026-09-17-0230.json
+//   -> enthält die Blitze für das Fenster 02:25–02:30 Uhr (deutsche Zeit).
+//
+// Aufruf vom Regenradar aus, synchron zum jeweiligen Radar-Frame:
+//   /api/ncew?datum=2026-09-17T12:30:00Z
+//   (beliebiger Zeitpunkt, egal welche Zeitzone im Query-Param - wird
+//   serverseitig auf das 5-Minuten-Raster abgerundet und in deutsche
+//   Ortszeit für den Archiv-Dateinamen umgerechnet)
 
-const SOURCE_URL = "https://radar.wetterstation-neustadt.de/blitze/live/latest.json";
+const ARCHIVE_BASE_URL = "https://radar.wetterstation-neustadt.de/blitze/archive";
 
 const DE_BBOX = { latMin: 45.5, latMax: 55.55, lonMin: 3.0, lonMax: 15.55 };
 const inGermany = (lat, lon) =>
   lat >= DE_BBOX.latMin && lat <= DE_BBOX.latMax &&
   lon >= DE_BBOX.lonMin && lon <= DE_BBOX.lonMax;
 
-const STEP_MIN = 5;           // Größe eines einzelnen Buckets
-const WINDOW_MIN = 60;        // Gesamtfenster
-const NUM_BUCKETS = WINDOW_MIN / STEP_MIN; // 12 Buckets
+const STEP_MIN = 5;
+const stepMs = STEP_MIN * 60 * 1000;
 
-// Formatiert eine Zeit als volles UTC-ISO-Datum mit "+00:00" statt "Z",
-// z.B. "2026-09-16T23:05:00+00:00".
-function formatUhrzeit(dateMs) {
+// Formatiert eine Zeit als volles UTC-ISO-Datum mit "+00:00" statt "Z".
+function formatIso(dateMs) {
   return new Date(dateMs).toISOString().replace("Z", "+00:00");
+}
+
+// Wandelt einen UTC-Zeitpunkt (ms) in seine deutschen Ortszeit-Bestandteile
+// um (berücksichtigt automatisch Sommer-/Winterzeit, MESZ/MEZ).
+function toBerlinParts(ms) {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Berlin",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(ms));
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  const hour = get("hour");
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: hour === "24" ? "00" : hour, // Intl liefert bei Mitternacht manchmal "24"
+    minute: get("minute"),
+  };
+}
+
+// Baut die Archiv-URL für einen bereits auf 5 Minuten gerundeten UTC-Zeitpunkt.
+// Der Dateiname folgt der deutschen Ortszeit dieses Zeitpunkts.
+function buildArchiveUrl(roundedMs) {
+  const p = toBerlinParts(roundedMs);
+  return `${ARCHIVE_BASE_URL}/${p.year}-${p.month}-${p.day}-${p.hour}${p.minute}.json`;
 }
 
 export default async function handler(req, res) {
@@ -32,79 +73,51 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    const realNow = new Date();
-    const realNowMs = realNow.getTime();
-    const stepMs = STEP_MIN * 60 * 1000;
-    const windowMs = WINDOW_MIN * 60 * 1000;
+    const { datum } = req.query;
+    const targetMs = datum ? new Date(datum).getTime() : Date.now();
+    if (Number.isNaN(targetMs)) {
+      return res.status(400).json({ error: `Ungültiger Zeitpunkt: "${datum}"` });
+    }
 
-    // Referenzzeitpunkt fest auf 5-Min-Raster (z.B. 14:30, 14:35, ...).
-    const roundedNowMs = Math.floor(realNowMs / stepMs) * stepMs;
-    const refDate = new Date(roundedNowMs);
+    // Auf 5-Minuten-Raster abrunden. Das geht in UTC-Arithmetik, obwohl der
+    // Dateiname deutsche Ortszeit nutzt: Deutschland liegt immer eine ganze
+    // Stundenzahl vor UTC (+1 oder +2), das Runden auf 5-Minuten-Schritte
+    // liefert dadurch in beiden Zeitzonen dieselbe Bucket-Grenze.
+    const refMs = Math.floor(targetMs / stepMs) * stepMs;
+    const vonMs = refMs - stepMs;
 
-    // Gesamtfenster: [refDate - 60min, refDate]
-    const windowStartMs = roundedNowMs - windowMs;
+    const archiveUrl = buildArchiveUrl(refMs);
 
-    // Buckets vorbereiten: 12 Stück à 5 Minuten, älteste zuerst.
-    // bucket[i]: von = windowStartMs + i*stepMs, bis = von + stepMs
-    const buckets = Array.from({ length: NUM_BUCKETS }, (_, i) => {
-      const vonMs = windowStartMs + i * stepMs;
-      const bisMs = vonMs + stepMs;
-      return {
-        von: formatUhrzeit(vonMs),
-        bis: formatUhrzeit(bisMs),
-        vonMs,
-        bisMs,
-        anzahl: 0,
-        strikes: [],
-      };
-    });
-
-    const sourceResp = await fetch(SOURCE_URL, {
+    const sourceResp = await fetch(archiveUrl, {
       signal: AbortSignal.timeout(10000),
     });
     if (!sourceResp.ok) {
-      throw new Error(`Quelle antwortete mit HTTP ${sourceResp.status}`);
+      throw new Error(`Archiv antwortete mit HTTP ${sourceResp.status} (${archiveUrl})`);
     }
     const sourceData = await sourceResp.json();
     const rawStrikes = Array.isArray(sourceData.strikes) ? sourceData.strikes : [];
 
-    for (const p of rawStrikes) {
-      if (typeof p.lat !== "number" || typeof p.lon !== "number") continue;
-      if (!inGermany(p.lat, p.lon)) continue;
-
-      const tMs = p.t; // Quelle liefert ms
-      if (tMs < windowStartMs || tMs > roundedNowMs) continue;
-
-      // passenden Bucket finden
-      const idx = Math.min(
-        NUM_BUCKETS - 1,
-        Math.floor((tMs - windowStartMs) / stepMs)
-      );
-      const bucket = buckets[idx];
-      bucket.anzahl += 1;
-      bucket.strikes.push({
+    const strikes = rawStrikes
+      .filter((p) => {
+        if (typeof p.lat !== "number" || typeof p.lon !== "number") return false;
+        if (!inGermany(p.lat, p.lon)) return false;
+        return p.t >= vonMs && p.t <= refMs;
+      })
+      .map((p) => ({
         lat: p.lat,
         lon: p.lon,
-        time: formatUhrzeit(tMs),
+        time: formatIso(p.t),
         pol: p.pol ?? 0,
-      });
-    }
-
-    // interne Hilfsfelder (vonMs/bisMs) aus der Ausgabe entfernen
-    const bucketsOut = buckets.map(({ vonMs, bisMs, ...rest }) => rest);
-    const gesamtAnzahl = bucketsOut.reduce((sum, b) => sum + b.anzahl, 0);
+      }));
 
     return res.status(200).json({
       meta: {
-        referenzZeitpunkt: formatUhrzeit(roundedNowMs),
-        echteAbrufzeit: formatUhrzeit(realNowMs),
-        fensterVon: formatUhrzeit(windowStartMs),
-        fensterBis: formatUhrzeit(roundedNowMs),
-        anzahlBuckets: NUM_BUCKETS,
-        bucketGroesseMin: STEP_MIN,
-        anzahlGesamt: gesamtAnzahl,
+        von: formatIso(vonMs),
+        bis: formatIso(refMs),
+        archivUrl: archiveUrl,
+        anzahl: strikes.length,
       },
-      buckets: bucketsOut,
+      strikes,
     });
   } catch (err) {
     return res.status(502).json({ error: err.message });
